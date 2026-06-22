@@ -1,4 +1,4 @@
-import type { UsagePayload, RegisterDeviceRequest, VerifyDeviceResponse } from '@burn-watch/shared'
+import type { UsagePayload, RegisterDeviceRequest, RegisterDeviceResponse, VerifyDeviceResponse } from '@burn-watch/shared'
 
 export class ApiClient {
   constructor(private apiUrl: string, private accessToken: string) {}
@@ -28,13 +28,27 @@ export class ApiClient {
   static async registerDevice(
     apiUrl: string,
     data: RegisterDeviceRequest,
-  ): Promise<VerifyDeviceResponse> {
+  ): Promise<RegisterDeviceResponse> {
     const res = await fetch(`${apiUrl}/v1/auth/register-device`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
     if (!res.ok) throw new Error(`Registration failed: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  static async verifyDevice(
+    apiUrl: string,
+    pendingId: string,
+    code: string,
+  ): Promise<VerifyDeviceResponse> {
+    const res = await fetch(`${apiUrl}/v1/auth/verify-device`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingId, code }),
+    })
+    if (!res.ok) throw new Error(`Verification failed: ${res.status} ${await res.text()}`)
     return res.json()
   }
 }

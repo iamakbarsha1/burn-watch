@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
-import { users, devices, deviceTokens, organizations } from '../../../drizzle/schema.js'
-import { RegisterDeviceSchema } from '@burn-watch/shared'
+import { eq, and, isNull, gt } from 'drizzle-orm'
+import { users, devices, deviceTokens, organizations, pendingDevices } from '../../../drizzle/schema.js'
+import { RegisterDeviceSchema, VerifyDeviceSchema } from '@burn-watch/shared'
 import type { JwtPayload } from '../../plugins/jwt.js'
 
 const BootstrapSchema = z.object({
@@ -19,17 +19,21 @@ const CreateUserSchema = z.object({
   orgId: z.string().uuid().optional(),
 })
 
+function generateCode(): string {
+  // 6-char uppercase alphanumeric
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O/1/I to avoid confusion
+  const bytes = randomBytes(6)
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('')
+}
+
 export async function authRoutes(fastify: FastifyInstance) {
-  // POST /v1/auth/register-device
+  // POST /v1/auth/register-device — step 1: create pending device, return verification code
   fastify.post('/register-device', async (request, reply) => {
     const body = RegisterDeviceSchema.parse(request.body)
 
     // Look up user by email
     const [user] = await fastify.db
-      .select({
-        id: users.id,
-        orgId: users.orgId,
-      })
+      .select({ id: users.id, orgId: users.orgId })
       .from(users)
       .where(eq(users.email, body.email))
       .limit(1)
@@ -40,23 +44,87 @@ export async function authRoutes(fastify: FastifyInstance) {
       })
     }
 
+    // Create pending device with 15-minute expiry
+    const code = generateCode()
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000)
+
+    const [pending] = await fastify.db
+      .insert(pendingDevices)
+      .values({
+        code,
+        email: body.email,
+        hostname: body.hostname,
+        platform: body.platform,
+        agentVersion: body.agentVersion,
+        expiresAt,
+      })
+      .returning({ id: pendingDevices.id })
+
+    return {
+      pendingId: pending.id,
+      code,
+      expiresAt: expiresAt.toISOString(),
+    }
+  })
+
+  // POST /v1/auth/verify-device — step 2: verify code, create device + tokens
+  fastify.post('/verify-device', async (request, reply) => {
+    const body = VerifyDeviceSchema.parse(request.body)
+
+    // Find pending device that matches code + pendingId, not expired, not yet verified
+    const [pending] = await fastify.db
+      .select()
+      .from(pendingDevices)
+      .where(
+        and(
+          eq(pendingDevices.id, body.pendingId),
+          eq(pendingDevices.code, body.code),
+          isNull(pendingDevices.verifiedAt),
+          gt(pendingDevices.expiresAt, new Date()),
+        ),
+      )
+      .limit(1)
+
+    if (!pending) {
+      return reply.status(400).send({
+        error: 'Invalid or expired verification code',
+      })
+    }
+
+    // Look up user
+    const [user] = await fastify.db
+      .select({ id: users.id, orgId: users.orgId })
+      .from(users)
+      .where(eq(users.email, pending.email))
+      .limit(1)
+
+    if (!user) {
+      return reply.status(404).send({ error: 'User no longer exists' })
+    }
+
     // Create device
     const [device] = await fastify.db
       .insert(devices)
       .values({
         userId: user.id,
-        hostname: body.hostname,
-        platform: body.platform,
-        agentVersion: body.agentVersion,
+        hostname: pending.hostname,
+        platform: pending.platform,
+        agentVersion: pending.agentVersion,
       })
       .returning({ id: devices.id })
 
-    // Sign JWT with separate secrets for access and refresh
+    // Mark pending as verified
+    await fastify.db
+      .update(pendingDevices)
+      .set({ verifiedAt: new Date(), deviceId: device.id })
+      .where(eq(pendingDevices.id, pending.id))
+
+    // Sign JWT tokens
     const tokenPayload = { deviceId: device.id, userId: user.id, orgId: user.orgId, role: 'device' as const }
     const accessToken = fastify.jwt.access.sign(tokenPayload, { expiresIn: '30d' })
     const refreshToken = fastify.jwt.refresh.sign(tokenPayload, { expiresIn: '90d' })
 
-    // Store token hash for revocation checks
+    // Store token hash for revocation
     const tokenHash = createHash('sha256').update(accessToken).digest('hex')
     await fastify.db.insert(deviceTokens).values({
       deviceId: device.id,
