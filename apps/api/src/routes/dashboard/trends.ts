@@ -1,21 +1,29 @@
 import type { FastifyInstance } from 'fastify'
 import { eq, and, gte, sum, count } from 'drizzle-orm'
+import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { TrendPoint } from '@burn-watch/shared'
+
+const QuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).default(30),
+})
 
 export async function trendsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: { days?: string } }>(
     '/trends',
     async (request, reply) => {
       const orgId = request.user.orgId
-      const { days: daysStr } = request.query
+      const parsed = QuerySchema.safeParse(request.query)
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+      }
 
-      const days = Math.min(Number(daysStr) || 30, 90)
+      const days = parsed.data.days
       const since = new Date()
       since.setDate(since.getDate() - days)
       const sinceStr = since.toISOString().slice(0, 10)
 
-      const cacheKey = `bw:trends:${orgId}:${days}`
+      const cacheKey = `bw:trends:${orgId}:${days}:${sinceStr}`
       const cached = await fastify.redis.get(cacheKey)
       if (cached) return JSON.parse(cached)
 

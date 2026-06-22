@@ -1,17 +1,23 @@
 import type { FastifyInstance } from 'fastify'
 import { eq, and, desc } from 'drizzle-orm'
+import { z } from 'zod'
 import { dailySnapshots, users } from '../../../drizzle/schema.js'
 import type { LeaderboardEntry } from '@burn-watch/shared'
+
+const QuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+})
 
 export async function leaderboardRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: { date: string } }>(
     '/leaderboard',
     async (request, reply) => {
       const orgId = request.user.orgId
-      const { date } = request.query
-      if (!date) {
-        return reply.status(400).send({ error: 'date is required' })
+      const parsed = QuerySchema.safeParse(request.query)
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
       }
+      const { date } = parsed.data
 
       const cacheKey = `bw:leaderboard:${orgId}:${date}`
       const cached = await fastify.redis.get(cacheKey)

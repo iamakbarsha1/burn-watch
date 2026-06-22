@@ -1,17 +1,23 @@
 import type { FastifyInstance } from 'fastify'
 import { eq, and, sum, sql, count } from 'drizzle-orm'
+import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
+
+const QuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+})
 
 export async function overviewRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: { date: string } }>(
     '/overview',
     async (request, reply) => {
       const orgId = request.user.orgId
-      const { date } = request.query
-      if (!date) {
-        return reply.status(400).send({ error: 'date is required' })
+      const parsed = QuerySchema.safeParse(request.query)
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
       }
+      const { date } = parsed.data
 
       // Check cache
       const cacheKey = `bw:overview:${orgId}:${date}`
