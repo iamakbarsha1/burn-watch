@@ -4,12 +4,13 @@ import { claudeEnrichment, users } from '../../../drizzle/schema.js'
 import type { OrgActivitySummary, ActivityEntry } from '@burn-watch/shared'
 
 export async function activityRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { orgId: string; date: string } }>(
+  fastify.get<{ Querystring: { date: string } }>(
     '/activity',
     async (request, reply) => {
-      const { orgId, date } = request.query
-      if (!orgId || !date) {
-        return reply.status(400).send({ error: 'orgId and date are required' })
+      const orgId = request.user.orgId
+      const { date } = request.query
+      if (!date) {
+        return reply.status(400).send({ error: 'date is required' })
       }
 
       const cacheKey = `bw:activity:${orgId}:${date}`
