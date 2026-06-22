@@ -3,7 +3,7 @@ import { Pool } from '@neondatabase/serverless'
 import { drizzle } from 'drizzle-orm/neon-serverless'
 import * as schema from '../../drizzle/schema.js'
 
-type DB = ReturnType<typeof drizzle<typeof schema>>
+export type DB = ReturnType<typeof drizzle<typeof schema>>
 
 declare module 'fastify' {
   interface FastifyInstance {

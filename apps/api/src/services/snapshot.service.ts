@@ -1,15 +1,11 @@
 import { eq, and, sum, sql } from 'drizzle-orm'
-import { Pool } from '@neondatabase/serverless'
-import { drizzle } from 'drizzle-orm/neon-serverless'
-import * as schema from '../../drizzle/schema.js'
 import {
   usageEvents,
   claudeEnrichment,
   dailySnapshots,
   users,
 } from '../../drizzle/schema.js'
-
-type DB = ReturnType<typeof drizzle<typeof schema>>
+import type { DB } from '../plugins/db.js'
 
 export async function rebuildDailySnapshot(
   db: DB,
