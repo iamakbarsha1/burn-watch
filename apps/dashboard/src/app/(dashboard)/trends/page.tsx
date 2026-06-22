@@ -1,8 +1,12 @@
+import { redirect } from 'next/navigation'
 import { fetchTrends } from '@/lib/api'
 import { BurnAreaChart } from '@/components/charts/BurnAreaChart'
+import { getOrgId } from '@/lib/session'
 
 export default async function TrendsPage() {
-  const orgId = process.env.DEMO_ORG_ID ?? 'demo'
+  const orgId = await getOrgId()
+  if (!orgId) redirect('/login')
+
   let trends: Awaited<ReturnType<typeof fetchTrends>> = []
   try {
     trends = await fetchTrends(30, orgId)

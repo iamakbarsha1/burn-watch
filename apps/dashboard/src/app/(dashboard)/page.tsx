@@ -1,10 +1,13 @@
+import { redirect } from 'next/navigation'
 import { fetchOverview } from '@/lib/api'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
 import { formatCost, formatTokens } from '@/lib/format'
+import { getOrgId } from '@/lib/session'
 
 export default async function OverviewPage() {
   const today = new Date().toISOString().slice(0, 10)
-  const orgId = process.env.DEMO_ORG_ID ?? 'demo'
+  const orgId = await getOrgId()
+  if (!orgId) redirect('/login')
 
   let overview = null
   try {

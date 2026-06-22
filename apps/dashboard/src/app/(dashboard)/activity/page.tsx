@@ -1,9 +1,13 @@
+import { redirect } from 'next/navigation'
 import { fetchActivity } from '@/lib/api'
 import { formatCost } from '@/lib/format'
+import { getOrgId } from '@/lib/session'
 
 export default async function ActivityPage() {
   const today = new Date().toISOString().slice(0, 10)
-  const orgId = process.env.DEMO_ORG_ID ?? 'demo'
+  const orgId = await getOrgId()
+  if (!orgId) redirect('/login')
+
   let activities: Awaited<ReturnType<typeof fetchActivity>> = []
   try {
     activities = await fetchActivity(today, orgId)
