@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { users, devices, deviceTokens, organizations } from '../../../drizzle/schema.js'
@@ -55,10 +56,11 @@ export async function authRoutes(fastify: FastifyInstance) {
     const accessToken = fastify.jwt.access.sign(tokenPayload, { expiresIn: '30d' })
     const refreshToken = fastify.jwt.refresh.sign(tokenPayload, { expiresIn: '90d' })
 
-    // Store token record
+    // Store token hash for revocation checks
+    const tokenHash = createHash('sha256').update(accessToken).digest('hex')
     await fastify.db.insert(deviceTokens).values({
       deviceId: device.id,
-      tokenHash: accessToken.slice(-16), // simplified hash for MVP
+      tokenHash,
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     })
 
