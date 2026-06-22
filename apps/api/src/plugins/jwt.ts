@@ -19,7 +19,7 @@ export function requireAuth(fastify: FastifyInstance) {
     try {
       await request.jwtVerify<JwtPayload>()
     } catch {
-      reply.status(401).send({ error: 'Unauthorized' })
+      return reply.status(401).send({ error: 'Unauthorized' })
     }
   }
 }
@@ -28,11 +28,11 @@ export function requireDashboardAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const payload = await request.jwtVerify<JwtPayload>()
-      if (payload.role !== 'user') {
-        reply.status(403).send({ error: 'Dashboard access requires user role' })
+      if (payload.role !== 'user' && payload.role !== 'admin') {
+        return reply.status(403).send({ error: 'Dashboard access requires user or admin role' })
       }
     } catch {
-      reply.status(401).send({ error: 'Unauthorized' })
+      return reply.status(401).send({ error: 'Unauthorized' })
     }
   }
 }
