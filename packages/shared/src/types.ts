@@ -1,14 +1,30 @@
-// Raw row from `npx ccusage@latest daily --json`
-export interface CcusageRow {
-  date: string
-  agent: 'Claude' | 'Qwen' | 'Gemini CLI' | 'Codex' | 'All'
-  models: string[]
+// Raw output from `npx ccusage@latest daily --json`
+export interface CcusageOutput {
+  daily: CcusageDailyEntry[]
+  totals: Record<string, unknown>
+}
+
+export interface CcusageModelBreakdown {
+  modelName: string
   inputTokens: number
   outputTokens: number
-  cacheCreateTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  cost: number
+}
+
+export interface CcusageDailyEntry {
+  agent: string              // 'all' | agent name (lowercase)
+  period: string             // 'YYYY-MM-DD'
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
   cacheReadTokens: number
   totalTokens: number
-  costUsd: number
+  totalCost: number
+  modelsUsed: string[]
+  modelBreakdowns: CcusageModelBreakdown[]
+  metadata?: { agents?: string[] }
 }
 
 export type AgentName = 'claude' | 'qwen' | 'gemini' | 'codex' | 'copilot'

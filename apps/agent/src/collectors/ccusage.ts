@@ -2,17 +2,17 @@ import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
-import type { UsageEvent, CcusageRow, AgentName } from '@burn-watch/shared'
+import type { UsageEvent, CcusageOutput, CcusageDailyEntry, AgentName } from '@burn-watch/shared'
 import type { UsageCollector } from './base.js'
 
 const AGENT_MAP: Record<string, AgentName> = {
-  'Claude': 'claude',
-  'Qwen': 'qwen',
-  'Gemini CLI': 'gemini',
-  'Codex': 'codex',
+  claude: 'claude',
+  qwen: 'qwen',
+  'gemini cli': 'gemini',
+  gemini: 'gemini',
+  codex: 'codex',
 }
 
-// Agents that have free tier (no LiteLLM pricing)
 const FREE_TIER_AGENTS = new Set<AgentName>(['qwen'])
 
 function runCommand(cmd: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -45,6 +45,25 @@ function runCommand(cmd: string, args: string[], timeout: number): Promise<{ std
   })
 }
 
+function resolveAgent(entry: CcusageDailyEntry): AgentName | null {
+  // If agent is not 'all', map directly
+  if (entry.agent !== 'all') {
+    return AGENT_MAP[entry.agent.toLowerCase()] ?? null
+  }
+  // For 'all' entries, use metadata.agents if available
+  const agents = entry.metadata?.agents
+  if (agents?.length === 1) {
+    return AGENT_MAP[agents[0].toLowerCase()] ?? null
+  }
+  // Fallback: infer from model names
+  const firstModel = entry.modelsUsed?.[0]?.toLowerCase() ?? ''
+  if (firstModel.includes('claude')) return 'claude'
+  if (firstModel.includes('qwen')) return 'qwen'
+  if (firstModel.includes('gemini')) return 'gemini'
+  if (firstModel.includes('codex') || firstModel.includes('gpt')) return 'codex'
+  return null
+}
+
 export class CcusageCollector implements UsageCollector {
   constructor(private npxPath: string = 'npx') {}
 
@@ -56,7 +75,6 @@ export class CcusageCollector implements UsageCollector {
   }
 
   async collect(date: string): Promise<UsageEvent[]> {
-    // ccusage date format: YYYYMMDD (no dashes)
     const ccDate = date.replace(/-/g, '')
 
     let result: { stdout: string; stderr: string; exitCode: number }
@@ -76,30 +94,60 @@ export class CcusageCollector implements UsageCollector {
       return []
     }
 
-    let rows: CcusageRow[]
+    let output: CcusageOutput
     try {
-      rows = JSON.parse(result.stdout)
+      output = JSON.parse(result.stdout)
     } catch {
       console.error('[burnwatch][ccusage] failed to parse JSON:', result.stdout.slice(0, 200))
       return []
     }
 
-    return rows
-      .filter((r) => r.agent !== 'All' && AGENT_MAP[r.agent])
-      .map((r): UsageEvent => {
-        const agent = AGENT_MAP[r.agent]!
-        return {
+    if (!output.daily || !Array.isArray(output.daily)) {
+      console.error('[burnwatch][ccusage] unexpected format: missing daily array')
+      return []
+    }
+
+    const events: UsageEvent[] = []
+
+    for (const entry of output.daily) {
+      const agent = resolveAgent(entry)
+      if (!agent) continue
+
+      // Each model breakdown becomes a separate UsageEvent
+      if (entry.modelBreakdowns?.length) {
+        for (const model of entry.modelBreakdowns) {
+          const totalTokens = model.inputTokens + model.outputTokens +
+            model.cacheCreationTokens + model.cacheReadTokens
+          events.push({
+            agent,
+            date,
+            modelName: model.modelName,
+            inputTokens: model.inputTokens,
+            outputTokens: model.outputTokens,
+            cacheCreateTokens: model.cacheCreationTokens,
+            cacheReadTokens: model.cacheReadTokens,
+            totalTokens,
+            costUsd: model.cost,
+            isFreeTier: FREE_TIER_AGENTS.has(agent) || model.cost === 0,
+          })
+        }
+      } else {
+        // No model breakdowns — single aggregate event
+        events.push({
           agent,
           date,
-          modelName: r.models[0] ?? r.agent.toLowerCase(),
-          inputTokens: r.inputTokens,
-          outputTokens: r.outputTokens,
-          cacheCreateTokens: r.cacheCreateTokens,
-          cacheReadTokens: r.cacheReadTokens,
-          totalTokens: r.totalTokens,
-          costUsd: r.costUsd,
-          isFreeTier: FREE_TIER_AGENTS.has(agent) || r.costUsd === 0,
-        }
-      })
+          modelName: entry.modelsUsed?.[0] ?? agent,
+          inputTokens: entry.inputTokens,
+          outputTokens: entry.outputTokens,
+          cacheCreateTokens: entry.cacheCreationTokens,
+          cacheReadTokens: entry.cacheReadTokens,
+          totalTokens: entry.totalTokens,
+          costUsd: entry.totalCost,
+          isFreeTier: FREE_TIER_AGENTS.has(agent) || entry.totalCost === 0,
+        })
+      }
+    }
+
+    return events
   }
 }
