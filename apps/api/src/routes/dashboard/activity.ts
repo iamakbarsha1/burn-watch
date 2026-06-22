@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { z } from 'zod'
 import { claudeEnrichment, users } from '../../../drizzle/schema.js'
 import type { OrgActivitySummary, ActivityEntry } from '@burn-watch/shared'
@@ -23,26 +23,15 @@ export async function activityRoutes(fastify: FastifyInstance) {
       const cached = await fastify.redis.get(cacheKey)
       if (cached) return JSON.parse(cached)
 
-      // Get org user IDs
-      const orgUsers = await fastify.db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.orgId, orgId))
-
-      const userIds = orgUsers.map((u) => u.id)
-      if (userIds.length === 0) {
-        await fastify.redis.set(cacheKey, '[]', 'EX', 300)
-        return []
-      }
-
       const rows = await fastify.db
         .select({
           activityBreakdown: claudeEnrichment.activityBreakdown,
         })
         .from(claudeEnrichment)
+        .innerJoin(users, eq(claudeEnrichment.userId, users.id))
         .where(
           and(
-            inArray(claudeEnrichment.userId, userIds),
+            eq(users.orgId, orgId),
             eq(claudeEnrichment.date, date),
           ),
         )
