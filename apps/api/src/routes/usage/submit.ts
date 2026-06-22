@@ -48,10 +48,13 @@ export async function usageRoutes(fastify: FastifyInstance) {
         .set({ lastSeenAt: new Date() })
         .where(eq(devices.id, jwt.deviceId))
 
-      // Trigger snapshot rebuild async (fire-and-forget)
-      rebuildDailySnapshot(fastify.db, jwt.userId, payload.date).catch((err) => {
+      // Rebuild snapshot synchronously — only 3 queries, keeps data consistent
+      try {
+        await rebuildDailySnapshot(fastify.db, jwt.userId, payload.date)
+      } catch (err) {
         fastify.log.error({ err, userId: jwt.userId, date: payload.date }, 'Snapshot rebuild failed')
-      })
+        // Still return success for the upsert — snapshot will be rebuilt on next submission
+      }
 
       return { accepted, skipped, date: payload.date }
     },
