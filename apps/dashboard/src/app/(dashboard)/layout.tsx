@@ -1,4 +1,6 @@
 import Link from 'next/link'
+import { getSession } from '@/lib/session'
+import { SignOutButton } from './SignOutButton'
 
 const NAV = [
   { href: '/', label: 'Overview' },
@@ -9,15 +11,17 @@ const NAV = [
   { href: '/admin', label: 'Admin' },
 ]
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const session = await getSession()
+
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       {/* Sidebar */}
-      <aside style={{ width: '220px', background: 'var(--card)', borderRight: '1px solid var(--border)', padding: '1.5rem 0', flexShrink: 0 }}>
+      <aside style={{ width: '220px', background: 'var(--card)', borderRight: '1px solid var(--border)', padding: '1.5rem 0', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '0 1.5rem', marginBottom: '2rem' }}>
           <span style={{ fontSize: '1.1rem', fontWeight: 700 }}>BurnWatch</span>
         </div>
-        <nav>
+        <nav style={{ flex: 1 }}>
           {NAV.map((item) => (
             <Link
               key={item.href}
@@ -28,6 +32,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Link>
           ))}
         </nav>
+        {session?.user && (
+          <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid var(--border)' }}>
+            <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {session.user.email}
+            </p>
+            <SignOutButton />
+          </div>
+        )}
       </aside>
       {/* Main content */}
       <main style={{ flex: 1, padding: '2rem', overflow: 'auto' }}>

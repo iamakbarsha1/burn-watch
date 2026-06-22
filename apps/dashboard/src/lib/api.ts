@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers'
 import type {
   OverviewResponse,
   LeaderboardEntry,
@@ -9,7 +10,15 @@ import type {
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
 
 async function apiFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { cache: 'no-store' })
+  const jar = await cookies()
+  const token = jar.get('bw-api-token')?.value
+
+  const headers: Record<string, string> = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const res = await fetch(`${API_URL}${path}`, { cache: 'no-store', headers })
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
   return res.json() as Promise<T>
 }

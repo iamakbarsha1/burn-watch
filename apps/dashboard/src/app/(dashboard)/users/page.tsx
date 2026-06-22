@@ -1,9 +1,12 @@
+import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
 import { formatCost, formatTokens } from '@/lib/format'
+import { getOrgId } from '@/lib/session'
 
 export default async function LeaderboardPage() {
   const today = new Date().toISOString().slice(0, 10)
-  const orgId = process.env.DEMO_ORG_ID ?? 'demo'
+  const orgId = await getOrgId()
+  if (!orgId) redirect('/login')
 
   let users: Awaited<ReturnType<typeof fetchLeaderboard>> = []
   try {
