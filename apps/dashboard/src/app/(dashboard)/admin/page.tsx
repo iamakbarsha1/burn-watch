@@ -1,4 +1,11 @@
-export default function AdminPage() {
+import { redirect } from 'next/navigation'
+import { getUserRole } from '@/lib/session'
+import { InviteForm } from './InviteForm'
+
+export default async function AdminPage() {
+  const role = await getUserRole()
+  if (role !== 'admin') redirect('/')
+
   return (
     <div>
       <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Admin</h1>
@@ -6,19 +13,7 @@ export default function AdminPage() {
 
       <div style={{ display: 'grid', gap: '1.5rem' }}>
         <Section title="Invite Developer">
-          <p style={{ color: 'var(--muted)', marginBottom: '1rem', fontSize: '0.9rem' }}>
-            Invite developers by email. They will run <code>burnwatch register</code> on their machine.
-          </p>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <input
-              type="email"
-              placeholder="developer@company.com"
-              style={{ flex: 1, padding: '0.75rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)' }}
-            />
-            <button style={{ padding: '0.75rem 1.5rem', background: 'var(--primary)', border: 'none', borderRadius: '4px', color: 'white', cursor: 'pointer' }}>
-              Invite
-            </button>
-          </div>
+          <InviteForm />
         </Section>
 
         <Section title="GitHub Copilot Integration">

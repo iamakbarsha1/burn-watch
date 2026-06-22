@@ -9,17 +9,35 @@ import type {
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
 
-async function apiFetch<T>(path: string): Promise<T> {
+async function authHeaders(): Promise<Record<string, string>> {
   const jar = await cookies()
   const token = jar.get('bw-api-token')?.value
-
   const headers: Record<string, string> = {}
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  return headers
+}
 
+async function apiFetch<T>(path: string): Promise<T> {
+  const headers = await authHeaders()
   const res = await fetch(`${API_URL}${path}`, { cache: 'no-store', headers })
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
+  return res.json() as Promise<T>
+}
+
+async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const headers = await authHeaders()
+  headers['Content-Type'] = 'application/json'
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `API ${path} → ${res.status}`
+    try { msg = JSON.parse(text).error ?? msg } catch {}
+    throw new Error(msg)
+  }
   return res.json() as Promise<T>
 }
 
@@ -41,4 +59,8 @@ export async function fetchActivity(date: string, orgId: string): Promise<OrgAct
 
 export async function fetchProjects(date: string, orgId: string): Promise<OrgProjectSummary[]> {
   return apiFetch(`/v1/dashboard/projects?date=${date}&orgId=${orgId}`)
+}
+
+export async function inviteUser(email: string, name: string): Promise<{ userId: string }> {
+  return apiPost('/v1/auth/admin/users', { email, name })
 }
