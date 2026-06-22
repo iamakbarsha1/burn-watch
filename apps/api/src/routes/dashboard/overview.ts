@@ -4,12 +4,13 @@ import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
 
 export async function overviewRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { orgId: string; date: string } }>(
+  fastify.get<{ Querystring: { date: string } }>(
     '/overview',
     async (request, reply) => {
-      const { orgId, date } = request.query
-      if (!orgId || !date) {
-        return reply.status(400).send({ error: 'orgId and date are required' })
+      const orgId = request.user.orgId
+      const { date } = request.query
+      if (!date) {
+        return reply.status(400).send({ error: 'date is required' })
       }
 
       // Check cache

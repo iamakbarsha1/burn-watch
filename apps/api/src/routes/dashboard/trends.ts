@@ -4,13 +4,11 @@ import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { TrendPoint } from '@burn-watch/shared'
 
 export async function trendsRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { orgId: string; days?: string } }>(
+  fastify.get<{ Querystring: { days?: string } }>(
     '/trends',
     async (request, reply) => {
-      const { orgId, days: daysStr } = request.query
-      if (!orgId) {
-        return reply.status(400).send({ error: 'orgId is required' })
-      }
+      const orgId = request.user.orgId
+      const { days: daysStr } = request.query
 
       const days = Math.min(Number(daysStr) || 30, 90)
       const since = new Date()
