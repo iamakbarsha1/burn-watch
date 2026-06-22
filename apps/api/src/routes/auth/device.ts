@@ -28,7 +28,9 @@ function generateCode(): string {
 
 export async function authRoutes(fastify: FastifyInstance) {
   // POST /v1/auth/register-device — step 1: create pending device, return verification code
-  fastify.post('/register-device', async (request, reply) => {
+  fastify.post('/register-device', {
+    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+  }, async (request, reply) => {
     const body = RegisterDeviceSchema.parse(request.body)
 
     // Look up user by email
@@ -68,7 +70,9 @@ export async function authRoutes(fastify: FastifyInstance) {
   })
 
   // POST /v1/auth/verify-device — step 2: verify code, create device + tokens
-  fastify.post('/verify-device', async (request, reply) => {
+  fastify.post('/verify-device', {
+    config: { rateLimit: { max: 10, timeWindow: '15 minutes' } },
+  }, async (request, reply) => {
     const body = VerifyDeviceSchema.parse(request.body)
 
     // Find pending device that matches code + pendingId, not expired, not yet verified
@@ -161,7 +165,9 @@ export async function authRoutes(fastify: FastifyInstance) {
   })
 
   // POST /v1/admin/bootstrap — create org + first admin user (first-run only)
-  fastify.post('/admin/bootstrap', async (request, reply) => {
+  fastify.post('/admin/bootstrap', {
+    config: { rateLimit: { max: 3, timeWindow: '1 hour' } },
+  }, async (request, reply) => {
     const existingOrgs = await fastify.db
       .select({ id: organizations.id })
       .from(organizations)
@@ -196,6 +202,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
   // POST /v1/admin/users — create a user (requires admin JWT)
   fastify.post('/admin/users', {
+    config: { rateLimit: { max: 20, timeWindow: '1 hour' } },
     preHandler: async (request, reply) => {
       try {
         const payload = await request.jwtVerify<JwtPayload>({ namespace: 'access' })
