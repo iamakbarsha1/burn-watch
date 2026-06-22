@@ -1,8 +1,12 @@
-import { existsSync, readdirSync, readFileSync } from 'fs'
+import { existsSync, readdirSync, statSync } from 'fs'
+import { createReadStream } from 'fs'
+import { createInterface } from 'readline'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { ClaudeEnrichment } from '@burn-watch/shared'
 import type { EnrichmentCollector } from './base.js'
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB — skip files larger than this
 
 function findJsonlFiles(dir: string): string[] {
   const files: string[] = []
@@ -16,6 +20,63 @@ function findJsonlFiles(dir: string): string[] {
     }
   }
   return files
+}
+
+async function processFile(
+  file: string,
+  date: string,
+  toolUsage: Record<string, number>,
+  shellUsage: Record<string, number>,
+  mcpUsage: Record<string, number>,
+): Promise<{ callCount: number; hasActivity: boolean }> {
+  // Skip files larger than threshold
+  const stat = statSync(file)
+  if (stat.size > MAX_FILE_SIZE) {
+    console.warn(`[burnwatch][codeburn] skipping large file (${(stat.size / 1024 / 1024).toFixed(1)}MB): ${file}`)
+    return { callCount: 0, hasActivity: false }
+  }
+
+  let callCount = 0
+  let hasActivity = false
+
+  const rl = createInterface({
+    input: createReadStream(file, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  })
+
+  for await (const line of rl) {
+    if (!line) continue
+
+    let entry: any
+    try { entry = JSON.parse(line) } catch { continue }
+
+    // Check if this entry is on target date
+    const ts: string = entry.timestamp ?? entry.message?.timestamp ?? ''
+    if (!ts.startsWith(date)) continue
+
+    hasActivity = true
+
+    if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
+      callCount++
+      const content = entry.message.content ?? []
+      for (const block of content) {
+        if (block.type === 'tool_use') {
+          const toolName = (block.name ?? '').toLowerCase()
+          if (toolName === 'bash') {
+            const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0]
+            if (cmd) shellUsage[cmd] = (shellUsage[cmd] ?? 0) + 1
+          } else if (toolName.includes('mcp') || (block.name ?? '').includes('__')) {
+            const server = (block.name ?? '').split('__')[0].replace(/^mcp_/, '')
+            if (server) mcpUsage[server] = (mcpUsage[server] ?? 0) + 1
+          } else {
+            toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1
+          }
+        }
+      }
+    }
+  }
+
+  return { callCount, hasActivity }
 }
 
 export class CodeburnCollector implements EnrichmentCollector {
@@ -36,44 +97,13 @@ export class CodeburnCollector implements EnrichmentCollector {
     const mcpUsage: Record<string, number> = {}
 
     for (const file of files) {
-      let fileHasActivity = false
       try {
-        const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
-        for (const line of lines) {
-          let entry: any
-          try { entry = JSON.parse(line) } catch { continue }
-
-          // Check if this entry is on target date
-          const ts: string = entry.timestamp ?? entry.message?.timestamp ?? ''
-          if (!ts.startsWith(date)) continue
-
-          fileHasActivity = true
-
-          if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
-            callCount++
-            const content = entry.message.content ?? []
-            for (const block of content) {
-              if (block.type === 'tool_use') {
-                const toolName = (block.name ?? '').toLowerCase()
-                if (toolName === 'bash') {
-                  // Try to extract shell command
-                  const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0]
-                  if (cmd) shellUsage[cmd] = (shellUsage[cmd] ?? 0) + 1
-                } else if (toolName.includes('mcp') || (block.name ?? '').includes('__')) {
-                  // MCP tool: name format is server__toolname
-                  const server = (block.name ?? '').split('__')[0].replace(/^mcp_/, '')
-                  if (server) mcpUsage[server] = (mcpUsage[server] ?? 0) + 1
-                } else {
-                  toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1
-                }
-              }
-            }
-          }
-        }
+        const result = await processFile(file, date, toolUsage, shellUsage, mcpUsage)
+        callCount += result.callCount
+        if (result.hasActivity) sessionCount++
       } catch {
         // Skip unreadable files
       }
-      if (fileHasActivity) sessionCount++
     }
 
     if (sessionCount === 0 && callCount === 0) return null
@@ -82,7 +112,7 @@ export class CodeburnCollector implements EnrichmentCollector {
       date,
       sessionCount,
       callCount,
-      cacheHitRate: 0,    // cannot compute from raw JSONL without pricing data
+      cacheHitRate: 0,
       writtenTokens: 0,
       activityBreakdown: [],
       projectBreakdown: [],
