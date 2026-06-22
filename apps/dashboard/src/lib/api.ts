@@ -6,7 +6,7 @@ import type {
   OrgProjectSummary,
 } from '@burn-watch/shared'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? process.env.API_URL ?? 'http://localhost:3001'
+const API_URL = process.env.API_URL ?? 'http://localhost:3001'
 
 async function apiFetch<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, { cache: 'no-store' })
