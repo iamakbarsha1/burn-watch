@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0a0a;
+  --card: #111111;
+  --border: #222222;
+  --text: #f5f5f5;
+  --muted: #888888;
+  --primary: #7c3aed;
+  --success: #22c55e;
+  --warning: #f97316;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
