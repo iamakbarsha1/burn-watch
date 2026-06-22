@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { users, devices, deviceTokens, organizations } from '../../../drizzle/schema.js'
 import { RegisterDeviceSchema } from '@burn-watch/shared'
+import type { JwtPayload } from '../../plugins/jwt.js'
 
 const BootstrapSchema = z.object({
   orgName: z.string().min(1),
@@ -94,8 +95,17 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // POST /v1/admin/bootstrap — create org + first admin user
+  // POST /v1/admin/bootstrap — create org + first admin user (first-run only)
   fastify.post('/admin/bootstrap', async (request, reply) => {
+    const existingOrgs = await fastify.db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .limit(1)
+
+    if (existingOrgs.length > 0) {
+      return reply.status(403).send({ error: 'Bootstrap already completed. Use /admin/users to add users.' })
+    }
+
     const body = BootstrapSchema.parse(request.body)
 
     const [org] = await fastify.db
@@ -119,18 +129,33 @@ export async function authRoutes(fastify: FastifyInstance) {
     return { orgId: org.id, userId: user.id }
   })
 
-  // POST /v1/admin/users — create a user (no auth for MVP)
-  fastify.post('/admin/users', async (request, reply) => {
+  // POST /v1/admin/users — create a user (requires admin JWT)
+  fastify.post('/admin/users', {
+    preHandler: async (request, reply) => {
+      try {
+        const payload = await request.jwtVerify<JwtPayload>()
+        if (payload.role !== 'admin') {
+          return reply.status(403).send({ error: 'Admin role required' })
+        }
+      } catch {
+        return reply.status(401).send({ error: 'Unauthorized' })
+      }
+    },
+  }, async (request, reply) => {
     const body = CreateUserSchema.parse(request.body)
+    const jwt = request.user as JwtPayload
 
-    if (!body.orgId) {
-      return reply.status(400).send({ error: 'orgId is required' })
+    // Admin can only create users in their own org
+    const orgId = body.orgId ?? jwt.orgId
+
+    if (orgId !== jwt.orgId) {
+      return reply.status(403).send({ error: 'Cannot create users in another organization' })
     }
 
     const [user] = await fastify.db
       .insert(users)
       .values({
-        orgId: body.orgId,
+        orgId,
         email: body.email,
         name: body.name,
       })
