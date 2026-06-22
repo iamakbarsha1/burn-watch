@@ -148,7 +148,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   // POST /v1/auth/refresh — verify with refresh secret, issue new access token
   fastify.post('/refresh', async (request, reply) => {
     try {
-      const payload = await request.jwtVerify<JwtPayload>({ namespace: 'refresh' })
+      const payload = await request.refreshJwtVerify<JwtPayload>()
       const accessToken = fastify.jwt.access.sign(
         {
           deviceId: payload.deviceId,
@@ -205,7 +205,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     config: { rateLimit: { max: 20, timeWindow: '1 hour' } },
     preHandler: async (request, reply) => {
       try {
-        const payload = await request.jwtVerify<JwtPayload>({ namespace: 'access' })
+        const payload = await request.accessJwtVerify<JwtPayload>()
         if (payload.role !== 'admin') {
           return reply.status(403).send({ error: 'Admin role required' })
         }
