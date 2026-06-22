@@ -50,15 +50,10 @@ export async function authRoutes(fastify: FastifyInstance) {
       })
       .returning({ id: devices.id })
 
-    // Sign JWT
-    const accessToken = fastify.jwt.sign(
-      { deviceId: device.id, userId: user.id, orgId: user.orgId, role: 'device' as const },
-      { expiresIn: '30d' },
-    )
-    const refreshToken = fastify.jwt.sign(
-      { deviceId: device.id, userId: user.id, orgId: user.orgId, role: 'device' as const },
-      { expiresIn: '90d' },
-    )
+    // Sign JWT with separate secrets for access and refresh
+    const tokenPayload = { deviceId: device.id, userId: user.id, orgId: user.orgId, role: 'device' as const }
+    const accessToken = fastify.jwt.access.sign(tokenPayload, { expiresIn: '30d' })
+    const refreshToken = fastify.jwt.refresh.sign(tokenPayload, { expiresIn: '90d' })
 
     // Store token record
     await fastify.db.insert(deviceTokens).values({
@@ -76,16 +71,16 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // POST /v1/auth/refresh
+  // POST /v1/auth/refresh — verify with refresh secret, issue new access token
   fastify.post('/refresh', async (request, reply) => {
     try {
-      const payload = await request.jwtVerify()
-      const accessToken = fastify.jwt.sign(
+      const payload = await request.jwtVerify<JwtPayload>({ namespace: 'refresh' })
+      const accessToken = fastify.jwt.access.sign(
         {
-          deviceId: (payload as any).deviceId,
-          userId: (payload as any).userId,
-          orgId: (payload as any).orgId,
-          role: 'device' as const,
+          deviceId: payload.deviceId,
+          userId: payload.userId,
+          orgId: payload.orgId,
+          role: payload.role,
         },
         { expiresIn: '30d' },
       )
@@ -133,7 +128,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/admin/users', {
     preHandler: async (request, reply) => {
       try {
-        const payload = await request.jwtVerify<JwtPayload>()
+        const payload = await request.jwtVerify<JwtPayload>({ namespace: 'access' })
         if (payload.role !== 'admin') {
           return reply.status(403).send({ error: 'Admin role required' })
         }

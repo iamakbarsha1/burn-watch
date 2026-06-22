@@ -13,7 +13,8 @@ const server = Fastify({ logger: true })
 
 await server.register(cors, { origin: process.env.CORS_ORIGIN ?? '*' })
 await server.register(rateLimit, { global: false })
-await server.register(jwt, { secret: process.env.JWT_SECRET! })
+await server.register(jwt, { secret: process.env.JWT_SECRET!, namespace: 'access' })
+await server.register(jwt, { secret: process.env.JWT_REFRESH_SECRET!, namespace: 'refresh' })
 await server.register(dbPlugin)
 await server.register(redisPlugin)
 
