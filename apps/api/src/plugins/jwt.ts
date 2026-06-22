@@ -17,7 +17,7 @@ declare module '@fastify/jwt' {
 export function requireAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      await request.jwtVerify<JwtPayload>()
+      await request.jwtVerify<JwtPayload>({ namespace: 'access' })
     } catch {
       return reply.status(401).send({ error: 'Unauthorized' })
     }
@@ -27,7 +27,7 @@ export function requireAuth(fastify: FastifyInstance) {
 export function requireDashboardAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const payload = await request.jwtVerify<JwtPayload>()
+      const payload = await request.jwtVerify<JwtPayload>({ namespace: 'access' })
       if (payload.role !== 'user' && payload.role !== 'admin') {
         return reply.status(403).send({ error: 'Dashboard access requires user or admin role' })
       }
