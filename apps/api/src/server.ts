@@ -3,6 +3,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import jwt from '@fastify/jwt'
+import { ZodError } from 'zod'
 import { dbPlugin } from './plugins/db.js'
 import { redisPlugin } from './plugins/redis.js'
 import { authRoutes } from './routes/auth/device.js'
@@ -10,6 +11,14 @@ import { usageRoutes } from './routes/usage/submit.js'
 import { dashboardRoutes } from './routes/dashboard/index.js'
 
 const server = Fastify({ logger: true })
+
+server.setErrorHandler((error, request, reply) => {
+  if (error instanceof ZodError) {
+    return reply.status(400).send({ error: 'Validation failed', details: error.flatten() })
+  }
+  server.log.error(error)
+  return reply.status(error.statusCode ?? 500).send({ error: error.message })
+})
 
 if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGIN) {
   throw new Error('CORS_ORIGIN must be set in production')
