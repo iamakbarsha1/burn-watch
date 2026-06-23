@@ -19,12 +19,14 @@ function datesForLastN(n: number): string[] {
   return dates
 }
 
-export async function syncCommand(options: { date?: string; last7?: boolean }) {
+export async function syncCommand(options: { date?: string; last7?: boolean; days?: string }) {
   const config = loadConfig()
   const api = new ApiClient(config.apiUrl, config.accessToken)
 
   let dates: string[]
-  if (options.last7) {
+  if (options.days) {
+    dates = datesForLastN(parseInt(options.days, 10))
+  } else if (options.last7) {
     dates = datesForLastN(7)
   } else if (options.date) {
     dates = [options.date]
@@ -44,11 +46,32 @@ export async function syncCommand(options: { date?: string; last7?: boolean }) {
 
   console.log(`[burnwatch] Syncing ${dates.length} date(s)...`)
 
+  // Pre-collect everything in single passes when syncing multiple dates
+  let eventsMap: Map<string, import('@burn-watch/shared').UsageEvent[]> | null = null
+  let enrichmentMap: Map<string, import('@burn-watch/shared').ClaudeEnrichment> | null = null
+
+  if (dates.length > 1) {
+    if (ccAvailable) {
+      console.log('[burnwatch] Fetching ccusage for full date range (single call)...')
+      eventsMap = await ccusage.collectRange(dates)
+      console.log(`[burnwatch] Found ccusage data for ${eventsMap.size} date(s)`)
+    }
+    if (cbAvailable) {
+      console.log('[burnwatch] Scanning JSONL files (single pass)...')
+      enrichmentMap = await codeburn.collectRange(dates)
+      console.log(`[burnwatch] Found enrichment for ${enrichmentMap.size} date(s)`)
+    }
+  }
+
   for (const date of dates) {
     console.log(`[burnwatch][sync] ${date}`)
 
-    const events = ccAvailable ? await ccusage.collect(date) : []
-    const enrichment = cbAvailable ? await codeburn.collect(date) : null
+    const events = eventsMap
+      ? (eventsMap.get(date) ?? [])
+      : ccAvailable ? await ccusage.collect(date) : []
+    const enrichment = enrichmentMap
+      ? (enrichmentMap.get(date) ?? null)
+      : cbAvailable ? await codeburn.collect(date) : null
 
     if (events.length === 0 && !enrichment) {
       console.log(`  Skipped — no data`)

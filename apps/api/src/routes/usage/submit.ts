@@ -14,7 +14,7 @@ export async function usageRoutes(fastify: FastifyInstance) {
       preHandler: requireAuth(fastify),
       config: {
         rateLimit: {
-          max: 10,
+          max: 300,
           timeWindow: '1 hour',
         },
       },
