@@ -1,24 +1,36 @@
 import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { formatCost, formatTokens } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
-export default async function LeaderboardPage() {
+export default async function LeaderboardPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
+  const params = await searchParams
   const today = new Date().toISOString().slice(0, 10)
+  const from = params.from ?? today
+  const to = params.to ?? today
+
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
   let users: Awaited<ReturnType<typeof fetchLeaderboard>> = []
   try {
-    users = await fetchLeaderboard(today, orgId)
+    users = await fetchLeaderboard(from, to, orgId)
   } catch {
     // Show empty state if API unavailable
   }
 
+  const subtitle = from === to ? `${from} · Ranked by AI spend` : `${from} — ${to} · Ranked by AI spend`
+
   return (
     <div>
-      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Developer Leaderboard</h1>
-      <p style={{ color: 'var(--muted)', marginBottom: '2rem' }}>{today} · Ranked by AI spend</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', marginBottom: '2rem' }}>
+        <div>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Developer Leaderboard</h1>
+          <p style={{ color: 'var(--muted)' }}>{subtitle}</p>
+        </div>
+        <DateRangePicker />
+      </div>
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>

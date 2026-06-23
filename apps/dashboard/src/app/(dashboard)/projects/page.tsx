@@ -1,26 +1,38 @@
 import { redirect } from 'next/navigation'
 import { fetchProjects } from '@/lib/api'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { formatCost } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
-export default async function ProjectsPage() {
+export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
+  const params = await searchParams
   const today = new Date().toISOString().slice(0, 10)
+  const from = params.from ?? today
+  const to = params.to ?? today
+
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
   let projects: Awaited<ReturnType<typeof fetchProjects>> = []
   try {
-    projects = await fetchProjects(today, orgId)
+    projects = await fetchProjects(from, to, orgId)
   } catch {
     // Show empty state if API unavailable
   }
 
   projects.sort((a, b) => b.totalCost - a.totalCost)
 
+  const subtitle = from === to ? from : `${from} — ${to}`
+
   return (
     <div>
-      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Project Breakdown</h1>
-      <p style={{ color: 'var(--muted)', marginBottom: '2rem' }}>AI spend by internal project</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', marginBottom: '2rem' }}>
+        <div>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Project Breakdown</h1>
+          <p style={{ color: 'var(--muted)' }}>AI spend by internal project · {subtitle}</p>
+        </div>
+        <DateRangePicker />
+      </div>
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
