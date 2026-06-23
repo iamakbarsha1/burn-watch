@@ -20,6 +20,7 @@ program
   .description('Sync AI usage data to BurnWatch dashboard')
   .option('--date <date>', 'Sync specific date (YYYY-MM-DD)')
   .option('--last-7', 'Backfill last 7 days')
+  .option('--days <n>', 'Backfill last N days')
   .action(syncCommand)
 
 program

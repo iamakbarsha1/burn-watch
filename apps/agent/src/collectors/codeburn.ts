@@ -79,6 +79,14 @@ async function processFile(
   return { callCount, hasActivity }
 }
 
+interface DateBucket {
+  sessionCount: number
+  callCount: number
+  toolUsage: Record<string, number>
+  shellUsage: Record<string, number>
+  mcpUsage: Record<string, number>
+}
+
 export class CodeburnCollector implements EnrichmentCollector {
   private claudeDir = join(homedir(), '.claude', 'projects')
 
@@ -87,39 +95,83 @@ export class CodeburnCollector implements EnrichmentCollector {
   }
 
   async collect(date: string): Promise<ClaudeEnrichment | null> {
-    const files = findJsonlFiles(this.claudeDir)
-    if (files.length === 0) return null
+    const result = await this.collectRange([date])
+    return result.get(date) ?? null
+  }
 
-    let sessionCount = 0
-    let callCount = 0
-    const toolUsage: Record<string, number> = {}
-    const shellUsage: Record<string, number> = {}
-    const mcpUsage: Record<string, number> = {}
+  // Single pass over all JSONL files, accumulates data for all requested dates simultaneously.
+  async collectRange(dates: string[]): Promise<Map<string, ClaudeEnrichment>> {
+    const files = findJsonlFiles(this.claudeDir)
+    const dateSet = new Set(dates)
+    const buckets = new Map<string, DateBucket>()
 
     for (const file of files) {
+      const stat = statSync(file)
+      if (stat.size > MAX_FILE_SIZE) {
+        console.warn(`[burnwatch][codeburn] skipping large file (${(stat.size / 1024 / 1024).toFixed(1)}MB): ${file}`)
+        continue
+      }
+
+      const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
       try {
-        const result = await processFile(file, date, toolUsage, shellUsage, mcpUsage)
-        callCount += result.callCount
-        if (result.hasActivity) sessionCount++
+        for await (const line of rl) {
+          if (!line) continue
+          let entry: any
+          try { entry = JSON.parse(line) } catch { continue }
+
+          const ts: string = entry.timestamp ?? entry.message?.timestamp ?? ''
+          const date = ts.slice(0, 10)
+          if (!dateSet.has(date)) continue
+
+          if (!buckets.has(date)) {
+            buckets.set(date, { sessionCount: 0, callCount: 0, toolUsage: {}, shellUsage: {}, mcpUsage: {} })
+          }
+          const b = buckets.get(date)!
+
+          if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
+            b.callCount++
+            const content = entry.message.content ?? []
+            let isNewSession = false
+            for (const block of content) {
+              if (block.type === 'tool_use') {
+                isNewSession = true
+                const toolName = (block.name ?? '').toLowerCase()
+                if (toolName === 'bash') {
+                  const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0]
+                  if (cmd) b.shellUsage[cmd] = (b.shellUsage[cmd] ?? 0) + 1
+                } else if (toolName.startsWith('mcp__') || (block.name ?? '').startsWith('mcp__')) {
+                  const server = (block.name ?? '').split('__')[1] ?? ''
+                  if (server) b.mcpUsage[server] = (b.mcpUsage[server] ?? 0) + 1
+                } else {
+                  b.toolUsage[toolName] = (b.toolUsage[toolName] ?? 0) + 1
+                }
+              }
+            }
+            if (isNewSession) b.sessionCount++
+          }
+        }
       } catch {
         // Skip unreadable files
       }
     }
 
-    if (sessionCount === 0 && callCount === 0) return null
-
-    return {
-      date,
-      sessionCount,
-      callCount,
-      cacheHitRate: 0,
-      writtenTokens: 0,
-      activityBreakdown: [],
-      projectBreakdown: [],
-      topSessions: [],
-      toolUsage,
-      shellUsage,
-      mcpUsage,
+    const result = new Map<string, ClaudeEnrichment>()
+    for (const [date, b] of buckets) {
+      if (b.callCount === 0) continue
+      result.set(date, {
+        date,
+        sessionCount: b.sessionCount,
+        callCount: b.callCount,
+        cacheHitRate: 0,
+        writtenTokens: 0,
+        activityBreakdown: [],
+        projectBreakdown: [],
+        topSessions: [],
+        toolUsage: b.toolUsage,
+        shellUsage: b.shellUsage,
+        mcpUsage: b.mcpUsage,
+      })
     }
+    return result
   }
 }
