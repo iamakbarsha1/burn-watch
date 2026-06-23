@@ -65,8 +65,8 @@ async function processFile(
           if (toolName === 'bash') {
             const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0]
             if (cmd) shellUsage[cmd] = (shellUsage[cmd] ?? 0) + 1
-          } else if (toolName.includes('mcp') || (block.name ?? '').includes('__')) {
-            const server = (block.name ?? '').split('__')[0].replace(/^mcp_/, '')
+          } else if (toolName.startsWith('mcp__') || (block.name ?? '').startsWith('mcp__')) {
+            const server = (block.name ?? '').split('__')[1] ?? ''
             if (server) mcpUsage[server] = (mcpUsage[server] ?? 0) + 1
           } else {
             toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1
