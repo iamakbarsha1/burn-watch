@@ -224,15 +224,22 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: 'Cannot create users in another organization' })
     }
 
-    const [user] = await fastify.db
-      .insert(users)
-      .values({
-        orgId,
-        email: body.email,
-        name: body.name,
-      })
-      .returning({ id: users.id })
+    try {
+      const [user] = await fastify.db
+        .insert(users)
+        .values({
+          orgId,
+          email: body.email,
+          name: body.name,
+        })
+        .returning({ id: users.id })
 
-    return { userId: user.id }
+      return { userId: user.id }
+    } catch (err: unknown) {
+      if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
+        return reply.status(409).send({ error: 'A user with this email already exists' })
+      }
+      throw err
+    }
   })
 }
