@@ -1,15 +1,18 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, gte, lte } from 'drizzle-orm'
 import { z } from 'zod'
 import { claudeEnrichment, users } from '../../../drizzle/schema.js'
 import type { OrgProjectSummary, ProjectEntry } from '@burn-watch/shared'
 
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
-})
+  date: z.string().regex(dateRegex).optional(),
+  from: z.string().regex(dateRegex).optional(),
+  to: z.string().regex(dateRegex).optional(),
+}).refine(d => d.date || (d.from && d.to), { message: 'Provide date or from+to' })
 
 export async function projectsRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { date: string } }>(
+  fastify.get(
     '/projects',
     async (request, reply) => {
       const orgId = request.user.orgId
@@ -17,9 +20,10 @@ export async function projectsRoutes(fastify: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
       }
-      const { date } = parsed.data
+      const fromDate = parsed.data.date ?? parsed.data.from!
+      const toDate = parsed.data.date ?? parsed.data.to!
 
-      const cacheKey = `bw:projects:${orgId}:${date}`
+      const cacheKey = `bw:projects:${orgId}:${fromDate}:${toDate}`
       const cached = await fastify.redis.get(cacheKey)
       if (cached) return JSON.parse(cached)
 
@@ -32,7 +36,8 @@ export async function projectsRoutes(fastify: FastifyInstance) {
         .where(
           and(
             eq(users.orgId, orgId),
-            eq(claudeEnrichment.date, date),
+            gte(claudeEnrichment.date, fromDate),
+            lte(claudeEnrichment.date, toDate),
           ),
         )
 

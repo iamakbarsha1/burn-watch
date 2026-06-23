@@ -1,17 +1,20 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, sql, gte, lte, sum } from 'drizzle-orm'
 import { z } from 'zod'
 import { dailySnapshots, users } from '../../../drizzle/schema.js'
 import type { LeaderboardEntry } from '@burn-watch/shared'
 
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  date: z.string().regex(dateRegex).optional(),
+  from: z.string().regex(dateRegex).optional(),
+  to: z.string().regex(dateRegex).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).default(0),
-})
+}).refine(d => d.date || (d.from && d.to), { message: 'Provide date or from+to' })
 
 export async function leaderboardRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { date: string; limit?: string; offset?: string } }>(
+  fastify.get(
     '/leaderboard',
     async (request, reply) => {
       const orgId = request.user.orgId
@@ -19,9 +22,11 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
       }
-      const { date, limit, offset } = parsed.data
+      const { limit, offset } = parsed.data
+      const fromDate = parsed.data.date ?? parsed.data.from!
+      const toDate = parsed.data.date ?? parsed.data.to!
 
-      const cacheKey = `bw:leaderboard:${orgId}:${date}:${limit}:${offset}`
+      const cacheKey = `bw:leaderboard:${orgId}:${fromDate}:${toDate}:${limit}:${offset}`
       const cached = await fastify.redis.get(cacheKey)
       if (cached) return JSON.parse(cached)
 
@@ -30,27 +35,28 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
           userId: dailySnapshots.userId,
           name: users.name,
           email: users.email,
-          claudeTokens: dailySnapshots.claudeTokens,
-          claudeCostUsd: sql<number>`${dailySnapshots.claudeCostUsd}::float`,
-          qwenTokens: dailySnapshots.qwenTokens,
-          qwenCostUsd: sql<number>`${dailySnapshots.qwenCostUsd}::float`,
-          geminiTokens: dailySnapshots.geminiTokens,
-          geminiCostUsd: sql<number>`${dailySnapshots.geminiCostUsd}::float`,
-          codexTokens: dailySnapshots.codexTokens,
-          codexCostUsd: sql<number>`${dailySnapshots.codexCostUsd}::float`,
-          copilotTokens: dailySnapshots.copilotTokens,
-          copilotCostUsd: sql<number>`${dailySnapshots.copilotCostUsd}::float`,
-          totalCostUsd: sql<number>`${dailySnapshots.totalCostUsd}::float`,
-          totalTokens: dailySnapshots.totalTokens,
-          sessionCount: dailySnapshots.sessionCount,
-          cacheHitRate: sql<number | null>`${dailySnapshots.cacheHitRate}::float`,
+          claudeTokens: sum(dailySnapshots.claudeTokens).mapWith(Number),
+          claudeCostUsd: sum(dailySnapshots.claudeCostUsd).mapWith(Number),
+          qwenTokens: sum(dailySnapshots.qwenTokens).mapWith(Number),
+          qwenCostUsd: sum(dailySnapshots.qwenCostUsd).mapWith(Number),
+          geminiTokens: sum(dailySnapshots.geminiTokens).mapWith(Number),
+          geminiCostUsd: sum(dailySnapshots.geminiCostUsd).mapWith(Number),
+          codexTokens: sum(dailySnapshots.codexTokens).mapWith(Number),
+          codexCostUsd: sum(dailySnapshots.codexCostUsd).mapWith(Number),
+          copilotTokens: sum(dailySnapshots.copilotTokens).mapWith(Number),
+          copilotCostUsd: sum(dailySnapshots.copilotCostUsd).mapWith(Number),
+          totalCostUsd: sum(dailySnapshots.totalCostUsd).mapWith(Number),
+          totalTokens: sum(dailySnapshots.totalTokens).mapWith(Number),
+          sessionCount: sum(dailySnapshots.sessionCount).mapWith(Number),
+          cacheHitRate: sql<number | null>`null`,
         })
         .from(dailySnapshots)
         .innerJoin(users, eq(dailySnapshots.userId, users.id))
         .where(
-          and(eq(dailySnapshots.orgId, orgId), eq(dailySnapshots.date, date)),
+          and(eq(dailySnapshots.orgId, orgId), gte(dailySnapshots.date, fromDate), lte(dailySnapshots.date, toDate)),
         )
-        .orderBy(desc(dailySnapshots.totalCostUsd))
+        .groupBy(dailySnapshots.userId, users.name, users.email)
+        .orderBy(desc(sum(dailySnapshots.totalCostUsd)))
         .limit(limit)
         .offset(offset)
 
@@ -58,14 +64,14 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         userId: r.userId,
         name: r.name,
         email: r.email,
-        claude: { tokens: r.claudeTokens, costUsd: r.claudeCostUsd ?? 0 },
-        qwen: { tokens: r.qwenTokens, costUsd: r.qwenCostUsd ?? 0 },
-        gemini: { tokens: r.geminiTokens, costUsd: r.geminiCostUsd ?? 0 },
-        codex: { tokens: r.codexTokens, costUsd: r.codexCostUsd ?? 0 },
-        copilot: { tokens: r.copilotTokens, costUsd: r.copilotCostUsd ?? 0 },
+        claude: { tokens: r.claudeTokens ?? 0, costUsd: r.claudeCostUsd ?? 0 },
+        qwen: { tokens: r.qwenTokens ?? 0, costUsd: r.qwenCostUsd ?? 0 },
+        gemini: { tokens: r.geminiTokens ?? 0, costUsd: r.geminiCostUsd ?? 0 },
+        codex: { tokens: r.codexTokens ?? 0, costUsd: r.codexCostUsd ?? 0 },
+        copilot: { tokens: r.copilotTokens ?? 0, costUsd: r.copilotCostUsd ?? 0 },
         totalCostUsd: r.totalCostUsd ?? 0,
-        totalTokens: r.totalTokens,
-        sessions: r.sessionCount,
+        totalTokens: r.totalTokens ?? 0,
+        sessions: r.sessionCount ?? 0,
         cacheHitRate: r.cacheHitRate,
       }))
 

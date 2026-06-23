@@ -1,33 +1,48 @@
 import { redirect } from 'next/navigation'
 import { fetchOverview } from '@/lib/api'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { formatCost, formatTokens } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
-export default async function OverviewPage() {
+export default async function OverviewPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
+  const params = await searchParams
   const today = new Date().toISOString().slice(0, 10)
+  const from = params.from ?? today
+  const to = params.to ?? today
+  const isRange = from !== to
+
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
   let overview = null
   try {
-    overview = await fetchOverview(today, orgId)
+    overview = await fetchOverview(from, to, orgId)
   } catch {
     // Show empty state if API unavailable
   }
 
+  const subtitle = isRange ? `${from} — ${to}` : from
+
   return (
     <div>
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Overview</h1>
-        <p style={{ color: 'var(--muted)' }}>{today}</p>
+      <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+        <div>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Overview</h1>
+          <p style={{ color: 'var(--muted)' }}>{subtitle}</p>
+        </div>
+        <DateRangePicker />
       </div>
 
       {overview ? (
         <>
           {/* Summary cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-            <StatCard label="Total Spend Today" value={formatCost(overview.totalCostUsd)} delta={overview.vsYesterday.costPct} />
+            <StatCard
+              label={isRange ? 'Total Spend' : 'Total Spend Today'}
+              value={formatCost(overview.totalCostUsd)}
+              delta={!isRange ? overview.vsYesterday.costPct : undefined}
+            />
             <StatCard label="Total Tokens" value={formatTokens(overview.totalTokens)} />
             <StatCard label="Active Users" value={String(overview.activeUsers)} />
           </div>

@@ -41,24 +41,24 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export async function fetchOverview(date: string, orgId: string): Promise<OverviewResponse> {
-  return apiFetch(`/v1/dashboard/overview?date=${date}&orgId=${orgId}`)
+export async function fetchOverview(from: string, to: string, orgId: string): Promise<OverviewResponse> {
+  return apiFetch(`/v1/dashboard/overview?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
-export async function fetchLeaderboard(date: string, orgId: string): Promise<LeaderboardEntry[]> {
-  return apiFetch(`/v1/dashboard/leaderboard?date=${date}&orgId=${orgId}`)
+export async function fetchLeaderboard(from: string, to: string, orgId: string): Promise<LeaderboardEntry[]> {
+  return apiFetch(`/v1/dashboard/leaderboard?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
-export async function fetchTrends(days: number, orgId: string): Promise<TrendPoint[]> {
-  return apiFetch(`/v1/dashboard/trends?days=${days}&orgId=${orgId}`)
+export async function fetchTrends(from: string, to: string, orgId: string): Promise<TrendPoint[]> {
+  return apiFetch(`/v1/dashboard/trends?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
-export async function fetchActivity(date: string, orgId: string): Promise<OrgActivitySummary[]> {
-  return apiFetch(`/v1/dashboard/activity?date=${date}&orgId=${orgId}`)
+export async function fetchActivity(from: string, to: string, orgId: string): Promise<OrgActivitySummary[]> {
+  return apiFetch(`/v1/dashboard/activity?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
-export async function fetchProjects(date: string, orgId: string): Promise<OrgProjectSummary[]> {
-  return apiFetch(`/v1/dashboard/projects?date=${date}&orgId=${orgId}`)
+export async function fetchProjects(from: string, to: string, orgId: string): Promise<OrgProjectSummary[]> {
+  return apiFetch(`/v1/dashboard/projects?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
 export async function inviteUser(email: string, name: string): Promise<{ userId: string }> {

@@ -1,15 +1,18 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and, sum, sql, count } from 'drizzle-orm'
+import { eq, and, sum, sql, count, gte, lte } from 'drizzle-orm'
 import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
 
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
-})
+  date: z.string().regex(dateRegex).optional(),
+  from: z.string().regex(dateRegex).optional(),
+  to: z.string().regex(dateRegex).optional(),
+}).refine(d => d.date || (d.from && d.to), { message: 'Provide date or from+to' })
 
 export async function overviewRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { date: string } }>(
+  fastify.get(
     '/overview',
     async (request, reply) => {
       const orgId = request.user.orgId
@@ -17,29 +20,34 @@ export async function overviewRoutes(fastify: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
       }
-      const { date } = parsed.data
+      const fromDate = parsed.data.date ?? parsed.data.from!
+      const toDate = parsed.data.date ?? parsed.data.to!
+      const isRange = fromDate !== toDate
 
-      // Check cache
-      const cacheKey = `bw:overview:${orgId}:${date}`
+      const cacheKey = `bw:overview:${orgId}:${fromDate}:${toDate}`
       const cached = await fastify.redis.get(cacheKey)
       if (cached) return JSON.parse(cached)
 
-      // Today's data
-      const [today] = await db_aggregate(fastify, orgId, date)
-
-      // Yesterday's data for delta
-      const yesterday = new Date(date)
-      yesterday.setDate(yesterday.getDate() - 1)
-      const yesterdayStr = yesterday.toISOString().slice(0, 10)
-      const [yest] = await db_aggregate(fastify, orgId, yesterdayStr)
+      const [today] = await db_aggregate(fastify, orgId, fromDate, toDate)
 
       const todayCost = today?.totalCost ?? 0
       const todayTokens = today?.totalTokens ?? 0
-      const yesterdayCost = yest?.totalCost ?? 0
 
-      const costDelta = todayCost - yesterdayCost
-      const costPct = yesterdayCost > 0 ? (costDelta / yesterdayCost) * 100 : 0
-      const tokensDelta = todayTokens - (yest?.totalTokens ?? 0)
+      // Only compute delta for single-day views
+      let vsYesterday: { costDelta: number; costPct: number; tokensDelta: number } | null = null
+      if (!isRange) {
+        const yesterday = new Date(fromDate)
+        yesterday.setDate(yesterday.getDate() - 1)
+        const yesterdayStr = yesterday.toISOString().slice(0, 10)
+        const [yest] = await db_aggregate(fastify, orgId, yesterdayStr, yesterdayStr)
+        const yesterdayCost = yest?.totalCost ?? 0
+        const costDelta = todayCost - yesterdayCost
+        vsYesterday = {
+          costDelta,
+          costPct: yesterdayCost > 0 ? (costDelta / yesterdayCost) * 100 : 0,
+          tokensDelta: todayTokens - (yest?.totalTokens ?? 0),
+        }
+      }
 
       const agents: AgentName[] = ['claude', 'qwen', 'gemini', 'codex', 'copilot']
       const byAgent: AgentSummary[] = agents.map((agent) => ({
@@ -50,11 +58,11 @@ export async function overviewRoutes(fastify: FastifyInstance) {
       }))
 
       const result: OverviewResponse = {
-        date,
+        date: isRange ? `${fromDate} — ${toDate}` : fromDate,
         totalCostUsd: todayCost,
         totalTokens: todayTokens,
         activeUsers: today?.activeUsers ?? 0,
-        vsYesterday: { costDelta, costPct, tokensDelta },
+        vsYesterday: vsYesterday ?? { costDelta: 0, costPct: 0, tokensDelta: 0 },
         byAgent,
       }
 
@@ -64,7 +72,7 @@ export async function overviewRoutes(fastify: FastifyInstance) {
   )
 }
 
-async function db_aggregate(fastify: FastifyInstance, orgId: string, date: string) {
+async function db_aggregate(fastify: FastifyInstance, orgId: string, fromDate: string, toDate: string) {
   return fastify.db
     .select({
       totalCost: sum(dailySnapshots.totalCostUsd).mapWith(Number),
@@ -82,5 +90,5 @@ async function db_aggregate(fastify: FastifyInstance, orgId: string, date: strin
       copilotCost: sum(dailySnapshots.copilotCostUsd).mapWith(Number),
     })
     .from(dailySnapshots)
-    .where(and(eq(dailySnapshots.orgId, orgId), eq(dailySnapshots.date, date)))
+    .where(and(eq(dailySnapshots.orgId, orgId), gte(dailySnapshots.date, fromDate), lte(dailySnapshots.date, toDate)))
 }

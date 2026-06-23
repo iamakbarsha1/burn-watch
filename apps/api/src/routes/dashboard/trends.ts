@@ -1,15 +1,18 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and, gte, sum, count } from 'drizzle-orm'
+import { eq, and, gte, lte, sum, count } from 'drizzle-orm'
 import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { TrendPoint } from '@burn-watch/shared'
 
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
-  days: z.coerce.number().int().min(1).max(90).default(30),
-})
+  days: z.coerce.number().int().min(1).max(90).optional(),
+  from: z.string().regex(dateRegex).optional(),
+  to: z.string().regex(dateRegex).optional(),
+}).refine(d => d.days || (d.from && d.to), { message: 'Provide days or from+to' })
 
 export async function trendsRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Querystring: { days?: string } }>(
+  fastify.get(
     '/trends',
     async (request, reply) => {
       const orgId = request.user.orgId
@@ -18,12 +21,20 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
       }
 
-      const days = parsed.data.days
-      const since = new Date()
-      since.setDate(since.getDate() - days)
-      const sinceStr = since.toISOString().slice(0, 10)
+      let fromDate: string
+      let toDate: string
+      if (parsed.data.from && parsed.data.to) {
+        fromDate = parsed.data.from
+        toDate = parsed.data.to
+      } else {
+        const days = parsed.data.days ?? 30
+        const since = new Date()
+        since.setDate(since.getDate() - days)
+        fromDate = since.toISOString().slice(0, 10)
+        toDate = new Date().toISOString().slice(0, 10)
+      }
 
-      const cacheKey = `bw:trends:${orgId}:${days}:${sinceStr}`
+      const cacheKey = `bw:trends:${orgId}:${fromDate}:${toDate}`
       const cached = await fastify.redis.get(cacheKey)
       if (cached) return JSON.parse(cached)
 
@@ -44,7 +55,8 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         .where(
           and(
             eq(dailySnapshots.orgId, orgId),
-            gte(dailySnapshots.date, sinceStr),
+            gte(dailySnapshots.date, fromDate),
+            lte(dailySnapshots.date, toDate),
           ),
         )
         .groupBy(dailySnapshots.date)
