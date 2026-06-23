@@ -3,7 +3,7 @@ import type {
   OverviewResponse,
   LeaderboardEntry,
   TrendPoint,
-  OrgActivitySummary,
+  ToolUsageSummary,
   OrgProjectSummary,
 } from '@burn-watch/shared'
 
@@ -53,7 +53,7 @@ export async function fetchTrends(from: string, to: string, orgId: string): Prom
   return apiFetch(`/v1/dashboard/trends?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
-export async function fetchActivity(from: string, to: string, orgId: string): Promise<OrgActivitySummary[]> {
+export async function fetchActivity(from: string, to: string, orgId: string): Promise<ToolUsageSummary[]> {
   return apiFetch(`/v1/dashboard/activity?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
