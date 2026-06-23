@@ -185,6 +185,12 @@ export interface OrgActivitySummary {
   userCount: number
 }
 
+export interface ToolUsageSummary {
+  tool: string
+  count: number
+  category: 'tool' | 'shell' | 'mcp'
+}
+
 export interface OrgProjectSummary {
   path: string
   totalCost: number

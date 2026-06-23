@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { eq, and, gte, lte } from 'drizzle-orm'
 import { z } from 'zod'
 import { claudeEnrichment, users } from '../../../drizzle/schema.js'
-import type { OrgActivitySummary, ActivityEntry } from '@burn-watch/shared'
+import type { ToolUsageSummary } from '@burn-watch/shared'
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
@@ -29,7 +29,9 @@ export async function activityRoutes(fastify: FastifyInstance) {
 
       const rows = await fastify.db
         .select({
-          activityBreakdown: claudeEnrichment.activityBreakdown,
+          toolUsage: claudeEnrichment.toolUsage,
+          shellUsage: claudeEnrichment.shellUsage,
+          mcpUsage: claudeEnrichment.mcpUsage,
         })
         .from(claudeEnrichment)
         .innerJoin(users, eq(claudeEnrichment.userId, users.id))
@@ -41,43 +43,28 @@ export async function activityRoutes(fastify: FastifyInstance) {
           ),
         )
 
-      // Merge activity breakdowns across users
-      const merged = new Map<
-        string,
-        { totalCost: number; totalTurns: number; oneShotRates: number[]; userCount: number }
-      >()
+      // Merge counts across users per category
+      const tools = new Map<string, number>()
+      const shells = new Map<string, number>()
+      const mcps = new Map<string, number>()
 
       for (const row of rows) {
-        const activities = row.activityBreakdown as ActivityEntry[] | null
-        if (!activities) continue
-        for (const a of activities) {
-          const existing = merged.get(a.type)
-          if (existing) {
-            existing.totalCost += a.cost
-            existing.totalTurns += a.turns
-            existing.oneShotRates.push(a.oneShotRate)
-            existing.userCount++
-          } else {
-            merged.set(a.type, {
-              totalCost: a.cost,
-              totalTurns: a.turns,
-              oneShotRates: [a.oneShotRate],
-              userCount: 1,
-            })
-          }
+        for (const [k, v] of Object.entries((row.toolUsage as Record<string, number>) ?? {})) {
+          tools.set(k, (tools.get(k) ?? 0) + v)
+        }
+        for (const [k, v] of Object.entries((row.shellUsage as Record<string, number>) ?? {})) {
+          shells.set(k, (shells.get(k) ?? 0) + v)
+        }
+        for (const [k, v] of Object.entries((row.mcpUsage as Record<string, number>) ?? {})) {
+          mcps.set(k, (mcps.get(k) ?? 0) + v)
         }
       }
 
-      const result: OrgActivitySummary[] = Array.from(merged.entries()).map(
-        ([type, data]) => ({
-          type,
-          totalCost: data.totalCost,
-          totalTurns: data.totalTurns,
-          avgOneShotRate:
-            data.oneShotRates.reduce((a, b) => a + b, 0) / data.oneShotRates.length,
-          userCount: data.userCount,
-        }),
-      )
+      const result: ToolUsageSummary[] = [
+        ...Array.from(tools.entries()).map(([tool, count]) => ({ tool, count, category: 'tool' as const })),
+        ...Array.from(shells.entries()).map(([tool, count]) => ({ tool, count, category: 'shell' as const })),
+        ...Array.from(mcps.entries()).map(([tool, count]) => ({ tool, count, category: 'mcp' as const })),
+      ]
 
       await fastify.redis.set(cacheKey, JSON.stringify(result), 'EX', 300)
       return result
