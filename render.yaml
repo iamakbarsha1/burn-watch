@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: burn-watch-api
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npx tsx apps/api/src/server.ts
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: COPILOT_ENCRYPTION_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
