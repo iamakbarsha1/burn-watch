@@ -4,6 +4,7 @@ set -euo pipefail
 REPO="iamakbarsha1/burn-watch"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="burnwatch"
+TMP_DIR=""
 
 # Colors
 RED='\033[0;31m'
@@ -55,7 +56,7 @@ get_latest_version() {
 
 main() {
   info "Detecting platform..."
-  local platform version download_url tmp_dir
+  local platform version download_url
 
   platform="$(detect_platform)"
   info "Platform: $platform"
@@ -66,21 +67,21 @@ main() {
 
   download_url="https://github.com/${REPO}/releases/download/${version}/burnwatch-${platform}"
 
-  tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
 
   info "Downloading burnwatch-${platform}..."
-  curl -fSL --progress-bar -o "${tmp_dir}/${BINARY_NAME}" "$download_url" \
+  curl -fSL --progress-bar -o "${TMP_DIR}/${BINARY_NAME}" "$download_url" \
     || error "Download failed. Check that release ${version} has a binary for ${platform}."
 
-  chmod +x "${tmp_dir}/${BINARY_NAME}"
+  chmod +x "${TMP_DIR}/${BINARY_NAME}"
 
   info "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
   if [ -w "$INSTALL_DIR" ]; then
-    mv "${tmp_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    mv "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
   else
     warn "Need sudo to write to ${INSTALL_DIR}"
-    sudo mv "${tmp_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    sudo mv "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
   fi
 
   # Verify
