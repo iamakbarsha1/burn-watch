@@ -4,7 +4,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install --include=dev
     startCommand: npx tsx apps/api/src/server.ts
     healthCheckPath: /health
     envVars:
@@ -30,7 +30,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install && npm run --workspace=apps/dashboard build
+    buildCommand: npm install --include=dev && npm run --workspace=apps/dashboard build
     startCommand: npm run --workspace=apps/dashboard start
     healthCheckPath: /
     envVars:
