@@ -24,3 +24,21 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false
+
+  - type: web
+    name: burn-watch-dashboard
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run --workspace=apps/dashboard build
+    startCommand: npm run --workspace=apps/dashboard start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: API_URL
+        sync: false
+      - key: BETTER_AUTH_SECRET
+        sync: false
