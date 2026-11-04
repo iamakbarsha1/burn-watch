@@ -121,7 +121,7 @@ vi.mock('../plugins/redis.js', async () => {
 // simply inert metadata.
 vi.mock('@fastify/rate-limit', () => ({ default: fp(async () => {}) }))
 
-const { buildServer } = await import('../app.js')
+const { buildServer } = await import('../build-server.js')
 
 const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
