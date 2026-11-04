@@ -307,7 +307,48 @@ set by hand — the binding in `vercel.json` injects it. `CORS_ORIGIN` and
 First confirmed-green deploy. The last attempt was pushed 2026-06-25 and never
 verified.
 
-**2026-11-05 — builds and routes. Blocked on environment variables.**
+**2026-11-05 — BLOCKED. The API service does not run on Vercel Services.**
+
+Env vars are set (all five, production and preview). Both services build. The
+dashboard service works. The api service fails at init on every request with
+`INTERNAL_FUNCTION_INVOCATION_FAILED` and **zero log output**.
+
+**Isolated to the platform, not the code.** A bare eight-line Fastify app — no
+plugins, no database, no Redis, no env dependency — deployed as the api service
+fails identically. Meanwhile:
+- The dashboard service returns 307 to `/login`, so routing and the platform
+  are fine.
+- The build is clean and Vercel reports
+  "Using src/server.ts as the root entrypoint".
+- The same compiled artifact, `node dist/src/server.js`, boots locally and
+  `/health` returns 200 against the real Neon and Upstash.
+
+Ruled out one at a time, each with its own deploy: stale upload (added
+`.vercelignore`, cleaned all `dist/`), ESM loadability, entrypoint filename
+collision, top-level await in the entrypoint, a missing default export, and the
+`framework: "fastify"` field.
+
+**Working hypothesis:** Node backend services under Vercel Services are not
+available on the Hobby plan. Next.js as a service works because it is a
+first-class frontend. Nothing confirms this in the docs, which is itself the
+problem — the failure mode is a platform error with no diagnostic.
+
+**Options, needs a decision:**
+  a. Deploy the API as its own Vercel project rather than a service. This is
+     Vercel's documented path for Fastify and is very likely to work. It costs
+     the shared origin, but that turns out not to matter: the dashboard only
+     ever calls the API server-side, so there is no CORS and no cross-site
+     cookie problem. The dashboard gets `API_URL` pointed at the API project
+     instead of a binding. Smallest change, keeps everything else.
+  b. Upgrade to Pro and retest Services as designed.
+  c. Move the API to a long-running host and keep only the dashboard on Vercel.
+
+Option (a) is the recommendation. It contradicts the ROADMAP's "one project,
+Vercel Services" decision, which is why it is not already done.
+
+---
+
+**Earlier in the day, before the above was understood:**
 
 Project `akbar-sha-ss-projects/burn-watch` on the Hobby plan, linked to
 `iamakbarsha1/burn-watch`. Hobby was the user's call; Vercel licenses it for
