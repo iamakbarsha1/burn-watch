@@ -22,63 +22,6 @@ function findJsonlFiles(dir: string): string[] {
   return files
 }
 
-async function processFile(
-  file: string,
-  date: string,
-  toolUsage: Record<string, number>,
-  shellUsage: Record<string, number>,
-  mcpUsage: Record<string, number>,
-): Promise<{ callCount: number; hasActivity: boolean }> {
-  // Skip files larger than threshold
-  const stat = statSync(file)
-  if (stat.size > MAX_FILE_SIZE) {
-    console.warn(`[burnwatch][codeburn] skipping large file (${(stat.size / 1024 / 1024).toFixed(1)}MB): ${file}`)
-    return { callCount: 0, hasActivity: false }
-  }
-
-  let callCount = 0
-  let hasActivity = false
-
-  const rl = createInterface({
-    input: createReadStream(file, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  })
-
-  for await (const line of rl) {
-    if (!line) continue
-
-    let entry: any
-    try { entry = JSON.parse(line) } catch { continue }
-
-    // Check if this entry is on target date
-    const ts: string = entry.timestamp ?? entry.message?.timestamp ?? ''
-    if (!ts.startsWith(date)) continue
-
-    hasActivity = true
-
-    if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
-      callCount++
-      const content = entry.message.content ?? []
-      for (const block of content) {
-        if (block.type === 'tool_use') {
-          const toolName = (block.name ?? '').toLowerCase()
-          if (toolName === 'bash') {
-            const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0]
-            if (cmd) shellUsage[cmd] = (shellUsage[cmd] ?? 0) + 1
-          } else if (toolName.startsWith('mcp__') || (block.name ?? '').startsWith('mcp__')) {
-            const server = (block.name ?? '').split('__')[1] ?? ''
-            if (server) mcpUsage[server] = (mcpUsage[server] ?? 0) + 1
-          } else {
-            toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1
-          }
-        }
-      }
-    }
-  }
-
-  return { callCount, hasActivity }
-}
-
 interface DateBucket {
   sessionCount: number
   callCount: number
@@ -88,7 +31,7 @@ interface DateBucket {
 }
 
 export class CodeburnCollector implements EnrichmentCollector {
-  private claudeDir = join(homedir(), '.claude', 'projects')
+  constructor(private claudeDir: string = join(homedir(), '.claude', 'projects')) {}
 
   async isAvailable(): Promise<boolean> {
     return existsSync(this.claudeDir)
