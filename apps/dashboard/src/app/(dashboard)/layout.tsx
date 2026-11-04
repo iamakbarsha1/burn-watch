@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/session'
 import { SignOutButton } from './SignOutButton'
 
@@ -12,7 +13,11 @@ const NAV = [
 ]
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  // Replaces the old Edge middleware, which Vercel Services does not allow.
+  // This gate is also stronger than the one it replaces: the middleware only
+  // checked that a session cookie existed, while `getSession` validates it.
   const session = await getSession()
+  if (!session) redirect('/login')
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
