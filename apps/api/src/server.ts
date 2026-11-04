@@ -1,6 +1,10 @@
 import { buildServer } from './build-server.js'
 
-const server = await buildServer()
+// No top-level await anywhere in this module. Vercel's Node adapter imports the
+// entrypoint and expects it to settle immediately; awaiting `listen` here left
+// the function exiting at init with nothing in the logs. This is the shape the
+// Fastify deployment docs show.
+const server = buildServer()
 
 const shutdown = async (signal: string) => {
   server.log.info(`${signal} received, shutting down`)
@@ -11,10 +15,12 @@ process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
 const port = Number(process.env.PORT) || 3001
-await server.listen({ port, host: '0.0.0.0' })
+server.listen({ port, host: '0.0.0.0' }, (err) => {
+  if (err) {
+    server.log.error(err)
+    process.exit(1)
+  }
+})
 
-// Vercel's Node adapter imports this module and looks for a server or function
-// on the default export; without one it exits with "Invalid export found in
-// module". The `listen` above is what the Fastify docs show and is what local
-// dev uses, so both shapes are satisfied.
+// The adapter looks for a server or function on the default export.
 export default server
