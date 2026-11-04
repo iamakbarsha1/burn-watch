@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm'
 import { dbPlugin } from './plugins/db.js'
 import { redisPlugin } from './plugins/redis.js'
 import { authRoutes } from './routes/auth/device.js'
+import { inviteRoutes } from './routes/auth/invites.js'
 import { usageRoutes } from './routes/usage/submit.js'
 import { dashboardRoutes } from './routes/dashboard/index.js'
 
@@ -42,6 +43,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(jwt, { secret: process.env.JWT_REFRESH_SECRET!, namespace: 'refresh' })
 
   await server.register(authRoutes, { prefix: '/v1/auth' })
+  await server.register(inviteRoutes, { prefix: '/v1/auth' })
   await server.register(usageRoutes, { prefix: '/v1' })
   await server.register(dashboardRoutes, { prefix: '/v1/dashboard' })
 
