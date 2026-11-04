@@ -13,17 +13,16 @@ import { usageRoutes } from './routes/usage/submit.js'
 import { dashboardRoutes } from './routes/dashboard/index.js'
 
 /**
- * Builds the configured Fastify instance without binding a port. Serverless
- * handlers and `app.inject()` tests both need an unlistened app.
+ * Registers everything onto an existing instance. Takes the instance rather
+ * than creating it so the entrypoint can own the `Fastify()` call: Vercel's
+ * adapter rejects an entrypoint that does not import fastify directly, failing
+ * the build with "No entrypoint found which imports fastify".
  *
  * Synchronous on purpose. `register` queues a plugin rather than loading it, so
  * nothing here needs awaiting, and that keeps the entrypoint free of top-level
  * await. Fastify resolves the queue on `ready()` or `listen()`.
  */
-export function buildServer(): FastifyInstance {
-  // Vitest sets NODE_ENV=test. Request logs there bury the assertion output.
-  const server = Fastify({ logger: process.env.NODE_ENV !== 'test' })
-
+export function configureServer(server: FastifyInstance): FastifyInstance {
   server.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof ZodError) {
       return reply.status(400).send({ error: 'Validation failed', details: error.flatten() })
@@ -81,4 +80,12 @@ export function buildServer(): FastifyInstance {
   })
 
   return server
+}
+
+/**
+ * Convenience factory for tests and anything that does not need to listen.
+ * Vitest sets NODE_ENV=test; request logs there bury the assertion output.
+ */
+export function buildServer(): FastifyInstance {
+  return configureServer(Fastify({ logger: process.env.NODE_ENV !== 'test' }))
 }
