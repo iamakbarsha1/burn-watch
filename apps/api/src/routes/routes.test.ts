@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import fp from 'fastify-plugin'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
@@ -525,6 +526,196 @@ describe('device registration', () => {
     expect(stored?.tokenHash).toBeTypeOf('string')
     expect(stored?.tokenHash).not.toBe(accessToken)
     expect(String(stored?.tokenHash)).toHaveLength(64)
+  })
+})
+
+describe('invites', () => {
+  const adminToken = () => token({ role: 'admin' })
+
+  describe('POST /v1/auth/admin/invites', () => {
+    it('returns 401 without a token', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites',
+        payload: { email: 'new@example.com' },
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites',
+        headers: auth(token({ role })),
+        payload: { email: 'new@example.com' },
+      })
+      expect(res.statusCode).toBe(403)
+    })
+
+    it('returns 409 when a user with that email already exists', async () => {
+      dbState.results.push([{ id: USER_A }]) // user lookup hits
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites',
+        headers: auth(adminToken()),
+        payload: { email: 'taken@example.com' },
+      })
+      expect(res.statusCode).toBe(409)
+      // Nothing was written.
+      expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+    })
+
+    it('stores only a hash, and scopes the invite to the admin own org', async () => {
+      dbState.results.push([]) // no existing user
+      dbState.results.push([{ id: 'invite-1' }]) // insert ... returning
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites',
+        headers: auth(adminToken()),
+        payload: { email: 'New@Example.com ' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      const { token: plaintext } = res.json()
+      const written = dbState.calls
+        .filter((c) => c.op === 'values')
+        .map((c) => c.arg as Record<string, unknown>)
+        .find((v) => 'code' in v)!
+
+      expect(written.code).toBe(createHash('sha256').update(plaintext).digest('hex'))
+      expect(written.code).not.toBe(plaintext)
+      expect(written.orgId).toBe(ORG_A)
+      // Email is normalised, so an invite cannot be duplicated by casing.
+      expect(written.email).toBe('new@example.com')
+      expect(written.role).toBe('developer')
+    })
+
+    it('defaults the invite to a 7 day expiry in the future', async () => {
+      dbState.results.push([])
+      dbState.results.push([{ id: 'invite-1' }])
+      const before = Date.now()
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites',
+        headers: auth(adminToken()),
+        payload: { email: 'new@example.com' },
+      })
+
+      const expiresAt = new Date(res.json().expiresAt).getTime()
+      expect(expiresAt).toBeGreaterThan(before)
+      expect(expiresAt).toBeLessThanOrEqual(before + 7 * 24 * 60 * 60 * 1000 + 5000)
+    })
+
+    it('rejects a role outside the enum', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites',
+        headers: auth(adminToken()),
+        payload: { email: 'new@example.com', role: 'owner' },
+      })
+      expect(res.statusCode).toBe(400)
+    })
+  })
+
+  describe('GET /v1/auth/admin/invites', () => {
+    it('returns 403 for a non-admin', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v1/auth/admin/invites',
+        headers: auth(token({ role: 'developer' })),
+      })
+      expect(res.statusCode).toBe(403)
+    })
+
+    it('never selects the stored hash', async () => {
+      dbState.results.push([])
+      await app.inject({
+        method: 'GET',
+        url: '/v1/auth/admin/invites',
+        headers: auth(adminToken()),
+      })
+      const selected = dbState.calls.find((c) => c.op === 'select')?.arg as Record<string, unknown>
+      expect(Object.keys(selected)).not.toContain('code')
+    })
+  })
+
+  describe('POST /v1/auth/invites/accept', () => {
+    const accept = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'POST', url: '/v1/auth/invites/accept', payload })
+
+    it('needs no authentication', async () => {
+      dbState.results.push([])
+      const res = await accept({ token: 'whatever', name: 'New Dev' })
+      expect(res.statusCode).not.toBe(401)
+    })
+
+    it('rejects an unknown, expired or already-used invite with one message', async () => {
+      // The route filters on unused and unexpired in the query, so all three
+      // failures arrive here as an empty result and must look identical.
+      dbState.results.push([])
+      const res = await accept({ token: 'nope', name: 'New Dev' })
+      expect(res.statusCode).toBe(400)
+      expect(res.json().error).toBe('Invalid or expired invite')
+    })
+
+    it('rejects a request with no name', async () => {
+      const res = await accept({ token: 'abc' })
+      expect(res.statusCode).toBe(400)
+    })
+
+    it('creates the user with the invite own org and role, not anything the caller sent', async () => {
+      dbState.results.push([
+        { id: 'invite-1', orgId: ORG_B, email: 'invited@example.com', role: 'manager' },
+      ])
+      dbState.results.push([{ id: 'invite-1' }]) // claim succeeded
+      dbState.results.push([{ id: 'user-new' }]) // user insert
+
+      const res = await accept({ token: 'good-token', name: '  New Dev  ' })
+
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({
+        userId: 'user-new',
+        orgId: ORG_B,
+        email: 'invited@example.com',
+        role: 'manager',
+      })
+      const written = dbState.calls
+        .filter((c) => c.op === 'values')
+        .map((c) => c.arg as Record<string, unknown>)
+        .find((v) => 'email' in v)!
+      expect(written.orgId).toBe(ORG_B)
+      expect(written.role).toBe('manager')
+      expect(written.name).toBe('New Dev')
+    })
+
+    it('marks the invite used before creating the user', async () => {
+      dbState.results.push([{ id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer' }])
+      dbState.results.push([{ id: 'invite-1' }])
+      dbState.results.push([{ id: 'user-new' }])
+
+      await accept({ token: 'good-token', name: 'New Dev' })
+
+      const ops = dbState.calls.map((c) => c.op)
+      // The lookup runs first, outside the transaction. The claim and the user
+      // insert are both inside it, and the claim has to come first.
+      expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('update'))
+      expect(ops.indexOf('update')).toBeLessThan(ops.indexOf('insert'))
+    })
+
+    it('cannot be replayed: the losing racer gets 400 and creates no user', async () => {
+      // Both requests pass the select; the claiming UPDATE matches no row for
+      // the second one because used_at is no longer null.
+      dbState.results.push([{ id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer' }])
+      dbState.results.push([]) // claim matched nothing
+
+      const res = await accept({ token: 'good-token', name: 'New Dev' })
+
+      expect(res.statusCode).toBe(400)
+      expect(res.json().error).toBe('Invalid or expired invite')
+      expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+    })
   })
 })
 
