@@ -5,16 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@burn-watch/shared": "*",
-    "@fastify/cors": "^10.0.0",
     "@fastify/jwt": "^9.0.0",
     "@fastify/rate-limit": "^10.0.0",
     "@neondatabase/serverless": "^0.10.4",

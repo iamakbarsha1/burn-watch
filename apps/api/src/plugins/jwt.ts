@@ -1,4 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+// Aliased so the namespace augmentation below can name the type. A bare `JWT`
+// there is the interface being merged, which declaration emit rejects (TS4033).
+import type { JWT as JwtInstance } from '@fastify/jwt'
 
 export interface JwtPayload {
   deviceId?: string
@@ -7,17 +10,29 @@ export interface JwtPayload {
   role: 'device' | 'admin' | 'manager' | 'developer'
 }
 
-declare module 'fastify' {
-  interface FastifyInstance {
-    jwt: {
-      access: { sign: (payload: Record<string, unknown>, options?: { expiresIn: string }) => string }
-      refresh: { sign: (payload: Record<string, unknown>, options?: { expiresIn: string }) => string }
-    }
+// @fastify/jwt already declares `jwt` on FastifyInstance and `user` on FastifyRequest.
+// Redeclaring them here conflicts (TS2717) and collapses request.user to
+// `string | object | Buffer`. Augment its own interfaces instead: it derives both
+// SignPayloadType and UserType from FastifyJWT.
+declare module '@fastify/jwt' {
+  interface FastifyJWT {
+    payload: JwtPayload
+    user: JwtPayload
   }
+
+  // server.ts registers two instances under namespaces 'access' and 'refresh'.
+  // At runtime the plugin hangs each one on fastify.jwt[namespace].
+  interface JWT {
+    access: JwtInstance
+    refresh: JwtInstance
+  }
+}
+
+declare module 'fastify' {
   interface FastifyRequest {
+    // A namespaced registration renames the verifier to `${namespace}JwtVerify`.
     accessJwtVerify: <T = JwtPayload>(options?: Record<string, unknown>) => Promise<T>
     refreshJwtVerify: <T = JwtPayload>(options?: Record<string, unknown>) => Promise<T>
-    user: JwtPayload
   }
 }
 
