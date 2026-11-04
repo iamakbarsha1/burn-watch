@@ -36,6 +36,11 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-22 | P5 | Dashboard inline styles to Tailwind | todo | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | todo | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
+| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | todo | M | — |
+| BW-26 | P5 | Remove the double type assertion in `overview.ts` | todo | S | — |
+| BW-27 | P3 | Enforce device token revocation, or drop the table | todo | M | — |
+| BW-28 | P5 | Share the dashboard query schema and cache wrapper | todo | S | — |
+| BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | todo | S | — |
 
 ---
 
@@ -777,7 +782,12 @@ Shipping a dead button is worse than shipping no button.
 **Size L** · no blockers
 
 Tailwind 4 is installed and `globals.css` imports it, but pages still use inline
-`style={{}}` — 12 occurrences on the overview page, 19 on the leaderboard.
+`style={{}}`.
+
+**Scope corrected 2026-11-05.** The audit reconciliation in BW-24 counted the
+real total: **101 occurrences across 10 files**, not the 31 across two pages
+recorded here. Size L still holds, but plan for the whole dashboard rather than
+two pages.
 
 Convert page by page. Low risk, independent of everything else, good filler work
 between larger tickets.
@@ -836,3 +846,100 @@ needs a live database.
 - [x] Moved under `docs/audits/` and tracked in git
 - [x] Every finding carries a current status
 - [x] Still-open findings link to a ticket ID
+
+---
+
+## Tickets opened 2026-11-05 from the audit reconciliation
+
+BW-24 re-checked all 28 findings against live source. Six were confirmed still
+present with no ticket owning them. Five became tickets; the reasoning for the
+two that did not is at the bottom.
+
+### BW-25 · Push the JSONB merge in activity/projects into SQL
+**Size M** · no blockers
+
+`routes/dashboard/activity.ts:46-67` and `projects.ts:44-67` pull JSONB columns
+out of postgres and merge them in Node. The June audit's own suggested fix,
+`jsonb_array_elements`, still applies. This is the first thing that breaks as
+the org grows, because the work scales with rows returned rather than rows
+needed.
+
+The two routes also duplicate the same fetch-then-merge shape, so doing this
+once collapses a DRY violation the audit logged separately. The N+1 `inArray`
+half of that finding is already fixed — both routes JOIN now.
+
+**Acceptance**
+- [ ] Aggregation happens in postgres, not in the route
+- [ ] Both routes share one helper
+- [ ] Response shape unchanged, proven by the existing route tests
+
+### BW-26 · Remove the double type assertion in `overview.ts`
+**Size S** · no blockers
+
+`overview.ts:55-57` reads per-agent columns with
+``today?.[`${agent}Tokens` as keyof typeof today] as number``. Two assertions
+stacked like that turn the type checker off for the agent fan-out, which is
+exactly where a renamed column would otherwise be caught.
+
+**Acceptance**
+- [ ] No `as` on that access path
+- [ ] Renaming a snapshot column produces a type error
+
+### BW-27 · Enforce device token revocation, or drop the table
+**Size M** · no blockers
+
+`device.ts:132` hashes the access token into `device_tokens` on issue, which was
+the June audit's P0-5 fix and is correct. Nothing ever reads it back. A revoked
+or stolen device token stays valid for its full 30 days.
+
+Decide before building: either check the hash on `requireAuth` and add a
+revocation endpoint, or drop the table and stop implying a capability that does
+not exist. Checking on every request costs a lookup per authenticated call, so
+it wants Redis rather than postgres.
+
+**Acceptance**
+- [ ] A revoked token is rejected, with a test
+- [ ] Or the table and its write are removed and the decision recorded here
+
+### BW-28 · Share the dashboard query schema and cache wrapper
+**Size S** · no blockers
+
+`dateRegex` and the near-identical `from`/`to`/`date` Zod object are declared
+five times, once per dashboard route. The Redis get, miss, compute, set, expire
+sequence is written out five times too.
+
+One shared query schema and one `withCache` helper. The audit also suggested
+`fetchOrgEnrichment`; fold it in if BW-25 has not already absorbed it.
+
+**Acceptance**
+- [ ] One query schema, imported by every dashboard route
+- [ ] One cache helper, with the per-route key still distinct
+- [ ] Route tests unchanged and passing
+
+### BW-29 · De-duplicate the event builder in `ccusage.ts`
+**Size S** · no blockers
+
+`ccusage.ts` builds the same `UsageEvent` roughly 30 lines at a time in two
+places: `parseOutput` (`:84-103`) and `collectRange` (`:169-188`). The copies
+are currently identical, which is the point — they can drift, and a free-tier
+or token-summing rule fixed in one would silently stay wrong in the other.
+
+The collector tests from BW-11 cover both paths, so this is a safe extraction.
+
+**Acceptance**
+- [ ] One function builds the event, called from both paths
+- [ ] `apps/agent` tests pass unchanged
+
+### Confirmed present, deliberately not ticketed
+
+**No API versioning beyond the `/v1` prefix.** ROADMAP.md lists this as
+explicitly out of scope. Recorded so the next reader does not re-raise it.
+
+**Dashboard fetches with `cache: 'no-store'`** (`lib/api.ts:23`). Real, but the
+API answers from a 300-second Redis cache, so the repeated load lands on Redis
+and not postgres. Revisit only if Redis shows it.
+
+### Carried over, still unowned
+
+`apps/api/.env.example` line 8 still sets `CORS_ORIGIN`, which BW-07 removed
+everywhere else. One line, outside the paths this session could write.
