@@ -21,3 +21,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+.playwright-mcp
+.vercel
+.env*
+*.tsbuildinfo
