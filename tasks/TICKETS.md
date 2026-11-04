@@ -307,7 +307,59 @@ set by hand — the binding in `vercel.json` injects it. `CORS_ORIGIN` and
 First confirmed-green deploy. The last attempt was pushed 2026-06-25 and never
 verified.
 
-**2026-11-05 — BLOCKED. The API service does not run on Vercel Services.**
+**2026-11-05 — BLOCKED. No Node backend function runs on this Vercel account.**
+
+Tried both deployment models. Neither works, and the cause is not in this
+codebase.
+
+**Model 1, Vercel Services** (one project, shared origin): the api service
+returned `INTERNAL_FUNCTION_INVOCATION_FAILED` on every request with zero log
+output. The dashboard service worked.
+
+**Model 2, standalone project** (`burn-watch-api`, root `apps/api`, framework
+`fastify`, Node 22): same error.
+
+**The decisive test.** A five-line Fastify app — no dependencies beyond
+fastify, no env vars, no database, no Redis — deployed as its own project
+returns `INTERNAL_FUNCTION_INVOCATION_FAILED`. There is nothing left to remove.
+Meanwhile the Next.js project on the same account deploys and serves correctly.
+
+**One real bug did come out of the standalone attempt**, and it is fixed:
+Vercel's Fastify builder requires the entrypoint to import `fastify` directly
+and said so plainly — "No entrypoint found which imports fastify". `buildServer`
+became `configureServer(server)` so `src/server.ts` owns the `Fastify()` call.
+Services never surfaced this; it returned an opaque error through six deploys.
+
+**Everything else was ruled out, each with its own deploy:** stale uploads, ESM
+loadability, entrypoint filename collision, top-level await, missing default
+export, the `framework` field, dynamic-import tracing, and whether any
+particular dependency was at fault.
+
+Three genuine bugs were found along the way and are fixed regardless of where
+this deploys: `@burn-watch/shared` shipped raw TypeScript that only a bundler
+could load, the `start` script pointed at a path tsc has never emitted, and the
+compiled ESM had no `type: module` beside it.
+
+**Options, needs a decision:**
+  a. Upgrade to Pro and retest. The Hobby hypothesis is now strong: the only
+     thing that works on this account is the first-class Next.js frontend.
+  b. Port the API onto Next.js route handlers in the dashboard project, which
+     is the one thing confirmed to run here. Real work, and it discards the
+     Fastify app, its plugins and the route tests' `app.inject()` harness.
+  c. Host the API somewhere built for long-running processes and keep only the
+     dashboard on Vercel. The agent CLI and the dashboard both reach it over
+     plain HTTPS, so nothing else changes.
+  d. Raise it with Vercel support first. A platform error with no logs, on an
+     app this small, is worth a ticket before rearchitecting around it. Request
+     IDs from the bare probe are in the session log.
+
+Recommendation: (d) then (c). The API is a long-lived Fastify server with
+database and Redis connections, which is a poor fit for per-request functions
+anyway, and (c) keeps every test and the whole codebase as-is.
+
+---
+
+**Earlier attempts, kept for the record:**
 
 Env vars are set (all five, production and preview). Both services build. The
 dashboard service works. The api service fails at init on every request with
