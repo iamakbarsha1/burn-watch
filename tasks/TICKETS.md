@@ -1,6 +1,6 @@
 # BurnWatch Tickets
 
-**Board updated:** 2026-11-04
+**Board updated:** 2026-11-05
 **Plan:** [ROADMAP.md](./ROADMAP.md)
 
 Status: `todo` · `doing` · `blocked` · `done`
@@ -30,12 +30,12 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-16 | P3 | `/health` checks DB and Redis | **done** | S | BW-02 |
 | BW-17 | P3 | Generated migration files, stop `db:push` on prod | **done** | M | BW-02 |
 | BW-18 | P4 | Budget alerts API + UI | todo | L | BW-14 |
-| BW-19 | P4 | Invite flow on `invites` table | todo | M | BW-14 |
+| BW-19 | P4 | Invite flow on `invites` table | **doing** | L | BW-14 |
 | BW-20 | P4 | Cross-platform agent scheduling | todo | M | BW-14 |
 | BW-21 | P4 | GitHub Copilot integration | todo | L | BW-14 |
 | BW-22 | P5 | Dashboard inline styles to Tailwind | todo | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | todo | S | BW-08 |
-| BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | todo | S | — |
+| BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
 
 ---
 
@@ -681,10 +681,53 @@ directly, so there is no pending state and no expiry.
 Issue a token, store it hashed, expire it, and let the invitee complete signup
 through better-auth.
 
+**Sized wrong.** Listed M, actually L. It spans the API, the admin UI, and a
+new public page that has to coordinate with better-auth.
+
+**API side done 2026-11-05**, in `apps/api/src/routes/auth/invites.ts`.
+20 tests. Three endpoints: issue (admin), list (admin), accept (public).
+
+No schema change was needed, and the one attempted was backed out. Renaming
+`invites.code` to `code_hash` would have been more honest about what the
+column holds, but `drizzle-kit generate` stops on an interactive "created or
+renamed?" prompt that cannot be answered from a non-TTY, and piped stdin does
+not reach it. Not worth a blocked migration for a cosmetic rename, so the hash
+lives in `code` with a comment saying so. A `name` column was also considered
+and dropped: the invitee supplies their own name when accepting, which is
+better anyway.
+
+Security decisions worth keeping:
+- SHA-256, not a KDF. The token is 32 bytes from `randomBytes`, so there is no
+  guessable input for a slow hash to defend.
+- Unused and unexpired are conditions in the lookup query, not branches after
+  it, so no future code path can skip them.
+- One identical error for unknown, expired and already-used. Separate messages
+  would tell a guesser which tokens were ever real.
+- Redemption claims the row with `UPDATE ... WHERE used_at IS NULL` in the same
+  transaction as the user insert, so two requests racing one token produce one
+  account. Covered by a test.
+- Org and role come from the invite row, never the request body.
+
+**A decision is needed before the UI can be built.** Accepting an invite and
+creating the better-auth account are two writes to two different places, and
+better-auth keeps its own tables separate from `users`, linked only by email.
+Whichever runs first, a failure in the second leaves an orphan: either a
+`users` row with no way to log in, or a login with no org. There is no
+"set your password" recovery path today. Pick one:
+  a. Accept first, and add a recovery path for an account with no password.
+  b. Sign up first, and have an admin clean up orphaned auth accounts.
+  c. Have the API issue the better-auth account too, making it one write.
+
+**Remaining**
+- `apps/dashboard/src/lib/api.ts`: `createInvite`, `listInvites`
+- Admin form: issue an invite and show the link, instead of creating a user
+- Public `/invite/[token]` page: name + password, then accept and sign up
+- Whichever ordering is chosen above
+
 **Acceptance**
-- [ ] Invite token stored hashed, never in plaintext
-- [ ] Expiry enforced server-side
-- [ ] Used invite cannot be replayed
+- [x] Invite token stored hashed, never in plaintext
+- [x] Expiry enforced server-side
+- [x] Used invite cannot be replayed
 - [ ] Existing admin invite form migrated onto it
 
 ### BW-20 · Cross-platform agent scheduling
@@ -772,7 +815,24 @@ files (BW-17), no transaction boundaries (BW-15), `/health` does not check
 dependencies (BW-16), macOS-only scheduling (BW-20), inline styles (BW-22),
 unused `invites`/`org_integrations`/`budget_alerts` tables (BW-18, BW-19, BW-21).
 
+**Done 2026-11-05.** At `docs/audits/2026-06-23-review.md`, tracked. All 28
+findings annotated; the original text is untouched so it still reads as the
+audit it was.
+
+The list above turned out to be close but not exact, because most of those
+tickets closed earlier the same day. Final counts: 23 resolved, 1 partially
+resolved, 2 still open, 1 superseded, 1 unverified.
+
+RESOLVED required confirming the fix in the live source. A commit message
+claiming a fix was not accepted as evidence, which matters here: several
+findings had commits referencing them that did not fully close them.
+
+Still open: P3-1 (server-side `new Date()` hydration risk, low severity) and
+P3-4 (macOS-only scheduling, owned by BW-20). P3-3 is UNVERIFIED — a two-part
+timezone finding where only one part can be checked from source; the other
+needs a live database.
+
 **Acceptance**
-- [ ] Moved under `docs/audits/` and tracked in git
-- [ ] Every finding carries a current status
-- [ ] Still-open findings link to a ticket ID
+- [x] Moved under `docs/audits/` and tracked in git
+- [x] Every finding carries a current status
+- [x] Still-open findings link to a ticket ID
