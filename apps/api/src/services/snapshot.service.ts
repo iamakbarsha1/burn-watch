@@ -5,10 +5,19 @@ import {
   dailySnapshots,
   users,
 } from '../../drizzle/schema.js'
-import type { DB } from '../plugins/db.js'
+import type { DbOrTx } from '../plugins/db.js'
+
+// `sum()` over a `numeric` column comes back as a string from postgres and is
+// only turned into a number by the `.mapWith(Number)` below. Without a coercion
+// here, a string slipping through would make `+` concatenate costs instead of
+// adding them, and the day's total would be silently wrong rather than failing.
+function toNumber(value: unknown): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
 
 export async function rebuildDailySnapshot(
-  db: DB,
+  db: DbOrTx,
   userId: string,
   date: string,
 ): Promise<void> {
@@ -28,7 +37,7 @@ export async function rebuildDailySnapshot(
   const agentMap: Record<string, { tokens: number; cost: number }> = {}
   const allModels: string[] = []
   for (const row of agentRows) {
-    agentMap[row.agent] = { tokens: row.tokens ?? 0, cost: row.cost ?? 0 }
+    agentMap[row.agent] = { tokens: toNumber(row.tokens), cost: toNumber(row.cost) }
     if (row.models) allModels.push(...row.models)
   }
 
