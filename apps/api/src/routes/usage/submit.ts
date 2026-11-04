@@ -23,38 +23,45 @@ export async function usageRoutes(fastify: FastifyInstance) {
       const payload = UsagePayloadSchema.parse(request.body)
       const jwt = request.user
 
-      // Verify deviceId matches JWT
-      if (payload.deviceId !== jwt.deviceId) {
+      // Verify deviceId matches JWT. Bound to a const so the narrowing holds
+      // inside the transaction callback below — TypeScript drops narrowing of
+      // a property access once it crosses into a closure. The `!deviceId` arm
+      // also rejects a token that carries no device at all, which only a
+      // dashboard-role token would.
+      const deviceId = jwt.deviceId
+      if (!deviceId || payload.deviceId !== deviceId) {
         return reply.status(403).send({ error: 'Device ID mismatch' })
       }
 
-      // Upsert usage events
-      const { accepted, skipped } = await upsertUsageEvents(
-        fastify.db,
-        jwt.userId,
-        jwt.deviceId,
-        payload.date,
-        payload.events,
-      )
+      // One transaction. These four writes used to run independently, so a
+      // failure partway through left the events stored and the snapshot stale,
+      // with nothing to retry it. Needs the WebSocket Neon driver, which cannot
+      // be swapped for neon-http without losing this.
+      const { accepted, skipped } = await fastify.db.transaction(async (tx) => {
+        const counts = await upsertUsageEvents(
+          tx,
+          jwt.userId,
+          deviceId,
+          payload.date,
+          payload.events,
+        )
 
-      // Upsert enrichment if present
-      if (payload.enrichment) {
-        await upsertEnrichment(fastify.db, jwt.userId, payload.enrichment)
-      }
+        if (payload.enrichment) {
+          await upsertEnrichment(tx, jwt.userId, payload.enrichment)
+        }
 
-      // Update device lastSeenAt
-      await fastify.db
-        .update(devices)
-        .set({ lastSeenAt: new Date() })
-        .where(eq(devices.id, jwt.deviceId))
+        await tx
+          .update(devices)
+          .set({ lastSeenAt: new Date() })
+          .where(eq(devices.id, deviceId))
 
-      // Rebuild snapshot synchronously — only 3 queries, keeps data consistent
-      try {
-        await rebuildDailySnapshot(fastify.db, jwt.userId, payload.date)
-      } catch (err) {
-        fastify.log.error({ err, userId: jwt.userId, date: payload.date }, 'Snapshot rebuild failed')
-        // Still return success for the upsert — snapshot will be rebuilt on next submission
-      }
+        // Inside the transaction on purpose. A failed rebuild now rolls the
+        // events back so the agent's retry re-submits them, instead of leaving
+        // a user's spend recorded but absent from their daily snapshot.
+        await rebuildDailySnapshot(tx, jwt.userId, payload.date)
+
+        return counts
+      })
 
       return { accepted, skipped, date: payload.date }
     },

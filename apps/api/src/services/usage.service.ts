@@ -1,10 +1,10 @@
 import { eq, and, sql } from 'drizzle-orm'
 import { usageEvents, claudeEnrichment } from '../../drizzle/schema.js'
 import type { UsageEvent, ClaudeEnrichment } from '@burn-watch/shared'
-import type { DB } from '../plugins/db.js'
+import type { DbOrTx } from '../plugins/db.js'
 
 export async function upsertUsageEvents(
-  db: DB,
+  db: DbOrTx,
   userId: string,
   deviceId: string,
   date: string,
@@ -46,7 +46,7 @@ export async function upsertUsageEvents(
 }
 
 export async function upsertEnrichment(
-  db: DB,
+  db: DbOrTx,
   userId: string,
   enrichment: ClaudeEnrichment,
 ): Promise<void> {
