@@ -14,7 +14,6 @@
     },
     "api": {
       "root": "apps/api",
-      "framework": "fastify",
       "entrypoint": "src/server.ts"
     }
   },
