@@ -15,8 +15,12 @@ import { dashboardRoutes } from './routes/dashboard/index.js'
 /**
  * Builds the configured Fastify instance without binding a port. Serverless
  * handlers and `app.inject()` tests both need an unlistened app.
+ *
+ * Synchronous on purpose. `register` queues a plugin rather than loading it, so
+ * nothing here needs awaiting, and that keeps the entrypoint free of top-level
+ * await. Fastify resolves the queue on `ready()` or `listen()`.
  */
-export async function buildServer(): Promise<FastifyInstance> {
+export function buildServer(): FastifyInstance {
   // Vitest sets NODE_ENV=test. Request logs there bury the assertion output.
   const server = Fastify({ logger: process.env.NODE_ENV !== 'test' })
 
@@ -32,20 +36,25 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Vercel and calls it server-side anyway; the agent is a Node CLI, which no
   // browser same-origin policy applies to. Registering CORS would only widen
   // what a browser on another origin is allowed to do.
-  await server.register(dbPlugin)
+  server.register(dbPlugin)
   // Must come before rate limit, which uses this connection as its store.
-  await server.register(redisPlugin)
+  server.register(redisPlugin)
   // Counts in Redis, not process memory. Each serverless instance keeps its own
   // in-memory counter, so the default store would multiply every per-route limit
   // by the number of live instances.
-  await server.register(rateLimit, { global: false, redis: server.redis })
-  await server.register(jwt, { secret: process.env.JWT_SECRET!, namespace: 'access' })
-  await server.register(jwt, { secret: process.env.JWT_REFRESH_SECRET!, namespace: 'refresh' })
+  // Inside `after` because `server.redis` does not exist until redisPlugin has
+  // actually loaded, and `register` only queues. Routes are queued after this,
+  // so their per-route `config.rateLimit` is still honoured.
+  server.after(() => {
+    server.register(rateLimit, { global: false, redis: server.redis })
+  })
+  server.register(jwt, { secret: process.env.JWT_SECRET!, namespace: 'access' })
+  server.register(jwt, { secret: process.env.JWT_REFRESH_SECRET!, namespace: 'refresh' })
 
-  await server.register(authRoutes, { prefix: '/v1/auth' })
-  await server.register(inviteRoutes, { prefix: '/v1/auth' })
-  await server.register(usageRoutes, { prefix: '/v1' })
-  await server.register(dashboardRoutes, { prefix: '/v1/dashboard' })
+  server.register(authRoutes, { prefix: '/v1/auth' })
+  server.register(inviteRoutes, { prefix: '/v1/auth' })
+  server.register(usageRoutes, { prefix: '/v1' })
+  server.register(dashboardRoutes, { prefix: '/v1/dashboard' })
 
   // Actually touches both dependencies. Returning `{ ok: true }` unconditionally
   // meant a dead database still reported healthy to Vercel and to any uptime
