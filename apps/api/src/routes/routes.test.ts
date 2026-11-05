@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
+import { inspect } from 'node:util'
 import fp from 'fastify-plugin'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
@@ -18,8 +19,6 @@ const dbState = vi.hoisted(() => ({
   failOn: null as string | null,
   failExecute: false,
 }))
-
-const redisState = vi.hoisted(() => ({ store: new Map<string, string>(), failPing: false }))
 
 vi.mock('../plugins/db.js', async () => {
   const fastifyPlugin = (await import('fastify-plugin')).default
@@ -95,30 +94,8 @@ vi.mock('../plugins/db.js', async () => {
   }
 })
 
-vi.mock('../plugins/redis.js', async () => {
-  const fastifyPlugin = (await import('fastify-plugin')).default
-  const redis = {
-    get: async (key: string) => redisState.store.get(key) ?? null,
-    set: async (key: string, value: string) => {
-      redisState.store.set(key, value)
-      return 'OK'
-    },
-    ping: async () => {
-      if (redisState.failPing) throw new Error('redis://user:hunter2@cache.example unreachable')
-      return 'PONG'
-    },
-  }
-  return {
-    redisPlugin: fastifyPlugin(async (fastify: FastifyInstance) => {
-      fastify.decorate('redis', redis as never)
-    }),
-  }
-})
-
-// Rate limiting is not what these tests cover, and its Redis store needs a real
-// ioredis client to define its Lua commands. BW-05 verified the limit across two
-// live processes; here the plugin is a no-op so `config.rateLimit` on a route is
-// simply inert metadata.
+// Rate limiting is not what these tests cover. The plugin is a no-op here, so
+// `config.rateLimit` on a route is simply inert metadata.
 vi.mock('@fastify/rate-limit', () => ({ default: fp(async () => {}) }))
 
 const { buildServer } = await import('../build-server.js')
@@ -159,8 +136,6 @@ beforeEach(async () => {
   dbState.calls = []
   dbState.failOn = null
   dbState.failExecute = false
-  redisState.store.clear()
-  redisState.failPing = false
   app = await buildServer()
   await app.ready()
 })
@@ -226,30 +201,13 @@ describe('dashboard routes — org scoping', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    // Every cache key is namespaced by the org the route actually used.
-    const keys = [...redisState.store.keys()]
-    expect(keys.length).toBeGreaterThan(0)
-    expect(keys.every((k) => k.includes(ORG_A))).toBe(true)
-    expect(keys.some((k) => k.includes(ORG_B))).toBe(false)
-  })
-
-  it('does not serve org A a cache entry written for org B', async () => {
-    await app.inject({
-      method: 'GET',
-      url: range('/v1/dashboard/overview'),
-      headers: auth(token({ orgId: ORG_B })),
-    })
-    const cachedForB = [...redisState.store.keys()]
-    expect(cachedForB.every((k) => k.includes(ORG_B))).toBe(true)
-
-    const res = await app.inject({
-      method: 'GET',
-      url: range('/v1/dashboard/overview'),
-      headers: auth(token({ orgId: ORG_A })),
-    })
-    expect(res.statusCode).toBe(200)
-    // A fresh key was written rather than org B's entry being reused.
-    expect([...redisState.store.keys()].some((k) => k.includes(ORG_A))).toBe(true)
+    // Asserted against the arguments the route actually handed the database.
+    // This used to read the cache keys; those went with the cache, and the query
+    // arguments are the better anchor regardless — they are what decides which
+    // rows come back, where a cache key only described them afterwards.
+    const queried = inspect(dbState.calls, { depth: null })
+    expect(queried).toContain(ORG_A)
+    expect(queried).not.toContain(ORG_B)
   })
 })
 
@@ -754,7 +712,7 @@ describe('POST /v1/auth/refresh', () => {
 })
 
 describe('GET /health', () => {
-  it('needs no authentication and returns 200 when both dependencies answer', async () => {
+  it('needs no authentication and returns 200 when the database answers', async () => {
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
@@ -767,28 +725,10 @@ describe('GET /health', () => {
     expect(res.json()).toEqual({ ok: false, failed: ['database'] })
   })
 
-  it('returns 503 naming redis when redis is down', async () => {
-    redisState.failPing = true
-    const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(503)
-    expect(res.json()).toEqual({ ok: false, failed: ['redis'] })
-  })
-
-  it('names both when both are down', async () => {
-    dbState.failExecute = true
-    redisState.failPing = true
-    const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(503)
-    expect(res.json().failed).toEqual(['database', 'redis'])
-  })
-
   it('leaks no connection details into the response body', async () => {
-    // Both driver errors carry a host, and the redis one carries a password.
+    // The driver error carries the host it failed to reach.
     dbState.failExecute = true
-    redisState.failPing = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.payload).not.toContain('db.example')
-    expect(res.payload).not.toContain('cache.example')
-    expect(res.payload).not.toContain('hunter2')
   })
 })
