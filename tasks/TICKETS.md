@@ -41,7 +41,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-27 | P3 | Enforce device token revocation, or drop the table | todo | M | — |
 | BW-28 | P5 | Share the dashboard query schema and cache wrapper | todo | S | — |
 | BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | todo | S | — |
-| BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | todo | M | — |
+| BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | **done** | M | — |
 | BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
 
 ---
@@ -1228,11 +1228,39 @@ emails are not secrets.
 Until then the deployment is only safe because `burn-watch-api.vercel.app` is
 unadvertised, which is not a security control.
 
+**Done 2026-11-05.** `pending_devices.approved_at` (migration
+`0001_add_pending_device_approval.sql`, a nullable column, so every row that
+existed before the fix is now permanently unverifiable — which is the intent).
+`POST /v1/auth/approve-device` sits behind `requireDashboardAuth`, so a device
+token gets 403 and only a browser login can reach it. It claims the row in one
+`UPDATE ... RETURNING` matched on the code and the signed-in user's own email,
+read from `users` by the token's `userId` rather than from the request:
+approval is only ever possible for your own device, and two clicks on one code
+cannot both win. Unknown, expired, already-approved and someone-else's codes all
+answer `400 Invalid or expired verification code`, so the endpoint cannot be
+used to probe for live codes. `verify-device` gained
+`isNotNull(pendingDevices.approvedAt)`. The dashboard screen is `/devices`,
+reachable by every signed-in role, not just admins — the person approving is the
+developer whose terminal printed the code.
+
+No `approved_by`. The email match already pins approval to one user, and nothing
+reads an audit trail yet; add the column when something does.
+
+Two consequences worth naming. The agent's poll was the one caller that never
+exercised `verify-device`'s rate limit, because the first poll always succeeded;
+with a real wait in front of it the loop would have hit `max: 10 / 15 min` and
+registration would have failed outright. Poll interval is now 10s and the cap is
+600 per 15 minutes — high on purpose, since reaching the route at all needs the
+`pendingId`, a v4 UUID handed only to the caller that registered, and
+`@fastify/rate-limit` keys on IP, which a whole office shares behind one NAT.
+And **the migration must run before the API deploys**: the new code selects on a
+column that older databases do not have.
+
 **Acceptance**
-- [ ] `verify-device` returns 400 for a pending device nobody approved
-- [ ] Approval requires a dashboard session, not a device token
-- [ ] A test asserts the two-call self-service sequence above now fails
-- [ ] The agent's polling loop reflects a step that actually gates
+- [x] `verify-device` returns 400 for a pending device nobody approved
+- [x] Approval requires a dashboard session, not a device token
+- [x] A test asserts the two-call self-service sequence above now fails
+- [x] The agent's polling loop reflects a step that actually gates
 
 ### BW-31 · Agent default `--api-url` pointed at a domain that never existed
 **Size S** · done 2026-11-05
