@@ -6,6 +6,11 @@ import type { DeviceConfig } from '@burn-watch/shared'
 const CONFIG_DIR = join(homedir(), '.burnwatch')
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json')
 
+// Where `register` points when `--api-url` is not given. This was
+// `https://api.burnwatch.com`, a domain that has never existed, so the default
+// path through `burnwatch register` could only ever fail with a DNS error.
+export const DEFAULT_API_URL = 'https://burn-watch-api.vercel.app'
+
 export function hasConfig(): boolean {
   return existsSync(CONFIG_PATH)
 }

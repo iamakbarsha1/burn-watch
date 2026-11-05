@@ -3,6 +3,7 @@ import { registerCommand } from './commands/register.js'
 import { syncCommand } from './commands/sync.js'
 import { statusCommand } from './commands/status.js'
 import { uninstallCron } from './lib/cron.js'
+import { DEFAULT_API_URL } from './lib/config.js'
 
 const program = new Command()
   .name('burnwatch')
@@ -12,7 +13,7 @@ const program = new Command()
 program
   .command('register')
   .description('Register this device with BurnWatch')
-  .option('--api-url <url>', 'BurnWatch API URL', 'https://api.burnwatch.com')
+  .option('--api-url <url>', 'BurnWatch API URL', DEFAULT_API_URL)
   .action(registerCommand)
 
 program

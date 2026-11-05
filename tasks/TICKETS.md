@@ -41,6 +41,8 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-27 | P3 | Enforce device token revocation, or drop the table | todo | M | — |
 | BW-28 | P5 | Share the dashboard query schema and cache wrapper | todo | S | — |
 | BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | todo | S | — |
+| BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | todo | M | — |
+| BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
 
 ---
 
@@ -571,12 +573,25 @@ behind a deny rule, so the values have to come from the user.
       gets the API rather than a 302
 - [x] `API_URL` on the dashboard project points at the API project's domain
 - [x] Both projects promoted to production
+- [x] Agent `sync` against the deployed API writes a row — smoke-tested
+      2026-11-05 end to end: `register-device` → `verify-device` → config →
+      `sync --date 2026-11-04` → `Accepted: 4`, and four `usage_events` rows for
+      device `16db583a` confirmed in Neon (opus-5 $54.33, sonnet-5 $3.56,
+      sonnet-4-6 $3.37, haiku-4-5 $1.43)
+- [x] Device tokens are correctly refused by the dashboard API — all five
+      dashboard routes return 403 `Dashboard access requires user role` for a
+      device-role JWT, so a stolen agent token cannot read spend data
 - [ ] Dashboard login works end to end against the deployment
 - [ ] One authenticated query per dashboard page returns real data
-- [ ] Agent `sync` against the deployed API writes a row
 
-The last three need a real user and a real device token, so they are the first
-thing to do next session rather than something this one could close.
+The last two cannot be closed from a terminal. Dashboard reads need a
+**user**-role JWT, and that is minted only by `createApiTokenForEmail` in
+`lib/session.ts`, which signs with `JWT_SECRET` from inside the deployed
+dashboard after a better-auth login. There is no path to it without either
+browser credentials or the secret. The dashboard also sits behind Vercel SSO.
+Closing these means someone logging in and loading the pages.
+
+The smoke test also found BW-30, which is a P0.
 - [ ] Promote to production and record both URLs in ROADMAP.md
 
 ---
@@ -1172,7 +1187,69 @@ explicitly out of scope. Recorded so the next reader does not re-raise it.
 API answers from a 300-second Redis cache, so the repeated load lands on Redis
 and not postgres. Revisit only if Redis shows it.
 
+### BW-30 · `verify-device` has no approval gate
+**Size M** · P0 · found 2026-11-05 during the BW-08 smoke test
+
+`POST /v1/auth/verify-device` requires `pendingId` and `code` — and
+`POST /v1/auth/register-device` returns **both of them in its own response**.
+Nothing checks that a human approved anything. Two unauthenticated calls, the
+second using data the first handed back, produce a 30-day access token and a
+90-day refresh token for any email already in `users`.
+
+Demonstrated against production during the smoke test. No browser, no dashboard
+session, no admin involvement:
+
+```
+POST /v1/auth/register-device {"email":"dev1@test.com",...}
+  -> 200 {"pendingId":"98b214e4-...","code":"BXZJGU"}
+POST /v1/auth/verify-device   {"pendingId":"98b214e4-...","code":"BXZJGU"}
+  -> 200 {"accessToken":"eyJ...","refreshToken":"eyJ...","deviceId":"16db583a-..."}
+```
+
+This is the hole the 2026-06-23 pending-device work was written to close. The
+agent prints "Enter this code in the BurnWatch dashboard to verify your device"
+and then polls — but the first poll three seconds later succeeds unconditionally,
+so the dashboard step is decorative. `pending_devices` is referenced only in
+`routes/auth/device.ts`; no dashboard route reads or approves it, and the
+dashboard has no pending-device UI.
+
+What stands between this and an attacker is one rate limit, `max: 5 / 15 min` on
+`register-device` — which BW-05's revert made per-instance, so it is really
+`5 × live instances`. A valid work email is the only secret involved, and work
+emails are not secrets.
+
+**Fix needs three parts, which is why this is not a quick patch:**
+1. `pending_devices` grows an `approved_at` (and ideally `approved_by`) column.
+2. A dashboard-authenticated `POST /v1/auth/approve-device` sets it;
+   `verify-device` additionally requires `approved_at is not null`.
+3. Dashboard UI to enter the code — the screen the agent already tells people to
+   use, which has never existed.
+
+Until then the deployment is only safe because `burn-watch-api.vercel.app` is
+unadvertised, which is not a security control.
+
+**Acceptance**
+- [ ] `verify-device` returns 400 for a pending device nobody approved
+- [ ] Approval requires a dashboard session, not a device token
+- [ ] A test asserts the two-call self-service sequence above now fails
+- [ ] The agent's polling loop reflects a step that actually gates
+
+### BW-31 · Agent default `--api-url` pointed at a domain that never existed
+**Size S** · done 2026-11-05
+
+`index.ts` and `register.ts` both defaulted to `https://api.burnwatch.com`. That
+domain has never been registered, so `burnwatch register` without an explicit
+`--api-url` could only ever fail on DNS. Replaced with a single exported
+`DEFAULT_API_URL` in `lib/config.ts`, now pointing at the deployed API, so the
+two call sites cannot drift apart again.
+
+**Acceptance**
+- [x] One constant, imported by both call sites
+- [x] Points at the live API
+
 ### Carried over, still unowned
 
-`apps/api/.env.example` line 8 still sets `CORS_ORIGIN`, which BW-07 removed
-everywhere else. One line, outside the paths this session could write.
+`apps/api/.env.example` still sets `CORS_ORIGIN` (removed everywhere else by
+BW-07) and `REDIS_URL` (dead since BW-08). Both lines need deleting by hand —
+`.env*` is covered by a Read deny rule in the agent's permission settings, so no
+session can write that file.
