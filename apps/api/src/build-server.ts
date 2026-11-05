@@ -31,9 +31,10 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
     return reply.status(error.statusCode ?? 500).send({ error: error.message })
   })
 
-  // No CORS plugin on purpose. The dashboard shares an origin with the API on
-  // Vercel and calls it server-side anyway; the agent is a Node CLI, which no
-  // browser same-origin policy applies to. Registering CORS would only widen
+  // No CORS plugin on purpose, and that survives the API moving to its own
+  // origin in a separate project. The dashboard calls this from its own Node
+  // process, so no browser ever issues the request; the agent is a Node CLI,
+  // which no same-origin policy applies to. Registering CORS would only widen
   // what a browser on another origin is allowed to do.
   server.register(dbPlugin)
   // Must come before rate limit, which uses this connection as its store.

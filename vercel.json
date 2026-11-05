@@ -1,0 +1,4 @@
+{
+  "buildCommand": "npx turbo build --filter=@burn-watch/api",
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }]
+}
