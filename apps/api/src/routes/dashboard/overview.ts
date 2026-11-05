@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and, sum, sql, count, gte, lte } from 'drizzle-orm'
+import { eq, and, sum, sql, countDistinct, gte, lte } from 'drizzle-orm'
 import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
@@ -72,7 +72,11 @@ async function db_aggregate(fastify: FastifyInstance, orgId: string, fromDate: s
     .select({
       totalCost: sum(dailySnapshots.totalCostUsd).mapWith(Number),
       totalTokens: sum(dailySnapshots.totalTokens).mapWith(Number),
-      activeUsers: count(dailySnapshots.userId),
+      // daily_snapshots holds one row per user per day, so a plain count() here
+      // counted rows and called them people: a single developer across 63 days
+      // reported "63 active users" on a dashboard whose whole job is telling an
+      // org how many of its developers are actually using AI.
+      activeUsers: countDistinct(dailySnapshots.userId),
       claudeTokens: sum(dailySnapshots.claudeTokens).mapWith(Number),
       claudeCost: sum(dailySnapshots.claudeCostUsd).mapWith(Number),
       qwenTokens: sum(dailySnapshots.qwenTokens).mapWith(Number),
