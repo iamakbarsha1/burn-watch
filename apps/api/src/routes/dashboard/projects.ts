@@ -23,10 +23,6 @@ export async function projectsRoutes(fastify: FastifyInstance) {
       const fromDate = parsed.data.date ?? parsed.data.from!
       const toDate = parsed.data.date ?? parsed.data.to!
 
-      const cacheKey = `bw:projects:${orgId}:${fromDate}:${toDate}`
-      const cached = await fastify.redis.get(cacheKey)
-      if (cached) return JSON.parse(cached)
-
       const rows = await fastify.db
         .select({
           projectBreakdown: claudeEnrichment.projectBreakdown,
@@ -77,7 +73,6 @@ export async function projectsRoutes(fastify: FastifyInstance) {
         }),
       )
 
-      await fastify.redis.set(cacheKey, JSON.stringify(result), 'EX', 300)
       return result
     },
   )

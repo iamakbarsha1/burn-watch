@@ -34,10 +34,6 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         toDate = new Date().toISOString().slice(0, 10)
       }
 
-      const cacheKey = `bw:trends:${orgId}:${fromDate}:${toDate}`
-      const cached = await fastify.redis.get(cacheKey)
-      if (cached) return JSON.parse(cached)
-
       const rows = await fastify.db
         .select({
           date: dailySnapshots.date,
@@ -75,7 +71,6 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         totalTokens: r.totalTokens ?? 0,
       }))
 
-      await fastify.redis.set(cacheKey, JSON.stringify(result), 'EX', 300)
       return result
     },
   )

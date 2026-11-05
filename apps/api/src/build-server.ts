@@ -6,7 +6,6 @@ import jwt from '@fastify/jwt'
 import { ZodError } from 'zod'
 import { sql } from 'drizzle-orm'
 import { dbPlugin } from './plugins/db.js'
-import { redisPlugin } from './plugins/redis.js'
 import { authRoutes } from './routes/auth/device.js'
 import { inviteRoutes } from './routes/auth/invites.js'
 import { usageRoutes } from './routes/usage/submit.js'
@@ -37,17 +36,14 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
   // which no same-origin policy applies to. Registering CORS would only widen
   // what a browser on another origin is allowed to do.
   server.register(dbPlugin)
-  // Must come before rate limit, which uses this connection as its store.
-  server.register(redisPlugin)
-  // Counts in Redis, not process memory. Each serverless instance keeps its own
-  // in-memory counter, so the default store would multiply every per-route limit
-  // by the number of live instances.
-  // Inside `after` because `server.redis` does not exist until redisPlugin has
-  // actually loaded, and `register` only queues. Routes are queued after this,
-  // so their per-route `config.rateLimit` is still honoured.
-  server.after(() => {
-    server.register(rateLimit, { global: false, redis: server.redis })
-  })
+  // ponytail: in-memory counters, per instance. Every per-route limit below is
+  // effectively multiplied by the number of live serverless instances, which
+  // matters because all of them guard auth endpoints — device registration is
+  // 3/hour on one instance and 3N/hour on N. Redis backed this with a shared
+  // counter until the cache was dropped for the MVP. Restore a shared store
+  // (Redis, or a Postgres table keyed by ip+route) before this API is reachable
+  // by anyone outside the company.
+  server.register(rateLimit, { global: false })
   server.register(jwt, { secret: process.env.JWT_SECRET!, namespace: 'access' })
   server.register(jwt, { secret: process.env.JWT_REFRESH_SECRET!, namespace: 'refresh' })
 
@@ -56,23 +52,19 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
   server.register(usageRoutes, { prefix: '/v1' })
   server.register(dashboardRoutes, { prefix: '/v1/dashboard' })
 
-  // Actually touches both dependencies. Returning `{ ok: true }` unconditionally
+  // Actually touches the database. Returning `{ ok: true }` unconditionally
   // meant a dead database still reported healthy to Vercel and to any uptime
   // monitor. Names the failing dependency and nothing else — no connection
-  // strings, no driver error text.
+  // strings, no driver error text. Still a list so adding a dependency back
+  // does not change the response shape.
   server.get('/health', async (_request, reply) => {
-    const checks = await Promise.allSettled([
-      server.db.execute(sql`select 1`),
-      server.redis.ping(),
-    ])
-    const failed = (['database', 'redis'] as const).filter(
-      (_name, i) => checks[i].status === 'rejected',
-    )
+    const checks = await Promise.allSettled([server.db.execute(sql`select 1`)])
+    const failed = (['database'] as const).filter((_name, i) => checks[i].status === 'rejected')
 
     if (failed.length > 0) {
       for (const [i, check] of checks.entries()) {
         if (check.status === 'rejected') {
-          server.log.error({ err: check.reason, dependency: ['database', 'redis'][i] }, 'Health check failed')
+          server.log.error({ err: check.reason, dependency: ['database'][i] }, 'Health check failed')
         }
       }
       return reply.status(503).send({ ok: false, failed })

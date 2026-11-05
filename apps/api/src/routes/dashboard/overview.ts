@@ -24,10 +24,6 @@ export async function overviewRoutes(fastify: FastifyInstance) {
       const toDate = parsed.data.date ?? parsed.data.to!
       const isRange = fromDate !== toDate
 
-      const cacheKey = `bw:overview:${orgId}:${fromDate}:${toDate}`
-      const cached = await fastify.redis.get(cacheKey)
-      if (cached) return JSON.parse(cached)
-
       const [today] = await db_aggregate(fastify, orgId, fromDate, toDate)
 
       const todayCost = today?.totalCost ?? 0
@@ -66,7 +62,6 @@ export async function overviewRoutes(fastify: FastifyInstance) {
         byAgent,
       }
 
-      await fastify.redis.set(cacheKey, JSON.stringify(result), 'EX', 300)
       return result
     },
   )

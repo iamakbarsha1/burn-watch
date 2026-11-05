@@ -26,10 +26,6 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       const fromDate = parsed.data.date ?? parsed.data.from!
       const toDate = parsed.data.date ?? parsed.data.to!
 
-      const cacheKey = `bw:leaderboard:${orgId}:${fromDate}:${toDate}:${limit}:${offset}`
-      const cached = await fastify.redis.get(cacheKey)
-      if (cached) return JSON.parse(cached)
-
       const rows = await fastify.db
         .select({
           userId: dailySnapshots.userId,
@@ -75,7 +71,6 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         cacheHitRate: r.cacheHitRate,
       }))
 
-      await fastify.redis.set(cacheKey, JSON.stringify(result), 'EX', 300)
       return result
     },
   )
