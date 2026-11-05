@@ -77,6 +77,10 @@ export const pendingDevices = pgTable('pending_devices', {
   platform: text('platform').notNull(),
   agentVersion: text('agent_version').notNull(),
   expiresAt: timestamp('expires_at').notNull(),
+  // Set when a signed-in user enters the code in the dashboard. Until then the
+  // row cannot be exchanged for tokens: a work email is the only thing
+  // register-device asks for, and work emails are not secrets.
+  approvedAt: timestamp('approved_at'),
   verifiedAt: timestamp('verified_at'),
   deviceId: uuid('device_id').references(() => devices.id),  // set after verify
   createdAt: timestamp('created_at').defaultNow().notNull(),

@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { eq, and, isNull, gt } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull, gt } from 'drizzle-orm'
 import { users, devices, deviceTokens, organizations, pendingDevices } from '../../../drizzle/schema.js'
-import { RegisterDeviceSchema, VerifyDeviceSchema } from '@burn-watch/shared'
-import type { JwtPayload } from '../../plugins/jwt.js'
+import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema } from '@burn-watch/shared'
+import { requireDashboardAuth, type JwtPayload } from '../../plugins/jwt.js'
 
 const BootstrapSchema = z.object({
   orgName: z.string().min(1),
@@ -69,13 +69,69 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // POST /v1/auth/verify-device — step 2: verify code, create device + tokens
-  fastify.post('/verify-device', {
+  // POST /v1/auth/approve-device — the human step: a signed-in user claims a
+  // code their own agent printed. This is what makes registration more than a
+  // guess at someone's work email, so the endpoint must stay authenticated.
+  fastify.post('/approve-device', {
     config: { rateLimit: { max: 10, timeWindow: '15 minutes' } },
+    preHandler: requireDashboardAuth(fastify),
+  }, async (request, reply) => {
+    const body = ApproveDeviceSchema.parse(request.body)
+    const jwt = request.user as JwtPayload
+
+    const [user] = await fastify.db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, jwt.userId))
+      .limit(1)
+
+    if (!user) {
+      return reply.status(401).send({ error: 'Unauthorized' })
+    }
+
+    // One UPDATE decides and records the approval, so two clicks on the same
+    // code cannot both win. Matching on the signed-in user's own email is the
+    // actual control: approving is only ever possible for your own device.
+    const [approved] = await fastify.db
+      .update(pendingDevices)
+      .set({ approvedAt: new Date() })
+      .where(
+        and(
+          eq(pendingDevices.code, body.code),
+          eq(pendingDevices.email, user.email),
+          isNull(pendingDevices.approvedAt),
+          isNull(pendingDevices.verifiedAt),
+          gt(pendingDevices.expiresAt, new Date()),
+        ),
+      )
+      .returning({ hostname: pendingDevices.hostname, platform: pendingDevices.platform })
+
+    // Unknown, expired, already approved, already used, or someone else's code
+    // all answer the same way, so this cannot be used to probe for live codes.
+    if (!approved) {
+      return reply.status(400).send({ error: 'Invalid or expired verification code' })
+    }
+
+    return { hostname: approved.hostname, platform: approved.platform }
+  })
+
+  // POST /v1/auth/verify-device — step 3: exchange an approved code for tokens
+  //
+  // The cap is high because the agent polls this endpoint every 10s for up to
+  // 15 minutes while it waits for the approval above, and @fastify/rate-limit
+  // keys on IP — a whole office behind one NAT shares the budget. Nothing is
+  // lost by that: reaching this route at all needs the pendingId, a v4 UUID
+  // handed only to the caller that registered, so the cap is a DoS backstop
+  // and never the thing standing between a guess and a token.
+  // ponytail: raise the cap if an office ever trips it; key on pendingId
+  // (config.rateLimit.hook = 'preHandler') only if that stops being enough.
+  fastify.post('/verify-device', {
+    config: { rateLimit: { max: 600, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
     const body = VerifyDeviceSchema.parse(request.body)
 
-    // Find pending device that matches code + pendingId, not expired, not yet verified
+    // Find pending device that matches code + pendingId, approved in the
+    // dashboard, not expired, not yet verified
     const [pending] = await fastify.db
       .select()
       .from(pendingDevices)
@@ -83,6 +139,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         and(
           eq(pendingDevices.id, body.pendingId),
           eq(pendingDevices.code, body.code),
+          isNotNull(pendingDevices.approvedAt),
           isNull(pendingDevices.verifiedAt),
           gt(pendingDevices.expiresAt, new Date()),
         ),

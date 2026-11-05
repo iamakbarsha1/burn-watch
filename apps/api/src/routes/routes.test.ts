@@ -450,6 +450,44 @@ describe('device registration', () => {
     expect(res.statusCode).toBe(404)
   })
 
+  // BW-30. register-device hands the caller both halves of what verify-device
+  // asks for, so before approval existed those two unauthenticated calls were a
+  // complete path from "knows a colleague's work email" to a 30-day token.
+  it('cannot be completed by the two unauthenticated calls alone', async () => {
+    dbState.results.push([{ id: USER_A, orgId: ORG_A }]) // register: user lookup
+    dbState.results.push([{ id: 'pending-1' }]) // register: pending insert
+
+    const registered = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/register-device',
+      payload: {
+        email: 'dev@example.com',
+        hostname: 'laptop.local',
+        platform: 'darwin',
+        agentVersion: '0.1.0',
+      },
+    })
+    const { pendingId, code } = registered.json()
+
+    // Nothing approved the row, so the lookup matches nothing.
+    dbState.results.push([])
+    const verified = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/verify-device',
+      payload: { pendingId: '66666666-6666-4666-8666-666666666666', code },
+    })
+
+    expect(pendingId).toBe('pending-1')
+    expect(verified.statusCode).toBe(400)
+    expect(verified.json()).not.toHaveProperty('accessToken')
+
+    // The fake database ignores predicates, so an empty result only proves the
+    // route handles a miss. What makes the sequence fail is the predicate
+    // itself: assert verify-device will not look at an unapproved row.
+    const lookup = dbState.calls.filter((c) => c.op === 'where').at(-1)
+    expect(inspect(lookup?.arg, { depth: null })).toMatch(/approved_at[\s\S]*is not null/)
+  })
+
   it('rejects an unverifiable code without creating a device', async () => {
     dbState.results.push([]) // no matching unexpired, unverified pending row
     const res = await app.inject({
@@ -484,6 +522,55 @@ describe('device registration', () => {
     expect(stored?.tokenHash).toBeTypeOf('string')
     expect(stored?.tokenHash).not.toBe(accessToken)
     expect(String(stored?.tokenHash)).toHaveLength(64)
+  })
+})
+
+describe('POST /v1/auth/approve-device', () => {
+  const approve = (headers: Record<string, string> | undefined, code = 'ABC123') =>
+    app.inject({ method: 'POST', url: '/v1/auth/approve-device', headers, payload: { code } })
+
+  it('returns 401 without a token', async () => {
+    const res = await approve(undefined)
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('returns 403 for a device-role token', async () => {
+    // Otherwise an agent token would approve the next agent, and the browser
+    // login this endpoint exists to require would be optional again.
+    const res = await approve(auth(token({ role: 'device', deviceId: DEVICE_A })))
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('rejects a code that is not six characters', async () => {
+    const res = await approve(auth(token()), 'ABC12')
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('approves only a row carrying the signed-in user own email', async () => {
+    dbState.results.push([{ email: 'dev@example.com' }]) // user lookup by JWT userId
+    dbState.results.push([{ hostname: 'laptop.local', platform: 'darwin' }]) // update ... returning
+
+    const res = await approve(auth(token()))
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ hostname: 'laptop.local', platform: 'darwin' })
+
+    const claim = dbState.calls.filter((c) => c.op === 'where').at(-1)
+    const predicate = inspect(claim?.arg, { depth: null })
+    // The email comes from the database row for the token's userId, never from
+    // the request, so a caller cannot approve someone else's pending device.
+    expect(predicate).toContain('dev@example.com')
+    expect(dbState.calls.find((c) => c.op === 'set')?.arg).toHaveProperty('approvedAt')
+  })
+
+  it('answers an unknown, expired or already-claimed code identically', async () => {
+    dbState.results.push([{ email: 'dev@example.com' }])
+    dbState.results.push([]) // the claiming update matched nothing
+
+    const res = await approve(auth(token()))
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toBe('Invalid or expired verification code')
   })
 })
 
