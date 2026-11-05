@@ -1,7 +1,9 @@
 'use client'
 
+import { useTransition } from 'react'
 import { useSearchParams, usePathname, useRouter } from 'next/navigation'
-import { ALL_TIME_FROM } from '@/lib/format'
+import { ALL_TIME_FROM, today as todayStr } from '@/lib/format'
+import { inputClass } from '@/components/ui'
 
 const PRESETS = [
   { label: 'Today', days: 0 },
@@ -11,35 +13,45 @@ const PRESETS = [
   { label: 'All time', days: null },
 ] as const
 
-function formatDate(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
 function daysAgo(n: number): string {
   const d = new Date()
   d.setDate(d.getDate() - n)
-  return formatDate(d)
+  return todayStr(d)
 }
 
 export function DateRangePicker() {
   const searchParams = useSearchParams()
   const pathname = usePathname()
   const router = useRouter()
+  // Without a transition the click is silent until the server is done, which is
+  // exactly how "the timeline selection is laggy" feels. The transition lets the
+  // pressed button report itself immediately and holds the existing numbers on
+  // screen at reduced opacity instead of flashing a skeleton over them.
+  const [pending, startTransition] = useTransition()
 
-  const today = formatDate(new Date())
-  const from = searchParams.get('from') ?? today
+  const today = todayStr()
+  const from = searchParams.get('from') ?? ALL_TIME_FROM
   const to = searchParams.get('to') ?? today
 
   function navigate(newFrom: string, newTo: string) {
     const params = new URLSearchParams(searchParams.toString())
     params.set('from', newFrom)
     params.set('to', newTo)
-    router.push(`${pathname}?${params.toString()}`)
+    startTransition(() => {
+      router.push(`${pathname}?${params.toString()}`, { scroll: false })
+    })
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-      <div style={{ display: 'flex', gap: '0.25rem' }}>
+    <div
+      className="flex flex-wrap items-center gap-2"
+      data-pending={pending ? '' : undefined}
+    >
+      <div
+        role="group"
+        aria-label="Date range presets"
+        className="flex flex-wrap items-center gap-1 rounded-lg border border-line bg-surface-1 p-1"
+      >
         {PRESETS.map((p) => {
           const pFrom =
             p.days === null ? ALL_TIME_FROM
@@ -51,16 +63,14 @@ export function DateRangePicker() {
           return (
             <button
               key={p.label}
+              type="button"
               onClick={() => navigate(pFrom, pTo)}
-              style={{
-                padding: '0.375rem 0.75rem',
-                fontSize: '0.8rem',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                background: isActive ? 'var(--foreground)' : 'var(--card)',
-                color: isActive ? 'var(--background)' : 'var(--muted)',
-                cursor: 'pointer',
-              }}
+              aria-pressed={isActive}
+              className={`rounded-md px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
+                isActive
+                  ? 'bg-ink text-surface-0'
+                  : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+              }`}
             >
               {p.label}
             </button>
@@ -68,38 +78,42 @@ export function DateRangePicker() {
         })}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+      <div className="flex items-center gap-1.5">
+        <label className="sr-only" htmlFor="range-from">
+          From date
+        </label>
         <input
+          id="range-from"
           type="date"
           value={from}
           max={to}
-          onChange={(e) => navigate(e.target.value, to)}
-          style={{
-            padding: '0.375rem 0.5rem',
-            fontSize: '0.8rem',
-            border: '1px solid var(--border)',
-            borderRadius: '6px',
-            background: 'var(--card)',
-            color: 'var(--foreground)',
-          }}
+          onChange={(e) => e.target.value && navigate(e.target.value, to)}
+          className={`${inputClass} h-9 text-xs [color-scheme:dark]`}
         />
-        <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>to</span>
+        <span className="text-xs text-ink-3">to</span>
+        <label className="sr-only" htmlFor="range-to">
+          To date
+        </label>
         <input
+          id="range-to"
           type="date"
           value={to}
           min={from}
           max={today}
-          onChange={(e) => navigate(from, e.target.value)}
-          style={{
-            padding: '0.375rem 0.5rem',
-            fontSize: '0.8rem',
-            border: '1px solid var(--border)',
-            borderRadius: '6px',
-            background: 'var(--card)',
-            color: 'var(--foreground)',
-          }}
+          onChange={(e) => e.target.value && navigate(from, e.target.value)}
+          className={`${inputClass} h-9 text-xs [color-scheme:dark]`}
         />
       </div>
+
+      <span
+        role="status"
+        aria-live="polite"
+        className={`size-3.5 shrink-0 rounded-full border-2 border-ink-3 border-t-transparent transition-opacity ${
+          pending ? 'animate-spin opacity-100' : 'opacity-0'
+        }`}
+      >
+        <span className="sr-only">{pending ? 'Updating range' : ''}</span>
+      </span>
     </div>
   )
 }
