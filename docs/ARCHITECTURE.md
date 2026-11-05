@@ -53,10 +53,11 @@ Developer Machines                    Infrastructure
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Commander CLI entry point (`register`, `sync`, `install-schedule`) |
+| `src/index.ts` | Commander CLI entry point (`register`, `sync`, `status`, `install-cron`, `uninstall`) |
 | `src/commands/sync.ts` | Orchestrates both collectors, POSTs to API |
 | `src/collectors/ccusage.ts` | Tier 1: runs ccusage CLI, parses JSON output |
 | `src/collectors/codeburn.ts` | Tier 2: parses JSONL files for Claude enrichment |
+| `src/lib/cron.ts` | launchd plist for the 6 PM daily sync (macOS only, see BW-20) |
 
 ### `apps/api` — Fastify 5
 

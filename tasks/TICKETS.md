@@ -991,16 +991,20 @@ Whichever runs first, a failure in the second leaves an orphan: either a
 `devices` schema already tracks `darwin`/`win32`/`linux`.
 
 Add systemd user timers for Linux and Task Scheduler for Windows. Keep one
-`installSchedule(binaryPath)` entry that dispatches on platform.
+`installSchedule()` entry that dispatches on platform. It takes no path
+argument: BW-32 made `installCron()` resolve its own argv by probing candidates
+with the hidden `__self-check` command, and each platform backend needs the same
+resolved argv. `resolveSelfCommand()` is platform-independent and stays shared.
 
-Also reconcile the CLI surface: ARCHITECTURE.md documents an `install-schedule`
-command that does not exist. Actual commands are `register`, `sync`, `status`,
-`uninstall`. Decide whether to add the command or fix the doc, and apply the
-same answer in BW-23.
+The CLI surface is settled, so the existing command names are the ones to keep:
+`register`, `sync`, `status`, `install-cron`, `uninstall`. `install-cron` is
+macOS-specific in name only; it should dispatch per platform rather than gain a
+sibling command. ARCHITECTURE.md now documents this set.
 
 **Acceptance**
 - [ ] Linux and Windows schedule installation works
 - [ ] `uninstall` removes the schedule on all three platforms
+- [ ] `install-cron` repoints an existing schedule on all three platforms
 - [ ] Unsupported platform fails with a clear message, not a stack trace
 
 ### BW-21 · GitHub Copilot integration
@@ -1049,12 +1053,14 @@ between larger tickets.
 **Size S** · blocked by BW-08
 
 Known drift:
-- Documents an `install-schedule` CLI command that does not exist
+- ~~Documents an `install-schedule` CLI command that does not exist~~ fixed:
+  the agent table now lists `register`, `sync`, `status`, `install-cron`,
+  `uninstall` and the `src/lib/cron.ts` row
 - Quickstart still describes the Render and local-only setup
 - Needs the Vercel Services topology from BW-04
 
 **Acceptance**
-- [ ] Every documented command exists
+- [x] Every documented command exists
 - [ ] Deployment section matches the Vercel setup
 - [ ] Quickstart followed start to finish on a clean checkout
 
