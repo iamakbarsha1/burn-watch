@@ -1,0 +1,4 @@
+# Vercel requires an output directory when a buildCommand is set. This project
+# serves only the function in api/, so this stays empty and vercel.json rewrites
+# every path to it. Deleting this directory breaks the build with
+# STATIC_BUILD_NO_OUT_DIR.
