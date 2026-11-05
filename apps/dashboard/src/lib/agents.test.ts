@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { TrendPoint } from '@burn-watch/shared'
-import { fillDateGaps, totalsByAgent, AGENTS } from './agents'
+import { fillDateGaps, totalsByAgent, tokensByAgent, agentPanels, AGENTS } from './agents'
 
-function point(date: string, claudeCost = 0): TrendPoint {
+function point(date: string, claudeCost = 0, qwenTokens = 0): TrendPoint {
   return {
     date,
     claudeCost,
@@ -12,8 +12,8 @@ function point(date: string, claudeCost = 0): TrendPoint {
     copilotCost: 0,
     totalCost: claudeCost,
     claudeTokens: 0,
-    qwenTokens: 0,
-    totalTokens: 0,
+    qwenTokens,
+    totalTokens: qwenTokens,
   }
 }
 
@@ -71,5 +71,40 @@ describe('totalsByAgent', () => {
     const totals = totalsByAgent([point('2026-11-04', 10), point('2026-11-05', 2.5)])
     expect(totals.claude).toBe(12.5)
     expect(totals.qwen).toBe(0)
+  })
+})
+
+describe('tokensByAgent', () => {
+  it('sums only the agents that carry a token column', () => {
+    const tokens = tokensByAgent([point('2026-04-15', 0, 4_000_000), point('2026-04-16', 0, 1_000_000)])
+    expect(tokens.qwen).toBe(5_000_000)
+    expect(tokens.claude).toBe(0)
+    expect(tokens.codex).toBeUndefined()
+  })
+})
+
+describe('agentPanels', () => {
+  // The regression this guards: Qwen is unpriced, so a spend-only filter
+  // dropped it from the page even though it had burned a billion tokens.
+  it('keeps a zero-cost agent that burned tokens, plotted on tokens', () => {
+    const panels = agentPanels([point('2026-04-15', 300, 4_000_000)])
+    const qwen = panels.find((p) => p.agent.id === 'qwen')
+    expect(qwen).toBeDefined()
+    expect(qwen!.free).toBe(true)
+    expect(qwen!.dataKey).toBe('qwenTokens')
+    expect(qwen!.value).toBe('4.0M tokens')
+    expect(qwen!.caption).toBe('free tier · peak 4.0M')
+  })
+
+  it('plots a spending agent on cost', () => {
+    const claude = agentPanels([point('2026-11-05', 300)]).find((p) => p.agent.id === 'claude')
+    expect(claude!.free).toBe(false)
+    expect(claude!.dataKey).toBe('claudeCost')
+    expect(claude!.value).toBe('$300.00')
+  })
+
+  it('drops an agent with neither cost nor tokens', () => {
+    const ids = agentPanels([point('2026-11-05', 300)]).map((p) => p.agent.id)
+    expect(ids).toEqual(['claude'])
   })
 })
