@@ -11,9 +11,9 @@
 | Question | Decision |
 |---|---|
 | Agent scope | All agents stay in schema, config, and collectors. Claude ships first because that is what the company runs. Qwen/Gemini/Codex/Copilot features stay on the roadmap, just later. |
-| Hosting | One Vercel project using Vercel Services. Render is removed. |
-| Why not Render | Free tier spins down after inactivity, so the first request pays a 30-60s wake-up. |
-| Why Services over two projects | Dashboard and API share one origin. That removes CORS config and cross-site cookie handling for `bw-api-token` and the better-auth session. One preview URL, one rollback. |
+| Hosting | One Vercel project using Vercel Services. Render is removed. **Amended 2026-11-05 — still Vercel, but two projects rather than Services. See "Hosting settled" below.** |
+| Why not Render | Free tier spins down after inactivity, so the first request pays a 30-60s wake-up. **Still true, and still the reason Render is not used.** |
+| Why Services over two projects | Dashboard and API share one origin. That removes CORS config and cross-site cookie handling for `bw-api-token` and the better-auth session. One preview URL, one rollback. **Moot — the shared origin was never load-bearing: the dashboard calls the API server-side and the agent is a CLI, so no browser is involved either way.** |
 | Test stack | Vitest. Unit tests plus Fastify route tests through `app.inject()` with db and redis mocked. No database in CI. |
 
 **Cost note:** Vercel Hobby is non-commercial-use only. A tool tracking 50+ developers at a company needs a Pro seat.
@@ -24,6 +24,50 @@ The licensing point above stands and is not resolved by this — revisit before
 the tool is rolled out past the people building it. Services and service
 bindings were confirmed working on Hobby, so nothing in the architecture above
 depends on the upgrade.
+
+**Hosting settled 2026-11-05: everything stays on Vercel.** Two projects, not
+Services. The dashboard keeps its own project; the API is `burn-watch-api`,
+deployed as a plain `@vercel/node` function from `api/index.mjs` at the repo
+root, with `vercel.json` rewriting every path to it.
+
+**The earlier "Vercel cannot run a Node backend" finding was wrong**, and the
+mistake is worth keeping because it nearly cost a migration. Every probe that
+day — Services, a standalone project, and the "nothing left to remove" five-line
+Fastify app — went through **Vercel's Fastify framework preset**. The preset was
+the one variable never removed. It is what fails, with
+`INTERNAL_FUNCTION_INVOCATION_FAILED` and no logs.
+
+Proven by bisection on 2026-11-05, on this same Hobby account:
+
+| Probe | Result |
+|---|---|
+| Plain `@vercel/node` function, no framework | `{"ok":true,"runtime":"v26.13.0"}` |
+| Fastify behind a plain function, no preset | `{"ok":true,"via":"fastify-plain-function"}` |
+| The real API behind a plain function | Serves; Neon reachable |
+
+A corollary that should have been noticed earlier: the dashboard already ran
+Node server-side on this account the whole time — server components, better-auth
+session loading, the `fetch` in `api.ts`. "No Node backend runs here" was
+contradicted by a working project sitting in the same account.
+
+Render was briefly adopted and then dropped once the above was established. No
+third-party host is involved. The free-tier survey that went with it is deleted
+rather than kept, because the premise it rested on was false.
+
+**Two real bugs came out of the Vercel work, both fixed and both independent of
+hosting:**
+1. `plugins/redis.ts` fell back to `redis://localhost:6379` whenever `REDIS_URL`
+   was absent or unparseable. ioredis does not reject a URL it cannot read, so
+   the failure surfaced much later as `ECONNREFUSED 127.0.0.1:6379` — which
+   reads like a missing variable rather than a wrong one. It now refuses to
+   reach for localhost in production and names the actual reason.
+2. `REDIS_URL` on the Vercel project was set to a localhost value. That is a
+   config fix, not a code one, and the guard above is what surfaced it.
+
+**Still open:** Deployment Protection (`ssoProtection`) is on for the API
+project, so unauthenticated requests get a 302 rather than the API. The agent
+CLI cannot authenticate to it, so this has to be turned off for `burn-watch-api`
+before `burnwatch sync` works.
 
 **Constraint found 2026-11-05:** Vercel Services rejects Edge Runtime output.
 Next.js middleware is Edge by default, so the dashboard cannot use middleware
@@ -99,9 +143,9 @@ Includes two serverless corrections that are invisible on a single-instance host
 but real on Vercel: the rate-limit store (BW-05) and client reuse across warm
 invocations (BW-06).
 
-**Done when:** `render.yaml` is deleted, both services answer on one Vercel
-domain, and a login plus one dashboard query is confirmed working against the
-deployed URL.
+**Done when:** `render.yaml` is gone, the API answers on its own Vercel project
+and the dashboard on its own, and a login plus one dashboard query is confirmed
+working against the deployed URLs.
 
 ### P2 — Test safety net
 
