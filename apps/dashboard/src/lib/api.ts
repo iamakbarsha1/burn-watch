@@ -5,6 +5,8 @@ import type {
   TrendPoint,
   ToolUsageSummary,
   OrgProjectSummary,
+  AdminUserRow,
+  PendingInvite,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -59,6 +61,14 @@ export async function fetchActivity(from: string, to: string, orgId: string): Pr
 
 export async function fetchProjects(from: string, to: string, orgId: string): Promise<OrgProjectSummary[]> {
   return apiFetch(`/v1/dashboard/projects?from=${from}&to=${to}&orgId=${orgId}`)
+}
+
+export async function fetchAdminUsers(): Promise<AdminUserRow[]> {
+  return apiFetch('/v1/auth/admin/users')
+}
+
+export async function fetchPendingInvites(): Promise<PendingInvite[]> {
+  return apiFetch('/v1/auth/admin/invites')
 }
 
 export async function inviteUser(email: string, name: string): Promise<{ userId: string }> {

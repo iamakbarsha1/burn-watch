@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatRange, ALL_TIME_FROM } from './format'
+import { formatRange, formatAgo, ALL_TIME_FROM } from './format'
 
 describe('dashboard test wiring', () => {
   it('runs vitest in the dashboard workspace', () => {
@@ -22,5 +22,26 @@ describe('formatRange', () => {
 
   it('keeps a real range as a range', () => {
     expect(formatRange('2026-10-07', '2026-11-05')).toBe('2026-10-07 — 2026-11-05')
+  })
+})
+
+describe('formatAgo', () => {
+  const now = new Date('2026-11-05T12:00:00.000Z')
+
+  it('returns null for a user who has never reported', () => {
+    expect(formatAgo(null, now)).toBeNull()
+  })
+
+  it('returns null rather than "NaNd ago" for an unparseable timestamp', () => {
+    expect(formatAgo('not-a-date', now)).toBeNull()
+  })
+
+  it.each([
+    ['2026-11-05T11:59:30.000Z', 'just now'],
+    ['2026-11-05T11:15:00.000Z', '45m ago'],
+    ['2026-11-05T09:00:00.000Z', '3h ago'],
+    ['2026-11-01T12:00:00.000Z', '4d ago'],
+  ])('renders %s as %s', (iso, expected) => {
+    expect(formatAgo(iso, now)).toBe(expected)
   })
 })
