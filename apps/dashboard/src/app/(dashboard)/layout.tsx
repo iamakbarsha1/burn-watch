@@ -1,18 +1,10 @@
+import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/session'
+import { SidebarNav } from '@/components/SidebarNav'
+import { RangeBar } from '@/components/RangeBar'
 import { SignOutButton } from './SignOutButton'
-
-const NAV = [
-  { href: '/', label: 'Overview' },
-  { href: '/users', label: 'Leaderboard' },
-  { href: '/trends', label: 'Trends' },
-  { href: '/activity', label: 'Activity' },
-  { href: '/projects', label: 'Projects' },
-  { href: '/devices', label: 'Devices' },
-  { href: '/setup', label: 'Setup' },
-  { href: '/admin', label: 'Admin' },
-]
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   // Replaces the old Edge middleware, which Vercel Services does not allow.
@@ -22,36 +14,54 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!session) redirect('/login')
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      {/* Sidebar */}
-      <aside style={{ width: '220px', background: 'var(--card)', borderRight: '1px solid var(--border)', padding: '1.5rem 0', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '0 1.5rem', marginBottom: '2rem' }}>
-          <span style={{ fontSize: '1.1rem', fontWeight: 700 }}>BurnWatch</span>
-        </div>
-        <nav style={{ flex: 1 }}>
-          {NAV.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              style={{ display: 'block', padding: '0.75rem 1.5rem', color: 'var(--muted)', textDecoration: 'none', fontSize: '0.9rem' }}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-        {session?.user && (
-          <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid var(--border)' }}>
-            <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+    <div className="flex min-h-screen bg-surface-0">
+      <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-line bg-surface-1 py-5 md:flex">
+        <Link
+          href="/"
+          className="mb-6 rounded-lg px-6 text-base font-semibold tracking-tight text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/50"
+        >
+          BurnWatch
+        </Link>
+
+        {/* useSearchParams inside the nav needs a boundary so the whole shell
+            does not get pulled out of the static render. */}
+        <Suspense fallback={<div className="flex-1" />}>
+          <SidebarNav />
+        </Suspense>
+
+        {session.user && (
+          <div className="mt-4 border-t border-line px-6 pt-4">
+            <p className="truncate text-xs text-ink-2" title={session.user.email}>
               {session.user.email}
             </p>
             <SignOutButton />
           </div>
         )}
       </aside>
-      {/* Main content */}
-      <main style={{ flex: 1, padding: '2rem', overflow: 'auto' }}>
-        {children}
-      </main>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Small screens lose the sidebar, so the nav moves to a scrolling
+            strip at the top rather than disappearing. */}
+        <header className="sticky top-0 z-30 border-b border-line bg-surface-1 md:hidden">
+          <div className="flex items-center justify-between px-4 py-3">
+            <Link href="/" className="text-base font-semibold tracking-tight text-ink">
+              BurnWatch
+            </Link>
+            <SignOutButton />
+          </div>
+          <div className="overflow-x-auto px-2 pb-2">
+            <Suspense fallback={null}>
+              <SidebarNav orientation="horizontal" />
+            </Suspense>
+          </div>
+        </header>
+
+        <Suspense fallback={null}>
+          <RangeBar />
+        </Suspense>
+
+        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
+      </div>
     </div>
   )
 }
