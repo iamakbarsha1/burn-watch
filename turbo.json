@@ -3,6 +3,13 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": [
+        "API_URL",
+        "BETTER_AUTH_SECRET",
+        "DATABASE_URL",
+        "JWT_REFRESH_SECRET",
+        "JWT_SECRET"
+      ],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "dev": {
