@@ -67,9 +67,17 @@ export const RegisterDeviceSchema = z.object({
   agentVersion: z.string().min(1).max(50),
 })
 
+const DeviceCode = z.string().length(6).regex(/^[A-Z0-9]{6}$/)
+
 export const VerifyDeviceSchema = z.object({
   pendingId: z.string().uuid(),
-  code: z.string().length(6).regex(/^[A-Z0-9]{6}$/),
+  code: DeviceCode,
+})
+
+// The dashboard approval step. No pendingId: the person typing the code read it
+// off a terminal and has no reason to know the id.
+export const ApproveDeviceSchema = z.object({
+  code: DeviceCode,
 })
 
 export type UsageEventInput = z.infer<typeof UsageEventSchema>
@@ -77,3 +85,4 @@ export type ClaudeEnrichmentInput = z.infer<typeof ClaudeEnrichmentSchema>
 export type UsagePayloadInput = z.infer<typeof UsagePayloadSchema>
 export type RegisterDeviceInput = z.infer<typeof RegisterDeviceSchema>
 export type VerifyDeviceInput = z.infer<typeof VerifyDeviceSchema>
+export type ApproveDeviceInput = z.infer<typeof ApproveDeviceSchema>

@@ -1,0 +1,1 @@
+ALTER TABLE "pending_devices" ADD COLUMN "approved_at" timestamp;
