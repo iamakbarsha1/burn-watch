@@ -1344,6 +1344,43 @@ asserting the runtime is rejected was mutation-checked against the old
 - [x] A test fails if the resolver accepts the bare runtime
 - [x] Existing broken plists have a repair path
 
+### BW-33 · Copilot usage silently dropped by the ccusage collector
+**Size S** · done 2026-11-05
+
+`AGENT_MAP` in `apps/agent/src/collectors/ccusage.ts` listed claude, qwen,
+gemini and codex. It did not list copilot, even though `AgentName`
+(`packages/shared/src/types.ts:30`) and the `usage_events.agent` column comment
+both name copilot as a supported agent. An unmapped name resolves to `null` and
+`parseOutput` skips the entry, so every Copilot day was discarded without a
+warning. On this machine that is 14 days, $32.12 and 36.0M tokens.
+
+The investigation started from a different suspicion: that ccusage emits
+`agent: 'all'` rows whose `metadata.agents` holds several agents, making the
+`agents?.length === 1` guard fall through to the model-name heuristic and
+collapse everything onto one agent. That is not what happens. Across all 61 days
+of local history, `metadata.agents` always holds exactly one entry, so the
+heuristic never runs. The real shape is uniform: `agent` is always the literal
+`all` and `metadata.agents` names the one agent that produced the day.
+
+Worth keeping in mind for anyone tempted to loosen that guard. Copilot reports
+Claude model names — a real Copilot day reads `claude-sonnet-4.5` — so a
+fall-through to the model-name heuristic would not have dropped those rows, it
+would have billed Copilot's spend to Claude. Dropping the data was the less
+damaging of the two failures. The fix is the missing map entry, not a looser
+branch.
+
+Nothing caught it because the test fixture set no `metadata` at all and gave
+each row its own `agent` label, a shape the real CLI does not produce. The
+fixture now carries one entry in the production shape.
+
+**Acceptance**
+- [x] Copilot rows resolve to the copilot agent
+- [x] A test fails if Copilot rows are dropped or billed to Claude
+- [x] The fixture exercises the `agent: 'all'` plus `metadata.agents` shape
+
+**Not done**: the 14 Copilot days already in local history are still absent from
+prod. A full-history backfill with the rebuilt binary picks them up.
+
 ### Carried over, still unowned
 
 `apps/api/.env.example` still sets `CORS_ORIGIN` (removed everywhere else by
