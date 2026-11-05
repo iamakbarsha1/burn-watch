@@ -2,45 +2,55 @@
 
 import { useActionState } from 'react'
 import { inviteAction } from './actions'
+import { inputClass, buttonClass } from '@/components/ui'
 
 export function InviteForm() {
   const [state, dispatch, pending] = useActionState(inviteAction, null)
 
   return (
     <form action={dispatch}>
-      <p style={{ color: 'var(--muted)', marginBottom: '1rem', fontSize: '0.9rem' }}>
-        Invite developers by email. They will run <code>burnwatch register</code> on their machine.
-      </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="w-48">
+          <label className="sr-only" htmlFor="invite-name">
+            Full name
+          </label>
           <input
+            id="invite-name"
             name="name"
             type="text"
             placeholder="Full name"
             required
-            style={{ width: '180px', padding: '0.75rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)' }}
+            className={`${inputClass} w-full`}
           />
+        </div>
+        <div className="min-w-56 flex-1">
+          <label className="sr-only" htmlFor="invite-email">
+            Work email
+          </label>
           <input
+            id="invite-email"
             name="email"
             type="email"
             placeholder="developer@company.com"
             required
-            style={{ flex: 1, padding: '0.75rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)' }}
+            aria-describedby={state ? 'invite-status' : undefined}
+            className={`${inputClass} w-full`}
           />
-          <button
-            type="submit"
-            disabled={pending}
-            style={{ padding: '0.75rem 1.5rem', background: 'var(--primary)', border: 'none', borderRadius: '4px', color: 'white', cursor: pending ? 'not-allowed' : 'pointer', opacity: pending ? 0.6 : 1 }}
-          >
-            {pending ? 'Inviting...' : 'Invite'}
-          </button>
         </div>
-        {state && (
-          <p style={{ fontSize: '0.85rem', color: state.ok ? '#22c55e' : '#ef4444' }}>
-            {state.message}
-          </p>
-        )}
+        <button type="submit" disabled={pending} className={buttonClass}>
+          {pending ? 'Inviting…' : 'Invite'}
+        </button>
       </div>
+
+      {state && (
+        <p
+          id="invite-status"
+          role="status"
+          className={`mt-3 text-sm ${state.ok ? 'text-good' : 'text-bad'}`}
+        >
+          {state.message}
+        </p>
+      )}
     </form>
   )
 }

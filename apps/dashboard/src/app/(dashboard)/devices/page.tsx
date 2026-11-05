@@ -1,15 +1,16 @@
 import { ApproveDeviceForm } from './ApproveDeviceForm'
+import { PageHeader, Section } from '@/components/ui'
 
 export default function DevicesPage() {
   return (
-    <div>
-      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Devices</h1>
-      <p style={{ color: 'var(--muted)', marginBottom: '2rem' }}>Approve a machine before it can report usage</p>
-
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1.5rem' }}>
-        <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem' }}>Approve a device</h2>
+    <div className="max-w-2xl">
+      <PageHeader
+        title="Devices"
+        subtitle="Approve a machine before it can report usage"
+      />
+      <Section title="Approve a device">
         <ApproveDeviceForm />
-      </div>
+      </Section>
     </div>
   )
 }

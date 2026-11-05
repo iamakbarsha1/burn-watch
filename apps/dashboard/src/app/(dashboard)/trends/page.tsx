@@ -1,19 +1,16 @@
 import { redirect } from 'next/navigation'
 import { fetchTrends } from '@/lib/api'
-import { BurnAreaChart } from '@/components/charts/BurnAreaChart'
-import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatRange } from '@/lib/format'
+import { BurnAreaChart, AgentSparklines } from '@/components/charts/BurnAreaChart'
+import { formatRange, resolveRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
+import { PageHeader, Card, EmptyState } from '@/components/ui'
 
-export default async function TrendsPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
-  const params = await searchParams
-  const today = new Date().toISOString().slice(0, 10)
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29)
-  const defaultFrom = thirtyDaysAgo.toISOString().slice(0, 10)
-
-  const from = params.from ?? defaultFrom
-  const to = params.to ?? today
+export default async function TrendsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string; to?: string }>
+}) {
+  const { from, to } = resolveRange(await searchParams)
 
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
@@ -25,25 +22,32 @@ export default async function TrendsPage({ searchParams }: { searchParams: Promi
     // Show empty state if API unavailable
   }
 
-  const subtitle = `${formatRange(from, to)} · Daily AI spend by agent`
-
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', marginBottom: '2rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Burn Trends</h1>
-          <p style={{ color: 'var(--muted)' }}>{subtitle}</p>
-        </div>
-        <DateRangePicker />
-      </div>
+      <PageHeader
+        title="Burn Trends"
+        subtitle={`${formatRange(from, to)} · daily spend by agent`}
+      />
 
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1.5rem' }}>
-        {trends.length > 0 ? (
-          <BurnAreaChart data={trends} />
-        ) : (
-          <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--muted)' }}>No trend data yet</div>
-        )}
-      </div>
+      {trends.length > 0 ? (
+        <div className="space-y-6">
+          <Card className="p-4 sm:p-6">
+            <BurnAreaChart data={trends} />
+          </Card>
+
+          <section>
+            <h2 className="mb-3 text-sm font-semibold tracking-tight text-ink">
+              Each agent on its own scale
+            </h2>
+            <AgentSparklines data={trends} />
+          </section>
+        </div>
+      ) : (
+        <EmptyState
+          title="No trend data yet"
+          message="Nothing was reported in this range. Try widening the dates, or run a sync from a developer machine."
+        />
+      )}
     </div>
   )
 }

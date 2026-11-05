@@ -1,56 +1,59 @@
 import { redirect } from 'next/navigation'
 import { fetchActivity } from '@/lib/api'
-import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatRange } from '@/lib/format'
+import { formatRange, resolveRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
+import { PageHeader, Section, EmptyState } from '@/components/ui'
 
-const CATEGORY_COLORS: Record<string, string> = {
-  tool: '#7c3aed',
-  shell: '#0891b2',
-  mcp: '#059669',
-}
+/**
+ * These three are categories of activity, not agents, so they take their own
+ * hues rather than borrowing a series colour and pretending to be one.
+ */
+const CATEGORIES = [
+  { id: 'tool', label: 'Tools', color: '#7c3aed' },
+  { id: 'shell', label: 'Shell commands', color: '#3987e5' },
+  { id: 'mcp', label: 'MCP servers', color: '#199e70' },
+] as const
 
-const CATEGORY_LABELS: Record<string, string> = {
-  tool: 'Tools',
-  shell: 'Shell Commands',
-  mcp: 'MCP Servers',
-}
-
-function UsageSection({ title, color, items }: {
-  title: string
+function UsageBars({
+  color,
+  items,
+}: {
   color: string
   items: { tool: string; count: number }[]
 }) {
-  if (items.length === 0) return null
+  if (items.length === 0) {
+    return <p className="text-sm text-ink-3">Nothing recorded in this range</p>
+  }
   const max = items[0]?.count ?? 1
+
   return (
-    <div>
-      <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem', color }}>{title}</h2>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        {items.map((item) => {
-          const pct = (item.count / max) * 100
-          return (
-            <div key={item.tool}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.2rem' }}>
-                <span style={{ fontWeight: 500, fontFamily: 'monospace', fontSize: '0.875rem' }}>{item.tool}</span>
-                <span style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>{item.count.toLocaleString()}</span>
-              </div>
-              <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px' }}>
-                <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: '3px' }} />
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
+    <ul className="space-y-2.5">
+      {items.map((item) => (
+        <li key={item.tool} className="group">
+          <div className="flex items-baseline justify-between gap-4">
+            <span className="truncate font-mono text-xs text-ink">{item.tool}</span>
+            <span className="shrink-0 text-xs tabular-nums text-ink-2">
+              {item.count.toLocaleString()}
+            </span>
+          </div>
+          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-0">
+            <div
+              className="h-full rounded-full transition-[width] duration-500"
+              style={{ width: `${(item.count / max) * 100}%`, background: color }}
+            />
+          </div>
+        </li>
+      ))}
+    </ul>
   )
 }
 
-export default async function ActivityPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
-  const params = await searchParams
-  const today = new Date().toISOString().slice(0, 10)
-  const from = params.from ?? today
-  const to = params.to ?? today
+export default async function ActivityPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string; to?: string }>
+}) {
+  const { from, to } = resolveRange(await searchParams)
 
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
@@ -62,41 +65,43 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
     // Show empty state if API unavailable
   }
 
-  const byCategory = {
-    tool: items.filter(i => i.category === 'tool').sort((a, b) => b.count - a.count),
-    shell: items.filter(i => i.category === 'shell').sort((a, b) => b.count - a.count),
-    mcp: items.filter(i => i.category === 'mcp').sort((a, b) => b.count - a.count),
-  }
-
-  const subtitle = formatRange(from, to)
   const total = items.reduce((s, i) => s + i.count, 0)
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', marginBottom: '2rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Activity Breakdown</h1>
-          <p style={{ color: 'var(--muted)' }}>Tool &amp; shell usage from Claude enrichment · {subtitle}</p>
-        </div>
-        <DateRangePicker />
-      </div>
+      <PageHeader
+        title="Activity Breakdown"
+        subtitle={`${formatRange(from, to)} · tool and shell usage from Claude enrichment`}
+      />
 
       {items.length === 0 ? (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1.5rem' }}>
-          <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '2rem' }}>No activity data. Run agent sync to populate.</p>
-        </div>
+        <EmptyState
+          title="No activity data"
+          message="Tool and shell breakdowns come from Claude Code enrichment. Run an agent sync to populate them."
+        />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-          <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>{total.toLocaleString()} total calls across {items.length} distinct tools/commands</p>
-          {(['tool', 'shell', 'mcp'] as const).map((cat) => (
-            <div key={cat} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1.5rem' }}>
-              <UsageSection
-                title={CATEGORY_LABELS[cat]}
-                color={CATEGORY_COLORS[cat]}
-                items={byCategory[cat]}
-              />
-            </div>
-          ))}
+        <div className="space-y-6">
+          <p className="text-sm text-ink-2">
+            <span className="font-semibold tabular-nums text-ink">
+              {total.toLocaleString()}
+            </span>{' '}
+            calls across{' '}
+            <span className="font-semibold tabular-nums text-ink">{items.length}</span>{' '}
+            distinct tools and commands
+          </p>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            {CATEGORIES.map((cat) => (
+              <Section key={cat.id} title={cat.label}>
+                <UsageBars
+                  color={cat.color}
+                  items={items
+                    .filter((i) => i.category === cat.id)
+                    .sort((a, b) => b.count - a.count)}
+                />
+              </Section>
+            ))}
+          </div>
         </div>
       )}
     </div>

@@ -1,14 +1,20 @@
 import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
-import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatCost, formatTokens, formatRange } from '@/lib/format'
+import { formatCost, formatTokens, formatRange, resolveRange, formatCount } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
+import { agentById } from '@/lib/agents'
+import { PageHeader, TableFrame, Th, Td, Tr, EmptyRow, SeriesDot } from '@/components/ui'
 
-export default async function LeaderboardPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
-  const params = await searchParams
-  const today = new Date().toISOString().slice(0, 10)
-  const from = params.from ?? today
-  const to = params.to ?? today
+const CLAUDE = agentById('claude')!
+const QWEN = agentById('qwen')!
+const COPILOT = agentById('copilot')!
+
+export default async function LeaderboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string; to?: string }>
+}) {
+  const { from, to } = resolveRange(await searchParams)
 
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
@@ -20,53 +26,78 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
     // Show empty state if API unavailable
   }
 
-  const subtitle = `${formatRange(from, to)} · Ranked by AI spend`
-
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', marginBottom: '2rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>Developer Leaderboard</h1>
-          <p style={{ color: 'var(--muted)' }}>{subtitle}</p>
-        </div>
-        <DateRangePicker />
-      </div>
+      <PageHeader
+        title="Developer Leaderboard"
+        subtitle={`${formatRange(from, to)} · ranked by AI spend`}
+      />
 
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['Rank', 'Developer', 'Claude', 'Qwen Tokens', 'Copilot', 'Total', 'Sessions', 'Cache Hit'].map((h) => (
-                <th key={h} style={{ padding: '1rem', textAlign: 'left', fontSize: '0.8rem', color: 'var(--muted)', fontWeight: 500 }}>{h}</th>
-              ))}
+      <TableFrame>
+        <table className="w-full border-collapse">
+          <thead className="bg-surface-2">
+            <tr>
+              <Th>#</Th>
+              <Th>Developer</Th>
+              <Th numeric>
+                <span className="inline-flex items-center gap-1.5">
+                  <SeriesDot color={CLAUDE.color} /> Claude
+                </span>
+              </Th>
+              <Th numeric>
+                <span className="inline-flex items-center gap-1.5">
+                  <SeriesDot color={QWEN.color} /> Qwen tokens
+                </span>
+              </Th>
+              <Th numeric>
+                <span className="inline-flex items-center gap-1.5">
+                  <SeriesDot color={COPILOT.color} /> Copilot
+                </span>
+              </Th>
+              <Th numeric>Total</Th>
+              <Th numeric>Sessions</Th>
+              <Th numeric>Cache hit</Th>
             </tr>
           </thead>
           <tbody>
             {users.length === 0 && (
-              <tr>
-                <td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: 'var(--muted)' }}>No data yet</td>
-              </tr>
+              <EmptyRow colSpan={8}>No data for this range</EmptyRow>
             )}
             {users.map((u, i) => (
-              <tr key={u.userId} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '1rem', color: 'var(--muted)', fontSize: '0.85rem' }}>#{i + 1}</td>
-                <td style={{ padding: '1rem' }}>
-                  <div style={{ fontWeight: 500 }}>{u.name}</div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{u.email}</div>
-                </td>
-                <td style={{ padding: '1rem', color: '#d97706', fontWeight: 600 }}>{formatCost(u.claude.costUsd)}</td>
-                <td style={{ padding: '1rem', color: '#06b6d4' }}>{formatTokens(u.qwen.tokens)}</td>
-                <td style={{ padding: '1rem', color: '#6366f1' }}>{formatCost(u.copilot.costUsd)}</td>
-                <td style={{ padding: '1rem', fontWeight: 700 }}>{formatCost(u.totalCostUsd)}</td>
-                <td style={{ padding: '1rem', color: 'var(--muted)' }}>{u.sessions}</td>
-                <td style={{ padding: '1rem', color: u.cacheHitRate !== null && u.cacheHitRate > 80 ? 'var(--success)' : 'var(--muted)' }}>
+              <Tr key={u.userId}>
+                <Td className="text-ink-3">{i + 1}</Td>
+                <Td>
+                  <div className="font-medium text-ink">{u.name}</div>
+                  <div className="text-xs text-ink-3">{u.email}</div>
+                </Td>
+                <Td numeric className="font-medium text-ink">
+                  {formatCost(u.claude.costUsd)}
+                </Td>
+                <Td numeric className="text-ink-2">
+                  {formatTokens(u.qwen.tokens)}
+                </Td>
+                <Td numeric className="text-ink-2">
+                  {formatCost(u.copilot.costUsd)}
+                </Td>
+                <Td numeric className="font-semibold text-ink">
+                  {formatCost(u.totalCostUsd)}
+                </Td>
+                <Td numeric className="text-ink-2">
+                  {formatCount(u.sessions)}
+                </Td>
+                <Td
+                  numeric
+                  className={
+                    u.cacheHitRate !== null && u.cacheHitRate > 80 ? 'text-good' : 'text-ink-2'
+                  }
+                >
                   {u.cacheHitRate !== null ? `${u.cacheHitRate.toFixed(1)}%` : '—'}
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </TableFrame>
     </div>
   )
 }

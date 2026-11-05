@@ -1,15 +1,16 @@
 import { redirect } from 'next/navigation'
 import { fetchOverview } from '@/lib/api'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
-import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatCost, formatTokens, formatRange } from '@/lib/format'
+import { formatCost, formatTokens, formatRange, resolveRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
+import { PageHeader, StatTile, Section, EmptyState } from '@/components/ui'
 
-export default async function OverviewPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
-  const params = await searchParams
-  const today = new Date().toISOString().slice(0, 10)
-  const from = params.from ?? today
-  const to = params.to ?? today
+export default async function OverviewPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string; to?: string }>
+}) {
+  const { from, to } = resolveRange(await searchParams)
   const isRange = from !== to
 
   const orgId = await getOrgId()
@@ -22,62 +23,32 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
     // Show empty state if API unavailable
   }
 
-  const subtitle = formatRange(from, to)
-
   return (
     <div>
-      <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Overview</h1>
-          <p style={{ color: 'var(--muted)' }}>{subtitle}</p>
-        </div>
-        <DateRangePicker />
-      </div>
+      <PageHeader title="Overview" subtitle={`${formatRange(from, to)} · all agents`} />
 
       {overview ? (
-        <>
-          {/* Summary cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-            <StatCard
-              label={isRange ? 'Total Spend' : 'Total Spend Today'}
+        <div className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <StatTile
+              label={isRange ? 'Total spend' : 'Spend today'}
               value={formatCost(overview.totalCostUsd)}
               delta={!isRange ? overview.vsYesterday.costPct : undefined}
             />
-            <StatCard label="Total Tokens" value={formatTokens(overview.totalTokens)} />
-            <StatCard label="Active Users" value={String(overview.activeUsers)} />
+            <StatTile label="Total tokens" value={formatTokens(overview.totalTokens)} />
+            <StatTile label="Active developers" value={String(overview.activeUsers)} />
           </div>
 
-          {/* Agent breakdown */}
-          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1.5rem' }}>
-            <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem' }}>By Agent</h2>
+          <Section title="By agent">
             <AgentBreakdown agents={overview.byAgent} />
-          </div>
-        </>
+          </Section>
+        </div>
       ) : (
-        <EmptyState message="No data yet. Make sure developers have installed the BurnWatch agent." />
+        <EmptyState
+          title="No data yet"
+          message="Nothing has been reported for this range. Check that developers have installed the BurnWatch agent, or widen the date range."
+        />
       )}
-    </div>
-  )
-}
-
-function StatCard({ label, value, delta }: { label: string; value: string; delta?: number }) {
-  return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1.5rem' }}>
-      <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: '0.5rem' }}>{label}</p>
-      <p style={{ fontSize: '1.75rem', fontWeight: 700 }}>{value}</p>
-      {delta !== undefined && (
-        <p style={{ fontSize: '0.8rem', color: delta >= 0 ? 'var(--warning)' : 'var(--success)', marginTop: '0.25rem' }}>
-          {delta >= 0 ? '+' : ''}{delta.toFixed(1)}% vs yesterday
-        </p>
-      )}
-    </div>
-  )
-}
-
-function EmptyState({ message }: { message: string }) {
-  return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '3rem', textAlign: 'center' }}>
-      <p style={{ color: 'var(--muted)' }}>{message}</p>
     </div>
   )
 }
