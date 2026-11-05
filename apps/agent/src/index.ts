@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import { registerCommand } from './commands/register.js'
 import { syncCommand } from './commands/sync.js'
 import { statusCommand } from './commands/status.js'
-import { uninstallCron } from './lib/cron.js'
+import { installCron, uninstallCron, SELF_CHECK_COMMAND, SELF_CHECK_SENTINEL } from './lib/cron.js'
 import { DEFAULT_API_URL } from './lib/config.js'
 
 const program = new Command()
@@ -30,11 +30,32 @@ program
   .action(statusCommand)
 
 program
+  .command('install-cron')
+  .description('Install or repoint the launchd daily sync at this build')
+  .action(() => {
+    uninstallCron()
+    const scheduled = installCron()
+    if (!scheduled) {
+      console.error('[burnwatch] This build cannot re-invoke itself — nothing scheduled.')
+      process.exit(1)
+    }
+    console.log('[burnwatch] Scheduled daily sync at 6 PM (launchd):', scheduled.join(' '))
+  })
+
+program
   .command('uninstall')
   .description('Remove launchd cron and revoke device token')
   .action(async () => {
     uninstallCron()
     console.log('[burnwatch] Uninstalled. Config remains at ~/.burnwatch/config.json')
+  })
+
+// How installCron tells a burnwatch build apart from the runtime hosting it.
+program
+  .command(SELF_CHECK_COMMAND, { hidden: true })
+  .description('Print a sentinel proving this invocation reaches burnwatch')
+  .action(() => {
+    console.log(SELF_CHECK_SENTINEL)
   })
 
 program.parse(process.argv)
