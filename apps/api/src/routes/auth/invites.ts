@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
 import { and, eq, gt, isNull, desc } from 'drizzle-orm'
 import { invites, users } from '../../../drizzle/schema.js'
-import type { JwtPayload } from '../../plugins/jwt.js'
+import { requireAdmin } from '../../plugins/jwt.js'
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -38,16 +38,7 @@ export async function inviteRoutes(fastify: FastifyInstance) {
     '/admin/invites',
     {
       config: { rateLimit: { max: 50, timeWindow: '1 hour' } },
-      preHandler: async (request, reply) => {
-        try {
-          const payload = await request.accessJwtVerify<JwtPayload>()
-          if (payload.role !== 'admin') {
-            return reply.status(403).send({ error: 'Admin role required' })
-          }
-        } catch {
-          return reply.status(401).send({ error: 'Unauthorized' })
-        }
-      },
+      preHandler: requireAdmin(fastify),
     },
     async (request, reply) => {
       const body = CreateInviteSchema.parse(request.body)
@@ -92,18 +83,7 @@ export async function inviteRoutes(fastify: FastifyInstance) {
   // GET /v1/auth/admin/invites — pending invites for the caller's org
   fastify.get(
     '/admin/invites',
-    {
-      preHandler: async (request, reply) => {
-        try {
-          const payload = await request.accessJwtVerify<JwtPayload>()
-          if (payload.role !== 'admin') {
-            return reply.status(403).send({ error: 'Admin role required' })
-          }
-        } catch {
-          return reply.status(401).send({ error: 'Unauthorized' })
-        }
-      },
-    },
+    { preHandler: requireAdmin(fastify) },
     async (request) => {
       const jwt = request.user
       // No `code` in the selection. Even hashed, it has no reason to leave the

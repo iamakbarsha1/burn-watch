@@ -164,6 +164,34 @@ export interface LeaderboardEntry {
   cacheHitRate: number | null
 }
 
+// One row of the admin team view. Unlike LeaderboardEntry this covers every
+// user in the org, so the fields that depend on usage are all nullable or zero
+// for someone who has been invited but never run the agent.
+export interface AdminUserRow {
+  id: string
+  name: string
+  email: string
+  role: string
+  isActive: boolean
+  createdAt: string
+  deviceCount: number
+  hostnames: string[]
+  lastSeenAt: string | null
+  lastSyncDate: string | null
+  totalCostUsd: number
+  totalTokens: number
+  activeDays: number
+}
+
+export interface PendingInvite {
+  id: string
+  email: string
+  role: string
+  expiresAt: string
+  usedAt: string | null
+  createdAt: string
+}
+
 export interface TrendPoint {
   date: string
   claudeCost: number

@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { eq, and, isNull, isNotNull, gt } from 'drizzle-orm'
-import { users, devices, deviceTokens, organizations, pendingDevices } from '../../../drizzle/schema.js'
+import { eq, and, isNull, isNotNull, gt, sql } from 'drizzle-orm'
+import { users, devices, deviceTokens, organizations, pendingDevices, dailySnapshots } from '../../../drizzle/schema.js'
 import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema } from '@burn-watch/shared'
-import { requireDashboardAuth, type JwtPayload } from '../../plugins/jwt.js'
+import type { AdminUserRow } from '@burn-watch/shared'
+import { requireAdmin, requireDashboardAuth, type JwtPayload } from '../../plugins/jwt.js'
 
 const BootstrapSchema = z.object({
   orgName: z.string().min(1),
@@ -257,19 +258,80 @@ export async function authRoutes(fastify: FastifyInstance) {
     return { orgId: org.id, userId: user.id }
   })
 
+  // GET /v1/auth/admin/users — every user in the caller's org, including the
+  // ones who have never synced. The leaderboard cannot answer this: it reads
+  // from daily_snapshots, so a developer with no data simply is not in it, and
+  // "who has not onboarded yet" is exactly what an admin needs to see.
+  fastify.get('/admin/users', { preHandler: requireAdmin(fastify) }, async (request) => {
+    const jwt = request.user as JwtPayload
+
+    // Correlated subqueries rather than joins. Joining devices and snapshots in
+    // one statement multiplies rows, and every SUM would come back wrong by the
+    // number of devices the user owns.
+    const rows = await fastify.db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+        isActive: users.isActive,
+        createdAt: users.createdAt,
+        deviceCount: sql<number>`(
+          select count(*) from ${devices} where ${devices.userId} = ${users.id}
+        )`.mapWith(Number),
+        hostnames: sql<string | null>`(
+          select string_agg(${devices.hostname}, ', ' order by ${devices.hostname})
+          from ${devices} where ${devices.userId} = ${users.id}
+        )`,
+        lastSeenAt: sql<string | null>`(
+          select max(${devices.lastSeenAt}) from ${devices} where ${devices.userId} = ${users.id}
+        )`,
+        lastSyncDate: sql<string | null>`(
+          select max(${dailySnapshots.date}) from ${dailySnapshots}
+          where ${dailySnapshots.userId} = ${users.id}
+        )`,
+        totalCostUsd: sql<number>`coalesce((
+          select sum(${dailySnapshots.totalCostUsd}) from ${dailySnapshots}
+          where ${dailySnapshots.userId} = ${users.id}
+        ), 0)`.mapWith(Number),
+        totalTokens: sql<number>`coalesce((
+          select sum(${dailySnapshots.totalTokens}) from ${dailySnapshots}
+          where ${dailySnapshots.userId} = ${users.id}
+        ), 0)`.mapWith(Number),
+        activeDays: sql<number>`(
+          select count(*) from ${dailySnapshots} where ${dailySnapshots.userId} = ${users.id}
+        )`.mapWith(Number),
+      })
+      .from(users)
+      .where(eq(users.orgId, jwt.orgId))
+      .limit(500)
+
+    const result: AdminUserRow[] = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      role: r.role,
+      isActive: r.isActive,
+      createdAt: new Date(r.createdAt).toISOString(),
+      deviceCount: r.deviceCount ?? 0,
+      hostnames: r.hostnames ? r.hostnames.split(', ') : [],
+      lastSeenAt: r.lastSeenAt ? new Date(r.lastSeenAt).toISOString() : null,
+      lastSyncDate: r.lastSyncDate ? String(r.lastSyncDate).slice(0, 10) : null,
+      totalCostUsd: r.totalCostUsd ?? 0,
+      totalTokens: r.totalTokens ?? 0,
+      activeDays: r.activeDays ?? 0,
+    }))
+
+    // 500 rows at most, so the sort is cheaper here than an ORDER BY that would
+    // make Postgres run the spend subquery a second time.
+    result.sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.name.localeCompare(b.name))
+    return result
+  })
+
   // POST /v1/admin/users — create a user (requires admin JWT)
   fastify.post('/admin/users', {
     config: { rateLimit: { max: 20, timeWindow: '1 hour' } },
-    preHandler: async (request, reply) => {
-      try {
-        const payload = await request.accessJwtVerify<JwtPayload>()
-        if (payload.role !== 'admin') {
-          return reply.status(403).send({ error: 'Admin role required' })
-        }
-      } catch {
-        return reply.status(401).send({ error: 'Unauthorized' })
-      }
-    },
+    preHandler: requireAdmin(fastify),
   }, async (request, reply) => {
     const body = CreateUserSchema.parse(request.body)
     const jwt = request.user as JwtPayload

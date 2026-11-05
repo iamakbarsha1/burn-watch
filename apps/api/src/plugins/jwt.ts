@@ -46,6 +46,21 @@ export function requireAuth(fastify: FastifyInstance) {
   }
 }
 
+// Every admin-only route repeated this same try/verify/check-role block. One
+// copy means a route added later cannot forget the 401-vs-403 distinction.
+export function requireAdmin(fastify: FastifyInstance) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const payload = await request.accessJwtVerify<JwtPayload>()
+      if (payload.role !== 'admin') {
+        return reply.status(403).send({ error: 'Admin role required' })
+      }
+    } catch {
+      return reply.status(401).send({ error: 'Unauthorized' })
+    }
+  }
+}
+
 export function requireDashboardAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
