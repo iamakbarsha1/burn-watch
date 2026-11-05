@@ -15,11 +15,11 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-01 | P0 | Fix `@fastify/jwt` type augmentation | **done** | S | — |
 | BW-02 | P0 | Green typecheck across all workspaces | **done** | S | BW-01 |
 | BW-03 | P1 | Split `server.ts` into `buildServer()` + listen entry | **done** | S | BW-02 |
-| BW-04 | P1 | Vercel Services config | **done** | M | BW-03 |
+| BW-04 | P1 | Vercel Services config | **superseded** | M | BW-03 |
 | BW-05 | P1 | Rate limit onto Redis store | **done** | S | — |
 | BW-06 | P1 | Reuse DB and Redis clients across warm invocations | **done** | S | — |
-| BW-07 | P1 | Env migration, delete `render.yaml` | **doing** | S | BW-04 |
-| BW-08 | P1 | Deploy and smoke test | **blocked** | M | BW-05, BW-06, BW-07 |
+| BW-07 | P1 | Env migration, delete `render.yaml` | **doing** | S | — |
+| BW-08 | P1 | Deploy and smoke test | **doing** | M | — |
 | BW-09 | P2 | Vitest harness + turbo `test` task | **done** | S | BW-02 |
 | BW-10 | P2 | API route tests (auth, org-scoping, dedup) | **done** | L | BW-03, BW-09 |
 | BW-11 | P2 | Agent collector tests | **done** | M | BW-09 |
@@ -258,7 +258,31 @@ reworking that in the same change.
       after BW-08, needs real traffic
 
 ### BW-07 · Env migration, delete `render.yaml`
-**Size S** · blocked by BW-04
+**Size S** · no blockers — BW-04 is superseded
+
+**2026-11-05.** This ticket briefly inverted when the hosting decision moved to
+Render, then inverted back when that move was abandoned the same session. Net
+effect matches the original title: `render.yaml` is deleted and the env vars
+live on Vercel. Nothing about the CORS work below changed.
+
+Env vars now split across two Vercel projects:
+- **`burn-watch-api`**: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`,
+  `JWT_REFRESH_SECRET`. All four are set. **`REDIS_URL` is wrong** — it holds a
+  localhost value and must be reset to the Upstash TCP URL (`rediss://...`).
+  The new guard in `plugins/redis.ts` fails the boot loudly until it is.
+- **dashboard project**: `BETTER_AUTH_SECRET`, plus `API_URL` pointing at the
+  API project's domain. `API_URL` is set by hand again — the service binding
+  that used to inject it died with the Services `vercel.json`.
+
+Unrelated but surfaced by the same deploy: the build log warns that
+`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET` and `JWT_REFRESH_SECRET` are set on
+the project but absent from `turbo.json`, so they are not available to build
+steps. Nothing needs them at build time today, so this is latent rather than
+broken — but anything that later reads env during `tsc` will fail confusingly.
+
+---
+
+**Original ticket, kept for the record:**
 
 Move the env vars to Vercel: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`,
 `JWT_REFRESH_SECRET`, `BETTER_AUTH_SECRET`.
@@ -295,19 +319,73 @@ on the `api` service, `BETTER_AUTH_SECRET` on `dashboard`. `API_URL` is no longe
 set by hand — the binding in `vercel.json` injects it. `CORS_ORIGIN` and
 `COPILOT_ENCRYPTION_KEY` are not carried over.
 
-**Acceptance**
-- [ ] All required env vars set in Vercel for production and preview — BW-08
-- [x] `render.yaml` deleted
+**Acceptance** (restated for Render)
+- [ ] The four API env vars set on the Render service
+- [ ] `BETTER_AUTH_SECRET` and `API_URL` set on the Vercel dashboard project
+- [x] `render.yaml` rewritten for the real build — `npx turbo build` then
+      `node apps/api/dist/src/server.js`, not `npx tsx` on source
 - [x] `.npmrc` kept
-- [x] CORS decision applied — plugin, guard and dependency all removed
+- [x] CORS decision applied — plugin, guard and dependency all removed, and the
+      justifying comment no longer rests on a shared origin
+- [ ] `apps/api/.env.example` line 8 still sets the dead `CORS_ORIGIN` — drop it
+      by hand, that path is behind a deny rule
 
 ### BW-08 · Deploy and smoke test
-**Size M** · blocked by BW-05, BW-06, BW-07
+**Size M** · unblocked 2026-11-05 — BW-05, BW-06 and BW-07 are all resolved
 
 First confirmed-green deploy. The last attempt was pushed 2026-06-25 and never
 verified.
 
-**2026-11-05 — BLOCKED. No Node backend function runs on this Vercel account.**
+**RESOLVED 2026-11-05 — it stays on Vercel. The earlier diagnosis in this
+ticket was wrong.** The API now deploys as a plain `@vercel/node` function:
+`api/index.mjs` at the repo root imports the built Fastify app and emits
+requests into it, and `vercel.json` rewrites every path to that function. No
+framework preset is involved.
+
+**What the old conclusion got wrong.** "No Node backend function runs on this
+Vercel account" was drawn from probes that all shared one untested variable:
+every single one — Services, the standalone project, and the five-line
+"nothing left to remove" app — went through **Vercel's Fastify framework
+preset**. The preset is the thing that fails. Node functions were never tested
+without it.
+
+Bisected 2026-11-05 on the same Hobby account, cheapest case first:
+
+| Probe | Result |
+|---|---|
+| Plain `@vercel/node` function, no framework | `{"ok":true,"runtime":"v26.13.0"}` |
+| Fastify behind a plain function, no preset | `{"ok":true,"via":"fastify-plain-function"}` |
+| The real API behind a plain function | Serves; `/health` reaches Neon |
+
+The giveaway was available the whole time and went unread: the dashboard
+project already ran Node server-side on this account — server components,
+better-auth sessions, the `fetch` in `api.ts`. A claim that no Node backend
+runs here was contradicted by a working deployment in the same account.
+
+**Two genuine bugs fell out of getting it running, both independent of host:**
+1. `plugins/redis.ts` silently fell back to `redis://localhost:6379` for any
+   absent or unparseable `REDIS_URL`. ioredis does not reject a URL it cannot
+   parse, so the real fault surfaced later as `ECONNREFUSED 127.0.0.1:6379`,
+   which reads like a missing variable rather than a wrong one. It now refuses
+   localhost in production and names the actual cause.
+2. `REDIS_URL` on the Vercel project was set to a localhost value. The guard
+   above is what surfaced it. Needs resetting to the Upstash TCP URL — that is
+   the one thing still blocking a green `/health`.
+
+**Blocking, not yet done:** Deployment Protection (`ssoProtection`) is enabled
+on `burn-watch-api`, so unauthenticated callers get a 302 instead of the API.
+The agent CLI has no way to satisfy it. It must be turned off for this project
+before `burnwatch sync` can work.
+
+**Render was adopted and then dropped** in the same session, once the above was
+established. `render.yaml` is deleted. No third-party host is involved.
+
+---
+
+**Superseded 2026-11-05 — the reasoning below led to a wrong conclusion. Kept
+because the bisection discipline it was missing is the lesson.**
+
+**2026-11-05 — the evidence. No Node backend function runs on this Vercel account.**
 
 Tried both deployment models. Neither works, and the cause is not in this
 codebase.
@@ -356,6 +434,15 @@ compiled ESM had no `type: module` beside it.
 Recommendation: (d) then (c). The API is a long-lived Fastify server with
 database and Redis connections, which is a poor fit for per-request functions
 anyway, and (c) keeps every test and the whole codebase as-is.
+
+**Resolved: (c), without (d).** Filing with Vercel support was dropped — the
+decision does not depend on the answer, so the ticket would only have told us
+why a path we are not taking was broken.
+
+Note for anyone reopening (d): the request IDs this ticket says are "in the
+session log" are gone. That session was cleared. Acting on (d) now means
+redeploying a bare probe to generate fresh ones. The lesson generalises — a
+ticket may only cite evidence that outlives the conversation which produced it.
 
 ---
 
@@ -432,12 +519,19 @@ behind a deny rule, so the values have to come from the user.
    Non-fatal at build, but `BETTER_AUTH_SECRET` must be set before login works.
 
 **Acceptance**
-- [ ] Both services build and deploy
-- [ ] `/health` returns 200 on the deployed domain
+- [x] The API deploys and serves on Vercel — `api/index.mjs` behind a rewrite,
+      no framework preset
+- [x] Fastify routes respond through the function, confirmed on `/health`
+- [x] Neon reachable from the deployed function
+- [ ] `REDIS_URL` reset to the Upstash TCP URL, so `/health` returns
+      `{"ok":true}` rather than `{"ok":false,"failed":["redis"]}`
+- [ ] Deployment Protection turned off for `burn-watch-api`, so the agent CLI
+      gets the API rather than a 302
+- [ ] `API_URL` on the dashboard project points at the API project's domain
 - [ ] Dashboard login works end to end against the deployment
 - [ ] One authenticated query per dashboard page returns real data
 - [ ] Agent `sync` against the deployed API writes a row
-- [ ] Record the production URL in ROADMAP.md
+- [ ] Promote to production and record both URLs in ROADMAP.md
 
 ---
 
