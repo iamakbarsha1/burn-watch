@@ -14,7 +14,7 @@
 | Hosting | One Vercel project using Vercel Services. Render is removed. **Amended 2026-11-05 — still Vercel, but two projects rather than Services. See "Hosting settled" below.** |
 | Why not Render | Free tier spins down after inactivity, so the first request pays a 30-60s wake-up. **Still true, and still the reason Render is not used.** |
 | Why Services over two projects | Dashboard and API share one origin. That removes CORS config and cross-site cookie handling for `bw-api-token` and the better-auth session. One preview URL, one rollback. **Moot — the shared origin was never load-bearing: the dashboard calls the API server-side and the agent is a CLI, so no browser is involved either way.** |
-| Test stack | Vitest. Unit tests plus Fastify route tests through `app.inject()` with db and redis mocked. No database in CI. |
+| Test stack | Vitest. Unit tests plus Fastify route tests through `app.inject()` with the db mocked. No database in CI. |
 
 **Cost note:** Vercel Hobby is non-commercial-use only. A tool tracking 50+ developers at a company needs a Pro seat.
 
@@ -64,10 +64,19 @@ hosting:**
 2. `REDIS_URL` on the Vercel project was set to a localhost value. That is a
    config fix, not a code one, and the guard above is what surfaced it.
 
-**Still open:** Deployment Protection (`ssoProtection`) is on for the API
-project, so unauthenticated requests get a 302 rather than the API. The agent
-CLI cannot authenticate to it, so this has to be turned off for `burn-watch-api`
-before `burnwatch sync` works.
+**Both are now history: Redis was removed from the API entirely on 2026-11-05.**
+`REDIS_URL` was reported corrected three times and verified uncorrected each
+time, and the credential was not available to set. The cache it backed was worth
+little — five dashboard routes over daily-granularity data on a 300s TTL — so it
+went, and with it the dependency, the variable and the blocker. The rate limiter
+lost a shared counter in the same cut; that cost is recorded on BW-05 and has to
+be repaid before the API is reachable from outside the company.
+
+**Deployment Protection turned off** for `burn-watch-api` so the agent CLI gets
+the API rather than a 302. Left on for the dashboard, which humans use.
+
+**Both projects are live in production as of 2026-11-05.** The API answers
+`{"ok":true}` at `https://burn-watch-api.vercel.app/health`.
 
 **Constraint found 2026-11-05:** Vercel Services rejects Edge Runtime output.
 Next.js middleware is Edge by default, so the dashboard cannot use middleware
@@ -115,14 +124,17 @@ tests need an app instance without a bound port. Splitting into `buildServer()`
 plus a thin `listen` entry point serves the deployment and the test suite from
 the same change. Do it once, before either.
 
-**BW-05 ships with the Vercel move, not after it.**
-`@fastify/rate-limit` is registered with no store, so it counts in process
-memory. On Render there was one instance and that was fine. On Vercel Functions
-every concurrent instance keeps its own counter, so a `max: 3 per hour` guard
-becomes `3 × instances`. The admin bootstrap and device registration limits stop
-working the moment traffic spreads. Upstash Redis is already connected, so this
-is a store option and a plugin-ordering change, but it has to land in the same
-release as the move.
+**BW-05 shipped with the Vercel move, then was reverted on 2026-11-05.**
+`@fastify/rate-limit` counts in process memory again. On Vercel Functions every
+concurrent instance keeps its own counter, so a `max: 3 per hour` guard becomes
+`3 × instances`. The admin bootstrap and device registration limits stop working
+the moment traffic spreads — which is as true today as when this was first
+written. Redis fixed it once and went away with the cache; the open question is
+now a shared Redis versus a Postgres table keyed by ip and route.
+
+This is the single largest piece of debt the deploy took on. It is survivable
+only because every caller today is a company device on a known token. Repay it
+before that stops being true.
 
 ---
 

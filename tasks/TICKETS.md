@@ -16,10 +16,10 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-02 | P0 | Green typecheck across all workspaces | **done** | S | BW-01 |
 | BW-03 | P1 | Split `server.ts` into `buildServer()` + listen entry | **done** | S | BW-02 |
 | BW-04 | P1 | Vercel Services config | **superseded** | M | BW-03 |
-| BW-05 | P1 | Rate limit onto Redis store | **done** | S | — |
-| BW-06 | P1 | Reuse DB and Redis clients across warm invocations | **done** | S | — |
-| BW-07 | P1 | Env migration, delete `render.yaml` | **doing** | S | — |
-| BW-08 | P1 | Deploy and smoke test | **doing** | M | — |
+| BW-05 | P1 | Rate limit onto Redis store | **reverted** | S | — |
+| BW-06 | P1 | Reuse DB and Redis clients across warm invocations | **done (DB only)** | S | — |
+| BW-07 | P1 | Env migration, delete `render.yaml` | **done** | S | — |
+| BW-08 | P1 | Deploy and smoke test | **done** | M | — |
 | BW-09 | P2 | Vitest harness + turbo `test` task | **done** | S | BW-02 |
 | BW-10 | P2 | API route tests (auth, org-scoping, dedup) | **done** | L | BW-03, BW-09 |
 | BW-11 | P2 | Agent collector tests | **done** | M | BW-09 |
@@ -27,7 +27,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-13 | P2 | Snapshot aggregation tests | **done** | M | BW-09 |
 | BW-14 | P2 | CI runs typecheck + tests on PR | **done** | S | BW-10, BW-11, BW-12, BW-13 |
 | BW-15 | P3 | Wrap usage submit in a transaction | **done** | M | BW-10 |
-| BW-16 | P3 | `/health` checks DB and Redis | **done** | S | BW-02 |
+| BW-16 | P3 | `/health` checks DB (Redis dropped in BW-08) | **done** | S | BW-02 |
 | BW-17 | P3 | Generated migration files, stop `db:push` on prod | **done** | M | BW-02 |
 | BW-18 | P4 | Budget alerts API + UI | todo | L | BW-14 |
 | BW-19 | P4 | Invite flow on `invites` table | **doing** | L | BW-14 |
@@ -219,11 +219,24 @@ read 3, instance A was killed, and a fresh instance B returned 429 on the sixth
 request overall. Under the old in-memory store B would have restarted from zero
 and allowed all three.
 
-**Acceptance**
-- [x] `redisPlugin` registered before `rateLimit`
-- [x] Rate limit configured with the Redis store
-- [x] Limit survives across two separate server instances sharing one Redis
-- [x] Per-route `config.rateLimit` values unchanged
+**Reverted 2026-11-05 — see BW-08.** Redis was dropped from the API entirely, so
+the rate limiter is back on the in-memory store and this ticket's guarantee no
+longer holds. The multiplication described above is live again: every per-route
+limit is effectively `max × live instances`, and all six limits guard auth
+endpoints, the tightest being device registration at 3/hour.
+
+The trade was deliberate and is recorded in BW-08: Redis was the one thing
+blocking a deploy, the cache it also served was worth little, and the API is
+only reachable by company devices today. The ceiling is marked at the
+registration site in `build-server.ts` with the upgrade path. **This must be
+undone before the API is reachable from outside the company** — either back onto
+a shared Redis, or a Postgres table keyed by ip and route.
+
+**Acceptance** — held on 2026-11-04, no longer holds
+- [x] ~~`redisPlugin` registered before `rateLimit`~~ — plugin deleted
+- [x] ~~Rate limit configured with the Redis store~~ — reverted to in-memory
+- [x] ~~Limit survives across two separate server instances~~ — no longer true
+- [x] Per-route `config.rateLimit` values unchanged — still true
 
 ### BW-06 · Reuse DB and Redis clients across warm invocations
 **Size S** · done, landed ahead of BW-03 (no dependency in practice)
@@ -251,8 +264,12 @@ Stayed on `ioredis` rather than switching to `@upstash/redis`: the rate-limit
 store in BW-05 takes an ioredis instance, and swapping drivers would have meant
 reworking that in the same change.
 
+**Partly superseded 2026-11-05 — see BW-08.** Redis is gone from the API, so the
+`ioredis` question above is moot and only the Neon pool is still a module-scoped
+singleton. The reasoning for keeping the WebSocket driver is unaffected.
+
 **Acceptance**
-- [x] Pool and Redis client created once per module, not per registration
+- [x] Pool created once per module, not per registration — Redis client gone
 - [x] Still on the WebSocket Neon driver
 - [ ] No connection-exhaustion warnings in Neon after a load pass — recheck
       after BW-08, needs real traffic
@@ -265,20 +282,21 @@ Render, then inverted back when that move was abandoned the same session. Net
 effect matches the original title: `render.yaml` is deleted and the env vars
 live on Vercel. Nothing about the CORS work below changed.
 
-Env vars now split across two Vercel projects:
-- **`burn-watch-api`**: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`,
-  `JWT_REFRESH_SECRET`. All four are set. **`REDIS_URL` is wrong** — it holds a
-  localhost value and must be reset to the Upstash TCP URL (`rediss://...`).
-  The new guard in `plugins/redis.ts` fails the boot loudly until it is.
-- **dashboard project**: `BETTER_AUTH_SECRET`, plus `API_URL` pointing at the
-  API project's domain. `API_URL` is set by hand again — the service binding
-  that used to inject it died with the Services `vercel.json`.
+Env vars now split across two Vercel projects. Settled 2026-11-05:
+- **`burn-watch-api`**: `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`.
+  `REDIS_URL` was deleted from both targets — nothing reads it since Redis was
+  dropped in BW-08.
+- **dashboard project**: `BETTER_AUTH_SECRET`, plus `API_URL` set to
+  `https://burn-watch-api.vercel.app`. `API_URL` is set by hand — the service
+  binding that used to inject it died with the Services `vercel.json`.
+  `REDIS_URL` deleted here too; it was never read.
 
-Unrelated but surfaced by the same deploy: the build log warns that
-`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET` and `JWT_REFRESH_SECRET` are set on
-the project but absent from `turbo.json`, so they are not available to build
-steps. Nothing needs them at build time today, so this is latent rather than
-broken — but anything that later reads env during `tsc` will fail confusingly.
+The `turbo.json` env warning is fixed rather than merely recorded. It was called
+latent on the grounds that nothing read env at build time — which was true of the
+API and false of the dashboard. Next's build evaluates the better-auth config,
+so every dashboard build logged `You are using the default secret` twice and
+built against it. `build.env` in `turbo.json` now declares `API_URL`,
+`BETTER_AUTH_SECRET`, `DATABASE_URL`, `JWT_SECRET` and `JWT_REFRESH_SECRET`.
 
 ---
 
@@ -366,19 +384,42 @@ runs here was contradicted by a working deployment in the same account.
 1. `plugins/redis.ts` silently fell back to `redis://localhost:6379` for any
    absent or unparseable `REDIS_URL`. ioredis does not reject a URL it cannot
    parse, so the real fault surfaced later as `ECONNREFUSED 127.0.0.1:6379`,
-   which reads like a missing variable rather than a wrong one. It now refuses
-   localhost in production and names the actual cause.
-2. `REDIS_URL` on the Vercel project was set to a localhost value. The guard
-   above is what surfaced it. Needs resetting to the Upstash TCP URL — that is
-   the one thing still blocking a green `/health`.
+   which reads like a missing variable rather than a wrong one. The guard that
+   fixed it is what surfaced bug 2. Both are moot now that Redis is gone, but
+   the guard is why the cause was ever named.
+2. `REDIS_URL` on the Vercel project held a localhost value.
 
-**Blocking, not yet done:** Deployment Protection (`ssoProtection`) is enabled
-on `burn-watch-api`, so unauthenticated callers get a 302 instead of the API.
-The agent CLI has no way to satisfy it. It must be turned off for this project
-before `burnwatch sync` can work.
+**Redis dropped 2026-11-05, and that is what unblocked the deploy.** Three
+rounds of verification showed `REDIS_URL` was never actually corrected, and the
+credential was not available to set. Rather than stay blocked on it, the cache
+it served was removed: five dashboard routes, daily-granularity data, a 300s
+TTL, and Postgres answering the same aggregates comfortably at this scale.
+
+That is not free. The rate limiter used the same Redis as a shared counter, and
+is now on the in-memory store — see the revert note on BW-05 for what that costs
+and when it must be undone. The cache itself is no loss; the shared counter is.
+
+**Deployment Protection turned off** on `burn-watch-api` (`ssoProtection`),
+since the agent CLI has no way to satisfy a 302 to SSO. Left **on** for the
+dashboard project, which is a human-facing internal UI and benefits from it.
+
+**A third bug surfaced during the promote.** The repo-root `vercel.json`
+configures the API, whose root directory is the repo root — and the dashboard
+project, rooted at `apps/dashboard`, was reading that same file. Its production
+build ran `turbo build --filter=@burn-watch/api`, produced no `.next`, and
+failed; the catch-all rewrite to `/api` would have applied to the dashboard too
+had it served anything. Fixed with `apps/dashboard/vercel.json`, which takes
+precedence for that project.
 
 **Render was adopted and then dropped** in the same session, once the above was
 established. `render.yaml` is deleted. No third-party host is involved.
+
+**Done 2026-11-05. Both projects are live in production.**
+
+| Target | URL | Check |
+|---|---|---|
+| API | `https://burn-watch-api.vercel.app/health` | 200 `{"ok":true}` |
+| Dashboard | `https://burn-watch-akbar-sha-ss-projects.vercel.app` | Ready, 302 behind Vercel SSO |
 
 ---
 
@@ -523,14 +564,19 @@ behind a deny rule, so the values have to come from the user.
       no framework preset
 - [x] Fastify routes respond through the function, confirmed on `/health`
 - [x] Neon reachable from the deployed function
-- [ ] `REDIS_URL` reset to the Upstash TCP URL, so `/health` returns
-      `{"ok":true}` rather than `{"ok":false,"failed":["redis"]}`
-- [ ] Deployment Protection turned off for `burn-watch-api`, so the agent CLI
+- [x] `/health` returns `{"ok":true}` — reached by dropping Redis rather than by
+      setting `REDIS_URL`, which was reported corrected three times and verified
+      uncorrected each time
+- [x] Deployment Protection turned off for `burn-watch-api`, so the agent CLI
       gets the API rather than a 302
-- [ ] `API_URL` on the dashboard project points at the API project's domain
+- [x] `API_URL` on the dashboard project points at the API project's domain
+- [x] Both projects promoted to production
 - [ ] Dashboard login works end to end against the deployment
 - [ ] One authenticated query per dashboard page returns real data
 - [ ] Agent `sync` against the deployed API writes a row
+
+The last three need a real user and a real device token, so they are the first
+thing to do next session rather than something this one could close.
 - [ ] Promote to production and record both URLs in ROADMAP.md
 
 ---
@@ -565,8 +611,8 @@ route tests depend on.
 Highest-value tests in the project. The June audit's security fixes have no
 regression cover.
 
-Use `buildServer()` from BW-03 with `app.inject()`. Mock `fastify.db` and
-`fastify.redis` decorators.
+Use `buildServer()` from BW-03 with `app.inject()`. Mock the `fastify.db`
+decorator. (The `fastify.redis` mock went with Redis in BW-08.)
 
 Cover:
 - Unauthenticated request to each dashboard route returns 401
