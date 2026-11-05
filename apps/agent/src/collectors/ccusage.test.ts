@@ -77,6 +77,18 @@ describe('CcusageCollector.collect', () => {
     expect(codex?.modelName).toBe('gpt-5-codex')
   })
 
+  // ccusage labels every row `all` and names the real agent in metadata.agents.
+  // Copilot reports Claude model names, so a miss here does not just lose the
+  // row, it invites the model-name fallback to bill Copilot's spend to Claude.
+  it('keeps copilot rows and does not bill them to claude', async () => {
+    const events = await new CcusageCollector().collect('2026-11-05')
+    const copilot = events.find((e) => e.costUsd === 5.22)
+    expect(copilot?.agent).toBe('copilot')
+    expect(events.filter((e) => e.agent === 'claude').map((e) => e.modelName)).not.toContain(
+      'claude-sonnet-4.5',
+    )
+  })
+
   it('drops entries for agents it does not recognise', async () => {
     const events = await new CcusageCollector().collect('2026-11-05')
     expect(events.some((e) => e.modelName === 'cursor-small')).toBe(false)

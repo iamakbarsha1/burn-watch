@@ -11,6 +11,7 @@ const AGENT_MAP: Record<string, AgentName> = {
   'gemini cli': 'gemini',
   gemini: 'gemini',
   codex: 'codex',
+  copilot: 'copilot',
 }
 
 const FREE_TIER_AGENTS = new Set<AgentName>(['qwen'])

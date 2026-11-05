@@ -9,7 +9,10 @@
       "cacheReadTokens": 41600,
       "totalTokens": 44000,
       "totalCost": 36.25,
-      "modelsUsed": ["claude-opus-5", "claude-haiku-4-5-20251001"],
+      "modelsUsed": [
+        "claude-opus-5",
+        "claude-haiku-4-5-20251001"
+      ],
       "modelBreakdowns": [
         {
           "modelName": "claude-opus-5",
@@ -38,7 +41,9 @@
       "cacheReadTokens": 0,
       "totalTokens": 280000000,
       "totalCost": 0,
-      "modelsUsed": ["qwen3-coder-model"],
+      "modelsUsed": [
+        "qwen3-coder-model"
+      ],
       "modelBreakdowns": []
     },
     {
@@ -50,7 +55,9 @@
       "cacheReadTokens": 0,
       "totalTokens": 800,
       "totalCost": 0.02,
-      "modelsUsed": ["gemini-2.5-pro"],
+      "modelsUsed": [
+        "gemini-2.5-pro"
+      ],
       "modelBreakdowns": []
     },
     {
@@ -62,7 +69,28 @@
       "cacheReadTokens": 0,
       "totalTokens": 130,
       "totalCost": 0.05,
-      "modelsUsed": ["gpt-5-codex"],
+      "modelsUsed": [
+        "gpt-5-codex"
+      ],
+      "modelBreakdowns": []
+    },
+    {
+      "period": "2026-11-05",
+      "agent": "all",
+      "metadata": {
+        "agents": [
+          "copilot"
+        ]
+      },
+      "inputTokens": 120,
+      "outputTokens": 60,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "totalTokens": 180,
+      "totalCost": 5.22,
+      "modelsUsed": [
+        "claude-sonnet-4.5"
+      ],
       "modelBreakdowns": []
     },
     {
@@ -74,7 +102,9 @@
       "cacheReadTokens": 0,
       "totalTokens": 20,
       "totalCost": 0.01,
-      "modelsUsed": ["cursor-small"],
+      "modelsUsed": [
+        "cursor-small"
+      ],
       "modelBreakdowns": []
     },
     {
@@ -86,7 +116,9 @@
       "cacheReadTokens": 0,
       "totalTokens": 20,
       "totalCost": 1.11,
-      "modelsUsed": ["claude-opus-5"],
+      "modelsUsed": [
+        "claude-opus-5"
+      ],
       "modelBreakdowns": []
     }
   ]
