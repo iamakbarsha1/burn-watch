@@ -232,6 +232,21 @@ export const budgetAlerts = pgTable('budget_alerts', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 })
 
+// Rate-limit counters, one row per route+caller. Lives in the database because
+// an in-memory counter counts per serverless instance, which multiplies every
+// per-route cap by the number of live instances. `expires_at` is timestamptz so
+// the window still closes at the right moment if two connections disagree about
+// the session time zone.
+export const rateLimits = pgTable(
+  'rate_limits',
+  {
+    key: text('key').primaryKey(),
+    count: integer('count').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('rate_limits_expires_at_idx').on(t.expiresAt)],
+)
+
 // ─── Relations ───────────────────────────────────────────────────────────────
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({

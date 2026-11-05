@@ -15,6 +15,13 @@
       "when": 1793888754320,
       "tag": "0001_add_pending_device_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793903909818,
+      "tag": "0002_rate_limit_store",
+      "breakpoints": true
     }
   ]
 }

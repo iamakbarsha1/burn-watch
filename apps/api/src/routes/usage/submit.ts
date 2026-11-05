@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { eq } from 'drizzle-orm'
 import { UsagePayloadSchema } from '@burn-watch/shared'
 import { devices } from '../../../drizzle/schema.js'
-import { requireAuth } from '../../plugins/jwt.js'
+import { requireAuth, type JwtPayload } from '../../plugins/jwt.js'
+import { callerAddress } from '../../caller-address.js'
 import { upsertUsageEvents, upsertEnrichment } from '../../services/usage.service.js'
 import { rebuildDailySnapshot } from '../../services/snapshot.service.js'
 
@@ -16,6 +17,27 @@ export async function usageRoutes(fastify: FastifyInstance) {
         rateLimit: {
           max: 300,
           timeWindow: '1 hour',
+          // Counted per device, not per address. The default key is the
+          // caller's IP, and every developer in one office shares one of those
+          // — 300/hour between fifty laptops, where a single backfill sends a
+          // request per day of history. `hook: 'preHandler'` is what makes it
+          // possible: the rate limiter then runs after `requireAuth` above, so
+          // the token has already been verified and `request.user` is real.
+          // Falls back to the address for a token with no device on it, which
+          // the handler rejects anyway.
+          //
+          // The cost of running after auth is that a request with no token is
+          // answered 401 and never counted, so this route no longer caps an
+          // unauthenticated flood. That is the better trade: the 401 path
+          // verifies a signature and touches nothing else, while an office
+          // sharing one 300/hour budget breaks real syncs every day.
+          // ponytail: if an unauthenticated flood ever shows up in the logs,
+          // the fix is a cheap IP cap on `onRequest` in front of this one,
+          // which @fastify/rate-limit cannot express per route — it would mean
+          // a small hook of its own rather than more config here.
+          hook: 'preHandler',
+          keyGenerator: (request: FastifyRequest) =>
+            (request.user as JwtPayload | undefined)?.deviceId ?? callerAddress(request),
         },
       },
     },
