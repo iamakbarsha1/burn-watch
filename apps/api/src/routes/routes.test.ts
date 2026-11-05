@@ -450,8 +450,11 @@ describe('GET /v1/auth/admin/users', () => {
     })
     expect(res.statusCode).toBe(200)
     // The org filter is the only thing standing between one company's admin
-    // and another company's roster, so assert it reached the query.
-    expect(inspect(dbState.calls.find((c) => c.op === 'where')?.arg, { depth: 10 })).toContain(ORG_B)
+    // and another company's roster, so assert it reached the query. Looks
+    // across every `where` rather than the first: the per-user subqueries each
+    // add one of their own before the org filter is ever applied.
+    const wheres = dbState.calls.filter((c) => c.op === 'where')
+    expect(wheres.some((c) => inspect(c.arg, { depth: 10 }).includes(ORG_B))).toBe(true)
   })
 
   it('includes a user who has never synced, with zeroed usage', async () => {
