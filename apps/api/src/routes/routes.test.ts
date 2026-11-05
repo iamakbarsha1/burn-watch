@@ -470,6 +470,14 @@ describe('GET /v1/auth/admin/users', () => {
     })
   })
 
+  it('keeps the calendar day when the driver parses a date into local midnight', async () => {
+    // node-postgres builds this for a `date` column: midnight in the server's
+    // own zone. Serialising it through toISOString in IST reports the 4th.
+    dbState.results.push([row({ lastSyncDate: new Date(2026, 10, 5, 0, 0, 0) })])
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+    expect(res.json()[0].lastSyncDate).toBe('2026-11-05')
+  })
+
   it('ranks by spend, highest first', async () => {
     dbState.results.push([
       row({ id: 'a', name: 'Low', totalCostUsd: 1 }),

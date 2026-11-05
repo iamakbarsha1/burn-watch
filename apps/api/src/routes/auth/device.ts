@@ -20,6 +20,22 @@ const CreateUserSchema = z.object({
   orgId: z.string().uuid().optional(),
 })
 
+/**
+ * A calendar day as `YYYY-MM-DD`. The query casts to text so this normally gets
+ * a string, but a driver that parses `date` itself hands back local midnight,
+ * and `toISOString` on that lands on the previous day anywhere east of UTC.
+ * Reading the local parts keeps the day the database meant.
+ */
+function toDateString(value: unknown): string | null {
+  if (!value) return null
+  if (value instanceof Date) {
+    const month = String(value.getMonth() + 1).padStart(2, '0')
+    const day = String(value.getDate()).padStart(2, '0')
+    return `${value.getFullYear()}-${month}-${day}`
+  }
+  return String(value).slice(0, 10)
+}
+
 function generateCode(): string {
   // 6-char uppercase alphanumeric
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O/1/I to avoid confusion
@@ -283,11 +299,17 @@ export async function authRoutes(fastify: FastifyInstance) {
           select string_agg(${devices.hostname}, ', ' order by ${devices.hostname})
           from ${devices} where ${devices.userId} = ${users.id}
         )`,
+        // Both come back through the driver's date parsing, which turns a
+        // `date` into local midnight and a `timestamp` into a local-time Date.
+        // Serialising either of those shifts the value by the server's offset,
+        // so Postgres formats them as text and the API hands over exactly what
+        // the database holds. The columns are UTC, hence the Z.
         lastSeenAt: sql<string | null>`(
-          select max(${devices.lastSeenAt}) from ${devices} where ${devices.userId} = ${users.id}
+          select to_char(max(${devices.lastSeenAt}), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+          from ${devices} where ${devices.userId} = ${users.id}
         )`,
         lastSyncDate: sql<string | null>`(
-          select max(${dailySnapshots.date}) from ${dailySnapshots}
+          select max(${dailySnapshots.date})::text from ${dailySnapshots}
           where ${dailySnapshots.userId} = ${users.id}
         )`,
         totalCostUsd: sql<number>`coalesce((
@@ -315,8 +337,8 @@ export async function authRoutes(fastify: FastifyInstance) {
       createdAt: new Date(r.createdAt).toISOString(),
       deviceCount: r.deviceCount ?? 0,
       hostnames: r.hostnames ? r.hostnames.split(', ') : [],
-      lastSeenAt: r.lastSeenAt ? new Date(r.lastSeenAt).toISOString() : null,
-      lastSyncDate: r.lastSyncDate ? String(r.lastSyncDate).slice(0, 10) : null,
+      lastSeenAt: r.lastSeenAt ? String(r.lastSeenAt) : null,
+      lastSyncDate: toDateString(r.lastSyncDate),
       totalCostUsd: r.totalCostUsd ?? 0,
       totalTokens: r.totalTokens ?? 0,
       activeDays: r.activeDays ?? 0,
