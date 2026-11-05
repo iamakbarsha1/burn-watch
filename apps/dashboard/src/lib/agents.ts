@@ -1,4 +1,5 @@
 import type { TrendPoint } from '@burn-watch/shared'
+import { formatCost, formatTokens } from './format'
 
 /**
  * Agent identity: one hue each, fixed, never assigned by rank.
@@ -10,18 +11,23 @@ import type { TrendPoint } from '@burn-watch/shared'
  * Editing a hex here means re-running that check.
  *
  * `costKey` is the field on TrendPoint, which is also the Recharts dataKey.
+ * `tokenKey` is set only where the daily snapshot carries a per-agent token
+ * column. It is what keeps a free agent on the page: Qwen's coder model has no
+ * LiteLLM price, so its spend is a true $0 no matter how much it ran, and a
+ * cost-only view drops it entirely.
  */
 export const AGENTS = [
-  { id: 'claude', label: 'Claude', color: '#d95926', costKey: 'claudeCost' },
+  { id: 'claude', label: 'Claude', color: '#d95926', costKey: 'claudeCost', tokenKey: 'claudeTokens' },
   { id: 'copilot', label: 'Copilot', color: '#3987e5', costKey: 'copilotCost' },
   { id: 'codex', label: 'Codex', color: '#199e70', costKey: 'codexCost' },
   { id: 'gemini', label: 'Gemini', color: '#c98500', costKey: 'geminiCost' },
-  { id: 'qwen', label: 'Qwen', color: '#d55181', costKey: 'qwenCost' },
+  { id: 'qwen', label: 'Qwen', color: '#d55181', costKey: 'qwenCost', tokenKey: 'qwenTokens' },
 ] as const satisfies readonly {
   id: string
   label: string
   color: string
   costKey: keyof TrendPoint
+  tokenKey?: keyof TrendPoint
 }[]
 
 export type Agent = (typeof AGENTS)[number]
@@ -92,4 +98,60 @@ export function totalsByAgent(rows: TrendPoint[]): Record<string, number> {
     totals[agent.id] = rows.reduce((sum, r) => sum + (r[agent.costKey] as number), 0)
   }
   return totals
+}
+
+/** Total tokens, for the agents that have a per-agent token column. */
+export function tokensByAgent(rows: TrendPoint[]): Record<string, number> {
+  const totals: Record<string, number> = {}
+  for (const agent of AGENTS) {
+    if (!('tokenKey' in agent)) continue
+    totals[agent.id] = rows.reduce((sum, r) => sum + (r[agent.tokenKey] as number), 0)
+  }
+  return totals
+}
+
+export interface AgentPanel {
+  agent: Agent
+  /** Recharts dataKey for this panel's series. */
+  dataKey: keyof TrendPoint
+  /** Headline figure: spend, or tokens where there is no spend to show. */
+  value: string
+  caption: string
+  /** True when the panel plots tokens because the agent costs nothing. */
+  free: boolean
+}
+
+/**
+ * One panel per agent that did anything in the range.
+ *
+ * "Did anything" is not the same as "spent anything". Qwen's coder model is
+ * unpriced, so it reports a true $0 on days it ran for hours — filtering on
+ * spend alone deleted it from the page, tokens and all. An agent with no cost
+ * but real tokens gets plotted on tokens instead.
+ */
+export function agentPanels(rows: TrendPoint[]): AgentPanel[] {
+  const cost = totalsByAgent(rows)
+  const tokens = tokensByAgent(rows)
+  const peak = (key: keyof TrendPoint) =>
+    rows.reduce((hi, r) => Math.max(hi, r[key] as number), 0)
+
+  return AGENTS.flatMap<AgentPanel>((agent) => {
+    if (cost[agent.id] > 0) {
+      return [{
+        agent,
+        dataKey: agent.costKey,
+        value: formatCost(cost[agent.id]),
+        caption: `own scale · peak ${formatCost(peak(agent.costKey))}`,
+        free: false,
+      }]
+    }
+    if (!('tokenKey' in agent) || tokens[agent.id] === 0) return []
+    return [{
+      agent,
+      dataKey: agent.tokenKey,
+      value: `${formatTokens(tokens[agent.id])} tokens`,
+      caption: `free tier · peak ${formatTokens(peak(agent.tokenKey))}`,
+      free: true,
+    }]
+  })
 }

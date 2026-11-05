@@ -11,8 +11,9 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { TrendPoint } from '@burn-watch/shared'
-import { AGENTS, fillDateGaps, totalsByAgent } from '@/lib/agents'
-import { formatCost } from '@/lib/format'
+import type { Agent } from '@/lib/agents'
+import { AGENTS, fillDateGaps, totalsByAgent, agentPanels } from '@/lib/agents'
+import { formatCost, formatTokens } from '@/lib/format'
 import { SeriesDot } from '@/components/ui'
 
 /** The card the chart sits on. Stacked bands are separated by a gap in this
@@ -156,6 +157,34 @@ export function BurnAreaChart({ data }: Props) {
   )
 }
 
+/** One day of one series, for panels the stacked cost tooltip cannot describe. */
+function PointTooltip({
+  active,
+  payload,
+  label,
+  agent,
+}: {
+  active?: boolean
+  payload?: { value?: number }[]
+  label?: string
+  agent: Agent
+}) {
+  if (!active || !payload?.length) return null
+
+  return (
+    <div className="rounded-lg border border-line bg-surface-2/95 p-2.5 text-xs shadow-xl backdrop-blur">
+      <p className="mb-1.5 font-medium text-ink">{label}</p>
+      <span className="flex items-center gap-1.5 text-ink-2">
+        <SeriesDot color={agent.color} />
+        {agent.label}
+        <span className="tabular-nums text-ink">
+          {formatTokens(payload[0].value ?? 0)} tokens
+        </span>
+      </span>
+    </div>
+  )
+}
+
 /**
  * The stacked chart answers "what did the team spend"; at this data's scale it
  * cannot also answer "what did Copilot do", because Copilot's $32 is a band one
@@ -165,14 +194,13 @@ export function BurnAreaChart({ data }: Props) {
  */
 export function AgentSparklines({ data }: Props) {
   const rows = useMemo(() => fillDateGaps(data), [data])
-  const totals = useMemo(() => totalsByAgent(rows), [rows])
-  const active = AGENTS.filter((a) => totals[a.id] > 0)
+  const panels = useMemo(() => agentPanels(rows), [rows])
 
-  if (active.length === 0) return null
+  if (panels.length === 0) return null
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {active.map((a) => (
+      {panels.map(({ agent: a, dataKey, value, caption, free }) => (
         <div
           key={a.id}
           className="rounded-[var(--radius-card)] border border-line bg-surface-1 p-4 transition-colors hover:border-line-strong"
@@ -181,20 +209,18 @@ export function AgentSparklines({ data }: Props) {
             <SeriesDot color={a.color} />
             <span className="text-xs text-ink-2">{a.label}</span>
           </div>
-          <p className="mt-1 text-xl font-semibold tabular-nums text-ink">
-            {formatCost(totals[a.id])}
-          </p>
+          <p className="mt-1 text-xl font-semibold tabular-nums text-ink">{value}</p>
           <div className="mt-3">
             <ResponsiveContainer width="100%" height={56}>
               <AreaChart data={rows} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
                 <Tooltip
-                  content={<TrendTooltip />}
+                  content={free ? <PointTooltip agent={a} /> : <TrendTooltip />}
                   cursor={{ stroke: AXIS_INK, strokeWidth: 1 }}
                 />
                 <YAxis hide domain={[0, 'dataMax']} />
                 <Area
                   type="monotone"
-                  dataKey={a.costKey}
+                  dataKey={dataKey}
                   name={a.id}
                   stroke={a.color}
                   strokeWidth={1.5}
@@ -205,9 +231,7 @@ export function AgentSparklines({ data }: Props) {
               </AreaChart>
             </ResponsiveContainer>
           </div>
-          <p className="mt-1 text-[11px] text-ink-3">own scale · peak {formatCost(
-            Math.max(...rows.map((r) => r[a.costKey] as number)),
-          )}</p>
+          <p className="mt-1 text-[11px] text-ink-3">{caption}</p>
         </div>
       ))}
     </div>
