@@ -23,7 +23,10 @@ function detectNpxPath(): string {
   }
 }
 
-const POLL_INTERVAL = 3_000 // 3 seconds
+// Someone has to open the dashboard and type the code, so a tighter poll only
+// burns the server's rate-limit budget. Keep this in step with the cap on
+// POST /v1/auth/verify-device.
+const POLL_INTERVAL = 10_000 // 10 seconds
 const POLL_TIMEOUT = 15 * 60 * 1000 // 15 minutes (matches server expiry)
 
 export async function registerCommand(options: { apiUrl?: string }) {
@@ -62,8 +65,8 @@ export async function registerCommand(options: { apiUrl?: string }) {
   console.log(`  │  Verification Code:  ${code}      │`)
   console.log('  └────────────────────────────────┘')
   console.log()
-  console.log('  Enter this code in the BurnWatch dashboard to verify your device.')
-  console.log('  Waiting for verification...')
+  console.log('  Sign in to the BurnWatch dashboard, open Devices, and enter this code.')
+  console.log('  Waiting for approval...')
 
   // Step 2: Poll for verification
   const start = Date.now()
