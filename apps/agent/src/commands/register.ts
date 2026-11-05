@@ -1,7 +1,7 @@
 import { hostname } from 'os'
 import { createInterface } from 'readline'
 import { ApiClient } from '../lib/api.js'
-import { saveConfig } from '../lib/config.js'
+import { saveConfig, DEFAULT_API_URL } from '../lib/config.js'
 import { installCron, isCronInstalled } from '../lib/cron.js'
 import { execSync } from 'child_process'
 
@@ -27,7 +27,7 @@ const POLL_INTERVAL = 3_000 // 3 seconds
 const POLL_TIMEOUT = 15 * 60 * 1000 // 15 minutes (matches server expiry)
 
 export async function registerCommand(options: { apiUrl?: string }) {
-  const apiUrl = options.apiUrl ?? 'https://api.burnwatch.com'
+  const apiUrl = options.apiUrl ?? DEFAULT_API_URL
 
   console.log('[burnwatch] Registering device with', apiUrl)
 
