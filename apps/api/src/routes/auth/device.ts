@@ -39,6 +39,58 @@ function toDateString(value: unknown): string | null {
   return String(value).slice(0, 10)
 }
 
+/**
+ * Per-user totals for the admin roster, as correlated subqueries rather than
+ * joins. Joining devices and snapshots in one statement multiplies rows, and
+ * every SUM would come back wrong by the number of devices the user owns.
+ *
+ * Every correlation goes through the query builder instead of being written
+ * out inside a `sql` template, and that is the whole point of this function
+ * existing. Drizzle strips the table prefix off every column it renders in a
+ * single-table select list, so an inline `where ${devices.userId} =
+ * ${users.id}` came out as `where "user_id" = "id"` — and `"id"` binds to the
+ * subquery's own table, not to `users`. `devices.user_id = devices.id` is
+ * never true, so every device count, spend total and sync date on the admin
+ * screen read zero while nothing anywhere failed. The builder keeps the table
+ * names, and `admin-users-query.test.ts` renders this to check they are still
+ * there.
+ */
+export function adminUserFields(db: DB) {
+  const perDevice = <T>(aggregate: SQL) =>
+    sql<T>`(${db.select({ v: aggregate }).from(devices).where(eq(devices.userId, users.id))})`
+  const perSnapshot = <T>(aggregate: SQL) =>
+    sql<T>`(${db.select({ v: aggregate }).from(dailySnapshots).where(eq(dailySnapshots.userId, users.id))})`
+
+  return {
+    id: users.id,
+    name: users.name,
+    email: users.email,
+    role: users.role,
+    isActive: users.isActive,
+    createdAt: users.createdAt,
+    deviceCount: perDevice<number>(sql`count(*)`).mapWith(Number),
+    hostnames: perDevice<string | null>(
+      sql`string_agg(${devices.hostname}, ', ' order by ${devices.hostname})`,
+    ),
+    // Both come back through the driver's date parsing, which turns a `date`
+    // into local midnight and a `timestamp` into a local-time Date.
+    // Serialising either of those shifts the value by the server's offset, so
+    // Postgres formats them as text and the API hands over exactly what the
+    // database holds. The columns are UTC, hence the Z.
+    lastSeenAt: perDevice<string | null>(
+      sql`to_char(max(${devices.lastSeenAt}), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
+    ),
+    lastSyncDate: perSnapshot<string | null>(sql`max(${dailySnapshots.date})::text`),
+    totalCostUsd: sql<number>`coalesce(${perSnapshot(
+      sql`sum(${dailySnapshots.totalCostUsd})`,
+    )}, 0)`.mapWith(Number),
+    totalTokens: sql<number>`coalesce(${perSnapshot(
+      sql`sum(${dailySnapshots.totalTokens})`,
+    )}, 0)`.mapWith(Number),
+    activeDays: perSnapshot<number>(sql`count(*)`).mapWith(Number),
+  }
+}
+
 function generateCode(): string {
   // 6-char uppercase alphanumeric
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O/1/I to avoid confusion
@@ -298,49 +350,8 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.get('/admin/users', { preHandler: requireAdmin(fastify) }, async (request) => {
     const jwt = request.user as JwtPayload
 
-    // Correlated subqueries rather than joins. Joining devices and snapshots in
-    // one statement multiplies rows, and every SUM would come back wrong by the
-    // number of devices the user owns.
     const rows = await fastify.db
-      .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        role: users.role,
-        isActive: users.isActive,
-        createdAt: users.createdAt,
-        deviceCount: sql<number>`(
-          select count(*) from ${devices} where ${devices.userId} = ${users.id}
-        )`.mapWith(Number),
-        hostnames: sql<string | null>`(
-          select string_agg(${devices.hostname}, ', ' order by ${devices.hostname})
-          from ${devices} where ${devices.userId} = ${users.id}
-        )`,
-        // Both come back through the driver's date parsing, which turns a
-        // `date` into local midnight and a `timestamp` into a local-time Date.
-        // Serialising either of those shifts the value by the server's offset,
-        // so Postgres formats them as text and the API hands over exactly what
-        // the database holds. The columns are UTC, hence the Z.
-        lastSeenAt: sql<string | null>`(
-          select to_char(max(${devices.lastSeenAt}), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-          from ${devices} where ${devices.userId} = ${users.id}
-        )`,
-        lastSyncDate: sql<string | null>`(
-          select max(${dailySnapshots.date})::text from ${dailySnapshots}
-          where ${dailySnapshots.userId} = ${users.id}
-        )`,
-        totalCostUsd: sql<number>`coalesce((
-          select sum(${dailySnapshots.totalCostUsd}) from ${dailySnapshots}
-          where ${dailySnapshots.userId} = ${users.id}
-        ), 0)`.mapWith(Number),
-        totalTokens: sql<number>`coalesce((
-          select sum(${dailySnapshots.totalTokens}) from ${dailySnapshots}
-          where ${dailySnapshots.userId} = ${users.id}
-        ), 0)`.mapWith(Number),
-        activeDays: sql<number>`(
-          select count(*) from ${dailySnapshots} where ${dailySnapshots.userId} = ${users.id}
-        )`.mapWith(Number),
-      })
+      .select(adminUserFields(fastify.db))
       .from(users)
       .where(eq(users.orgId, jwt.orgId))
       .limit(500)
