@@ -43,6 +43,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | todo | S | — |
 | BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | **done** | M | — |
 | BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
+| BW-32 | P4 | launchd plist named the runtime, not the burnwatch binary | **done** | S | — |
 
 ---
 
@@ -1274,6 +1275,68 @@ two call sites cannot drift apart again.
 **Acceptance**
 - [x] One constant, imported by both call sites
 - [x] Points at the live API
+
+### BW-32 · launchd plist named the runtime, not the burnwatch binary
+**Size S** · done 2026-11-05
+
+`register.ts` passed `process.execPath` to `installCron()`. That is the binary
+only in a `bun build --compile` build. Run from source it is the bun runtime, so
+the plist written on 2026-11-05 said:
+
+```
+/Users/akbarsha/.bun/bin/bun
+sync
+```
+
+`bun sync` exits with `error: Script not found "sync"`. The job fired at 6 PM
+every day, failed, and wrote to a log nobody reads. Nothing caught it: the
+install is skipped when a plist already exists, so tests never reached it, and
+the line reads as correct. It was only visible by running register for real and
+then reading what it left on the machine.
+
+The obvious fix is to detect which mode is running and fall back to
+`process.argv[1]`. Both candidate signals lie. `process.execPath` is ambiguous
+by definition here, and `process.argv[1]` holds a real path from source but a
+virtual `/$bunfs/root/burnwatch` path when compiled — and `existsSync` returns
+`true` for that virtual path, because Bun shims `fs` over the embedded bundle. A
+disk-presence guard would have shipped a silent coin flip. The only remaining
+attribute was a string prefix on `/$bunfs/`, which is undocumented and differs
+on Windows.
+
+So the resolution does not read an attribute, it runs the candidate.
+`resolveSelfCommand()` tries `[execPath]`, then `[execPath, argv[1]]`, invoking
+each with a hidden `__self-check` command and requiring the sentinel
+`burnwatch:self-check:ok` on stdout. Only burnwatch prints it, so the runtime
+alone fails and the first shape that answers is the one scheduled. Compiled
+builds still resolve to `[binary]`, unchanged. `installCron()` now takes no
+argument and returns the argv it scheduled, or `null`, which removes the
+parameter that made the wrong path passable in the first place.
+
+Two things came along with it, both in the same function. The plist template
+interpolated paths straight into XML, so a home directory containing `&` would
+have produced an unparseable plist; arguments are escaped now. And
+`launchctl load ${PLIST_PATH}` ran through a shell, which breaks on a home
+directory with a space; both launchctl calls use `execFileSync` with an argument
+array.
+
+New command: `burnwatch install-cron`. Fixing the writer does not fix what was
+already written, and the install is guarded by `isCronInstalled()`, so upgrading
+the binary would never repoint an existing plist. Anyone carrying a broken one
+runs `burnwatch install-cron` to tear it down and rewrite it. It is also how the
+fix was verified without driving a whole registration.
+
+Verified on both surfaces. From source the plist now holds
+`[bun, /abs/path/apps/agent/src/index.ts, sync]` and that command runs. From
+`dist/burnwatch` it holds `[dist/burnwatch, sync]` and that runs too. The test
+asserting the runtime is rejected was mutation-checked against the old
+`execPath`-only behaviour and fails on it.
+
+**Acceptance**
+- [x] A source-mode install writes a plist whose command actually runs
+- [x] A compiled-mode install still writes `[binary, sync]`
+- [x] `installCron()` cannot be handed the wrong path
+- [x] A test fails if the resolver accepts the bare runtime
+- [x] Existing broken plists have a repair path
 
 ### Carried over, still unowned
 
