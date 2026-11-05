@@ -1,15 +1,78 @@
 @import "tailwindcss";
 
-:root {
-  --bg: #0a0a0a;
-  --card: #111111;
-  --border: #222222;
-  --text: #f5f5f5;
-  --muted: #888888;
-  --primary: #7c3aed;
-  --success: #22c55e;
-  --warning: #f97316;
+/*
+ * Tailwind v4 discovers its own source files, but it anchors that scan on the
+ * repo root, and in this workspace it came up empty — the build emitted the
+ * theme variables and not one utility. Pointing it at the app's own tree is
+ * explicit and does not depend on where the scan decides to start.
+ */
+@source "../../src/**/*.{ts,tsx}";
+
+/*
+ * Dark-only. The product is an ops dashboard that lives on a second monitor all
+ * day, so there is one surface scale and it is dark; a light mode nobody asked
+ * for is a second palette to keep validated for no reader.
+ *
+ * The series hues are not decoration. They are the dark column of the dataviz
+ * reference palette, re-ordered so Claude keeps the orange it has always had,
+ * then re-validated as a set against --surface-2 (#111111), the card the charts
+ * actually render on: lightness band, chroma floor, CVD separation, normal-vision
+ * separation and contrast all pass. Changing one of these hexes means running
+ * that check again, not eyeballing it.
+ */
+@theme {
+  --color-surface-0: #0a0a0a;
+  --color-surface-1: #0f0f0f;
+  --color-surface-2: #141414;
+  --color-surface-3: #1b1b1b;
+
+  --color-line: #242424;
+  --color-line-strong: #333333;
+
+  --color-ink: #f5f5f5;
+  --color-ink-2: #a3a3a3;
+  --color-ink-3: #6f6f6f;
+
+  --color-brand: #7c3aed;
+
+  --color-series-claude: #d95926;
+  --color-series-copilot: #3987e5;
+  --color-series-codex: #199e70;
+  --color-series-gemini: #c98500;
+  --color-series-qwen: #d55181;
+
+  --color-good: #0ca30c;
+  --color-warn: #fab219;
+  --color-bad: #d03b3b;
+
+  --radius-card: 10px;
 }
 
-* { box-sizing: border-box; }
-body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-surface-0);
+  color: var(--color-ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Recharts injects its own focus outline on the SVG wrapper; ours is better. */
+.recharts-wrapper:focus {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
