@@ -411,6 +411,75 @@ describe('POST /v1/auth/admin/users', () => {
   })
 })
 
+describe('GET /v1/auth/admin/users', () => {
+  const url = '/v1/auth/admin/users'
+
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: USER_A,
+    name: 'Dev One',
+    email: 'dev1@example.com',
+    role: 'developer',
+    isActive: true,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    deviceCount: 1,
+    hostnames: 'laptop-1',
+    lastSeenAt: '2026-11-05T12:00:00.000Z',
+    lastSyncDate: '2026-11-04',
+    totalCostUsd: 12.5,
+    totalTokens: 1000,
+    activeDays: 3,
+    ...over,
+  })
+
+  it('returns 401 without a token', async () => {
+    const res = await app.inject({ method: 'GET', url })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('scopes the query to the caller own organization', async () => {
+    dbState.results.push([row()])
+    const res = await app.inject({
+      method: 'GET',
+      url,
+      headers: auth(token({ role: 'admin', orgId: ORG_B })),
+    })
+    expect(res.statusCode).toBe(200)
+    // The org filter is the only thing standing between one company's admin
+    // and another company's roster, so assert it reached the query.
+    expect(inspect(dbState.calls.find((c) => c.op === 'where')?.arg, { depth: 10 })).toContain(ORG_B)
+  })
+
+  it('includes a user who has never synced, with zeroed usage', async () => {
+    dbState.results.push([
+      row({ deviceCount: 0, hostnames: null, lastSeenAt: null, lastSyncDate: null, totalCostUsd: 0, totalTokens: 0, activeDays: 0 }),
+    ])
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toHaveLength(1)
+    expect(res.json()[0]).toMatchObject({
+      deviceCount: 0,
+      hostnames: [],
+      lastSeenAt: null,
+      lastSyncDate: null,
+      totalCostUsd: 0,
+    })
+  })
+
+  it('ranks by spend, highest first', async () => {
+    dbState.results.push([
+      row({ id: 'a', name: 'Low', totalCostUsd: 1 }),
+      row({ id: 'b', name: 'High', totalCostUsd: 99 }),
+    ])
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+    expect(res.json().map((u: { name: string }) => u.name)).toEqual(['High', 'Low'])
+  })
+})
+
 describe('device registration', () => {
   it('does not issue tokens at registration, only a pending code', async () => {
     dbState.results.push([{ id: USER_A, orgId: ORG_A }]) // user lookup
