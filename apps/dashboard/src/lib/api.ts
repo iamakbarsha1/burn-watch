@@ -64,3 +64,7 @@ export async function fetchProjects(from: string, to: string, orgId: string): Pr
 export async function inviteUser(email: string, name: string): Promise<{ userId: string }> {
   return apiPost('/v1/auth/admin/users', { email, name })
 }
+
+export async function approveDevice(code: string): Promise<{ hostname: string; platform: string }> {
+  return apiPost('/v1/auth/approve-device', { code })
+}
