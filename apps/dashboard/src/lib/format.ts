@@ -14,3 +14,16 @@ export function formatTokens(n: number): string {
 export function formatPct(n: number): string {
   return `${n.toFixed(1)}%`
 }
+
+/**
+ * Lower bound for the "All time" preset. The dashboard APIs return only the
+ * dates that have snapshot rows, so a floor far below the first sync costs
+ * nothing and saves the client from having to ask when collection started.
+ */
+export const ALL_TIME_FROM = '2020-01-01'
+
+export function formatRange(from: string, to: string): string {
+  if (from <= ALL_TIME_FROM) return 'All time'
+  if (from === to) return from
+  return `${from} — ${to}`
+}

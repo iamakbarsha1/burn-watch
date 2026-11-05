@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { fetchProjects } from '@/lib/api'
 import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatCost } from '@/lib/format'
+import { formatCost, formatRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
 export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
@@ -22,7 +22,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
 
   projects.sort((a, b) => b.totalCost - a.totalCost)
 
-  const subtitle = from === to ? from : `${from} — ${to}`
+  const subtitle = formatRange(from, to)
 
   return (
     <div>

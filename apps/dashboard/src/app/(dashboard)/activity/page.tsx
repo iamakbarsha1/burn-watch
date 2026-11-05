@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { fetchActivity } from '@/lib/api'
 import { DateRangePicker } from '@/components/DateRangePicker'
+import { formatRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -67,7 +68,7 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
     mcp: items.filter(i => i.category === 'mcp').sort((a, b) => b.count - a.count),
   }
 
-  const subtitle = from === to ? from : `${from} — ${to}`
+  const subtitle = formatRange(from, to)
   const total = items.reduce((s, i) => s + i.count, 0)
 
   return (

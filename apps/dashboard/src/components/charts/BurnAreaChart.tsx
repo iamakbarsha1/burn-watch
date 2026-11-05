@@ -38,11 +38,20 @@ export function BurnAreaChart({ data }: Props) {
     date: d.date.slice(5), // MM-DD
   }))
 
+  // An agent with no spend in range still draws a stroke, and because the areas
+  // are stacked that stroke sits exactly on top of the agent below it. Five
+  // agents meant the last one painted over the rest and every line came out
+  // Qwen cyan. Drop the empty series so each visible line keeps its own colour
+  // and the legend lists only agents that actually appear.
+  const active = Object.entries(AGENT_COLORS).filter(([key]) =>
+    data.some((d) => (d[key as keyof TrendPoint] as number) > 0),
+  )
+
   return (
     <ResponsiveContainer width="100%" height={360}>
       <AreaChart data={formatted} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
         <defs>
-          {Object.entries(AGENT_COLORS).map(([key, color]) => (
+          {active.map(([key, color]) => (
             <linearGradient key={key} id={`grad-${key}`} x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor={color} stopOpacity={0.3} />
               <stop offset="95%" stopColor={color} stopOpacity={0} />
@@ -57,7 +66,7 @@ export function BurnAreaChart({ data }: Props) {
           formatter={(value: number, name: string) => [`$${value.toFixed(2)}`, AGENT_LABELS[name] ?? name]}
         />
         <Legend formatter={(value: string) => AGENT_LABELS[value] ?? value} />
-        {Object.entries(AGENT_COLORS).map(([key, color]) => (
+        {active.map(([key, color]) => (
           <Area
             key={key}
             type="monotone"

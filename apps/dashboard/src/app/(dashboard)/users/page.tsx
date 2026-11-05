@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
 import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatCost, formatTokens } from '@/lib/format'
+import { formatCost, formatTokens, formatRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
 export default async function LeaderboardPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
@@ -20,7 +20,7 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
     // Show empty state if API unavailable
   }
 
-  const subtitle = from === to ? `${from} · Ranked by AI spend` : `${from} — ${to} · Ranked by AI spend`
+  const subtitle = `${formatRange(from, to)} · Ranked by AI spend`
 
   return (
     <div>
