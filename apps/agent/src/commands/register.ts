@@ -95,9 +95,13 @@ export async function registerCommand(options: { apiUrl?: string }) {
 
       // Install launchd cron
       if (!isCronInstalled()) {
-        const binaryPath = process.execPath
-        installCron(binaryPath)
-        console.log('[burnwatch] Scheduled daily sync at 6 PM (launchd)')
+        const scheduled = installCron()
+        if (scheduled) {
+          console.log('[burnwatch] Scheduled daily sync at 6 PM (launchd):', scheduled.join(' '))
+        } else {
+          console.error('[burnwatch] Could not schedule the daily sync — this build cannot')
+          console.error('           re-invoke itself. Run register from the burnwatch binary.')
+        }
       }
 
       console.log('[burnwatch] Run: burnwatch sync --last-7 to backfill the last 7 days')
