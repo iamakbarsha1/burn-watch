@@ -1,12 +1,14 @@
 'use client'
 
 import { useSearchParams, usePathname, useRouter } from 'next/navigation'
+import { ALL_TIME_FROM } from '@/lib/format'
 
 const PRESETS = [
   { label: 'Today', days: 0 },
   { label: 'Yesterday', days: 1 },
   { label: 'Last 7 days', days: 7 },
   { label: 'Last 30 days', days: 30 },
+  { label: 'All time', days: null },
 ] as const
 
 function formatDate(d: Date): string {
@@ -39,7 +41,11 @@ export function DateRangePicker() {
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', gap: '0.25rem' }}>
         {PRESETS.map((p) => {
-          const pFrom = p.days === 0 ? today : p.days === 1 ? daysAgo(1) : daysAgo(p.days - 1)
+          const pFrom =
+            p.days === null ? ALL_TIME_FROM
+            : p.days === 0 ? today
+            : p.days === 1 ? daysAgo(1)
+            : daysAgo(p.days - 1)
           const pTo = p.days === 1 ? daysAgo(1) : today
           const isActive = from === pFrom && to === pTo
           return (

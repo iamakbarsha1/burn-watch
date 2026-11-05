@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation'
 import { fetchOverview } from '@/lib/api'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
 import { DateRangePicker } from '@/components/DateRangePicker'
-import { formatCost, formatTokens } from '@/lib/format'
+import { formatCost, formatTokens, formatRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
 export default async function OverviewPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
@@ -22,7 +22,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
     // Show empty state if API unavailable
   }
 
-  const subtitle = isRange ? `${from} — ${to}` : from
+  const subtitle = formatRange(from, to)
 
   return (
     <div>

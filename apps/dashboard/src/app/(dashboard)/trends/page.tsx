@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { fetchTrends } from '@/lib/api'
 import { BurnAreaChart } from '@/components/charts/BurnAreaChart'
 import { DateRangePicker } from '@/components/DateRangePicker'
+import { formatRange } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 
 export default async function TrendsPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
@@ -24,7 +25,7 @@ export default async function TrendsPage({ searchParams }: { searchParams: Promi
     // Show empty state if API unavailable
   }
 
-  const subtitle = `${from} — ${to} · Daily AI spend by agent`
+  const subtitle = `${formatRange(from, to)} · Daily AI spend by agent`
 
   return (
     <div>
