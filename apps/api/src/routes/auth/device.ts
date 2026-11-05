@@ -221,7 +221,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // POST /v1/admin/bootstrap — create org + first admin user (first-run only)
+  // POST /v1/auth/admin/bootstrap — create org + first admin user (first-run only)
   fastify.post('/admin/bootstrap', {
     config: { rateLimit: { max: 3, timeWindow: '1 hour' } },
   }, async (request, reply) => {

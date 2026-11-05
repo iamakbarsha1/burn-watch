@@ -16,7 +16,7 @@ npm run db:push
 
 # 4. Bootstrap first org + user (one-time)
 
-curl -X POST http://localhost:3001/v1/admin/bootstrap \
+curl -X POST http://localhost:3001/v1/auth/admin/bootstrap \
  -H "Content-Type: application/json" \
  -d '{"orgName":"Acme Corp","orgSlug":"acme","email":"admin@acme.com","name":"Akbar"}'
 
@@ -87,7 +87,7 @@ Remains:
 - npm install at root
 - Provision Neon DB + Upstash Redis
 - npm run db:push to migrate schema
-- Bootstrap first org via POST /v1/admin/bootstrap
+- Bootstrap first org via POST /v1/auth/admin/bootstrap
 - End-to-end smoke test
 
 ---
@@ -97,7 +97,7 @@ Run `npm install` then `npm run typecheck` at /Users/akbarsha/Documents/code/bur
 Fix any TypeScript errors found. Then test the agent sync flow end-to-end:
 
 1. Start API locally (apps/api npm run dev)
-2. Bootstrap org (POST /v1/admin/bootstrap)
+2. Bootstrap org (POST /v1/auth/admin/bootstrap)
 3. burnwatch register --api-url http://localhost:3001
 4. burnwatch sync --last-7
 5. Verify daily_snapshots populated in Neon DB
