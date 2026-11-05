@@ -36,6 +36,29 @@ bun run src/index.ts sync --last-7
 
 cd apps/dashboard && npm run dev
 
+# 9. Schedule the daily sync (macOS, optional)
+
+bun run src/index.ts install-cron
+
+Writes `~/Library/LaunchAgents/com.burnwatch.agent.plist`, runs `sync` at 6 PM
+daily, logs to `~/.burnwatch/agent.log` and `agent-error.log`. Run it from the
+build you want scheduled: from source it schedules `bun <entry> sync`, from a
+compiled binary it schedules `<binary> sync`.
+
+`register` already installs the schedule on first registration, but only when no
+plist exists. `install-cron` unloads and rewrites unconditionally, so it is also
+the repair for a plist written before BW-32. That version scheduled
+`process.execPath`, which from source is the bun runtime rather than burnwatch.
+The job fires at 6 PM and dies with `error: Script not found "sync"`. Any machine
+registered before BW-32 needs one `install-cron` run; upgrading the agent alone
+does not fix a plist already on disk.
+
+# Remove the schedule (and stop the daily sync)
+
+bun run src/index.ts uninstall
+
+Config stays at `~/.burnwatch/config.json`.
+
 ---
 
 Next Prompt:
