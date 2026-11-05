@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { authClient } from '@/lib/auth-client'
 import { mintApiToken } from './actions'
@@ -89,6 +90,10 @@ export default function LoginPage() {
             {loading ? 'Signing in…' : 'Sign In'}
           </button>
         </form>
+
+        <p style={{ marginTop: '1.5rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
+          First time? <Link href="/signup" style={{ color: 'var(--primary)' }}>Set your password</Link>
+        </p>
       </div>
     </div>
   )

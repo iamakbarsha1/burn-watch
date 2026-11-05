@@ -69,8 +69,12 @@ interface ApiTokenResult {
 export async function createApiTokenForEmail(email: string): Promise<ApiTokenResult | null> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
   try {
+    // Case-insensitive on purpose. An admin typing "Dev@acme.com" into the
+    // invite form and the developer typing "dev@acme.com" at the login box is
+    // the same person, and an exact match here fails sign-in after better-auth
+    // has already accepted the password.
     const result = await pool.query<BurnWatchUser>(
-      'SELECT id, org_id AS "orgId", role FROM users WHERE email = $1 LIMIT 1',
+      'SELECT id, org_id AS "orgId", role FROM users WHERE lower(email) = lower($1) LIMIT 1',
       [email],
     )
     if (result.rows.length === 0) return null
@@ -91,6 +95,24 @@ export async function createApiTokenForEmail(email: string): Promise<ApiTokenRes
     )
 
     return { token, orgId: user.orgId, role: user.role }
+  } finally {
+    await pool.end()
+  }
+}
+
+/**
+ * Whether an admin has already added this email to BurnWatch. Sign-up is only
+ * ever setting a password on an account that exists, so this is the check that
+ * keeps the public better-auth endpoint from minting accounts for strangers.
+ */
+export async function isKnownUserEmail(email: string): Promise<boolean> {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
+  try {
+    const result = await pool.query(
+      'SELECT 1 FROM users WHERE lower(email) = lower($1) AND is_active LIMIT 1',
+      [email],
+    )
+    return result.rows.length > 0
   } finally {
     await pool.end()
   }
