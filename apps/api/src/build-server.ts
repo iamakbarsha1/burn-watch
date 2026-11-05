@@ -6,6 +6,8 @@ import jwt from '@fastify/jwt'
 import { ZodError } from 'zod'
 import { sql } from 'drizzle-orm'
 import { dbPlugin } from './plugins/db.js'
+import { pgRateLimitStore } from './plugins/rate-limit-store.js'
+import { callerAddress } from './caller-address.js'
 import { authRoutes } from './routes/auth/device.js'
 import { inviteRoutes } from './routes/auth/invites.js'
 import { usageRoutes } from './routes/usage/submit.js'
@@ -36,14 +38,16 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
   // which no same-origin policy applies to. Registering CORS would only widen
   // what a browser on another origin is allowed to do.
   server.register(dbPlugin)
-  // ponytail: in-memory counters, per instance. Every per-route limit below is
-  // effectively multiplied by the number of live serverless instances, which
-  // matters because all of them guard auth endpoints — device registration is
-  // 3/hour on one instance and 3N/hour on N. Redis backed this with a shared
-  // counter until the cache was dropped for the MVP. Restore a shared store
-  // (Redis, or a Postgres table keyed by ip+route) before this API is reachable
-  // by anyone outside the company.
-  server.register(rateLimit, { global: false })
+  // Counters live in Postgres, not in process memory. The default store counts
+  // per instance, so every per-route cap below was really N times its stated
+  // value across N warm serverless instances — device registration at 3/hour
+  // was 3N/hour. `skipOnError` stays at its default of false: a counter the
+  // database cannot write is not a reason to wave the request through.
+  server.register(rateLimit, {
+    global: false,
+    store: pgRateLimitStore(() => server.db),
+    keyGenerator: callerAddress,
+  })
   server.register(jwt, { secret: process.env.JWT_SECRET!, namespace: 'access' })
   server.register(jwt, { secret: process.env.JWT_REFRESH_SECRET!, namespace: 'refresh' })
 

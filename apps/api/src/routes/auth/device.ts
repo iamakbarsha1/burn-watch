@@ -1,11 +1,14 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { eq, and, isNull, isNotNull, gt, sql } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import { users, devices, deviceTokens, organizations, pendingDevices, dailySnapshots } from '../../../drizzle/schema.js'
 import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema } from '@burn-watch/shared'
 import type { AdminUserRow } from '@burn-watch/shared'
 import { requireAdmin, requireDashboardAuth, type JwtPayload } from '../../plugins/jwt.js'
+import type { DB } from '../../plugins/db.js'
+import { callerAddress } from '../../caller-address.js'
 
 const BootstrapSchema = z.object({
   orgName: z.string().min(1),
@@ -135,15 +138,29 @@ export async function authRoutes(fastify: FastifyInstance) {
   // POST /v1/auth/verify-device — step 3: exchange an approved code for tokens
   //
   // The cap is high because the agent polls this endpoint every 10s for up to
-  // 15 minutes while it waits for the approval above, and @fastify/rate-limit
-  // keys on IP — a whole office behind one NAT shares the budget. Nothing is
-  // lost by that: reaching this route at all needs the pendingId, a v4 UUID
-  // handed only to the caller that registered, so the cap is a DoS backstop
-  // and never the thing standing between a guess and a token.
-  // ponytail: raise the cap if an office ever trips it; key on pendingId
-  // (config.rateLimit.hook = 'preHandler') only if that stops being enough.
+  // 15 minutes while it waits for the approval above: 90 requests per laptop
+  // per registration. Counted per address that would be seven developers in a
+  // shared office before the eighth is locked out of registering at all, so it
+  // counts per pendingId instead — a v4 UUID handed only to the caller that
+  // registered, and one registration's worth of polling each. Getting a fresh
+  // one means passing /register-device, which is still 5 per address per 15
+  // minutes, so this cannot be used to buy extra attempts.
+  //
+  // Reading the body needs `hook: 'preHandler'`; on the default `onRequest`
+  // hook nothing is parsed yet. Falls back to the address when the body has no
+  // usable pendingId, which the schema below rejects anyway.
   fastify.post('/verify-device', {
-    config: { rateLimit: { max: 600, timeWindow: '15 minutes' } },
+    config: {
+      rateLimit: {
+        max: 600,
+        timeWindow: '15 minutes',
+        hook: 'preHandler',
+        keyGenerator: (request: FastifyRequest) => {
+          const pendingId = (request.body as { pendingId?: unknown } | undefined)?.pendingId
+          return typeof pendingId === 'string' ? pendingId : callerAddress(request)
+        },
+      },
+    },
   }, async (request, reply) => {
     const body = VerifyDeviceSchema.parse(request.body)
 
