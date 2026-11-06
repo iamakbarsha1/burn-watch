@@ -49,6 +49,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
 | BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
 | BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **doing** | M | — |
+| BW-38 | P4 | `register` overwrites an existing agent config silently | **todo** | S | — |
 
 ---
 
@@ -60,7 +61,6 @@ them reads as done.
 
 | From | What is unproven | What would settle it |
 |------|------------------|----------------------|
-| BW-23 | That the Quickstart works start to finish. Every command was verified to exist and be spelled right, which catches a wrong step but not a missing one. | `git clone` into an empty directory and walk all eight steps against a fresh database. |
 | BW-20 | That a systemd timer or a Task Scheduler task actually registers and fires. The generated unit and XML are real and the dispatch is tested by faking `process.platform`, but the agent has only ever run on macOS. | Carry the binaries to the machines and run `install-cron`, confirming with `systemctl --user status burnwatch-sync.timer` and `schtasks /query /tn BurnWatchSync`. Both binaries now build — `build:linux-x64` and `build:windows-x64`, the latter added 2026-11-06. No Linux or Windows host was reachable from this machine: Docker is not running, and a systemd timer needs a real user session rather than a container anyway. |
 
 **Cleared 2026-11-06.** Both were cleared by doing the thing the right-hand
@@ -69,6 +69,7 @@ column asked for, and one of them was worth every minute:
 | From | How it was settled |
 |------|--------------------|
 | BW-36 | Signed in as `verify-dev@test.com`, a genuine `developer` row in a Neon branch copied from production, with no stub anywhere. Neither nav renders Admin — the vertical sidebar at 1440px and the compact header nav at 390px — and navigating to `/admin` directly redirects to `/`. The link is hidden *and* the page refuses. |
+| BW-23 | Walked on a fresh `git clone` into an empty directory, against an empty database. Three of the eight steps failed; the Quickstart is rewritten to twelve. Details under BW-23 below. |
 | BW-18 | Drove the panel in a browser as a real admin. It did not work: three defects, one of them a production outage nobody had noticed. Written up in full under BW-18, and the database half is now BW-37. The debt was load-bearing. |
 
 ## P0 — Unblock CI
@@ -1223,11 +1224,37 @@ that a bare `sync` writes yesterday.
       `/v1/auth/admin/bootstrap`, `register --api-url`, `sync --days`
 - [x] Deployment section matches the Vercel setup — both projects, both
       config files, the CLI relink step, and the real env var lists
-- [ ] Quickstart followed start to finish on a clean checkout — NOT done.
-      Every command was verified to exist and be spelled correctly, but
-      nobody has run `git clone` into an empty directory and walked all eight
-      steps against a fresh database. That is the only way to catch a missing
-      step rather than a wrong one.
+- [x] Quickstart followed start to finish on a clean checkout — **done
+      2026-11-06**, and the prediction held exactly: verifying that every
+      command exists catches a wrong step and is blind to a missing one.
+      Three of the eight steps failed on a fresh `git clone` against an empty
+      database. The Quickstart is now twelve steps.
+
+**What the walk found.** Each failure is a step the doc never had, not a step
+it got wrong — which is why reading it carefully could never have surfaced
+them.
+
+| Step | Result |
+|---|---|
+| 1 · clone + `npm install` | PASS |
+| 2 · configure API | PASS, but `.env.example` ships three keys nothing reads: `REDIS_URL`, `CORS_ORIGIN`, `COPILOT_ENCRYPTION_KEY` |
+| 3 · `npm run db:migrate` | PASS — 5 migrations, 12 tables, and it creates `drizzle.__drizzle_migrations`, which is exactly what production never got (BW-37) |
+| 4 · start API | **FAIL.** `ERR_MODULE_NOT_FOUND: @burn-watch/shared/dist/index.js`. The package has to be built first and no step said so. |
+| 5 · bootstrap | PASS |
+| 6 · start dashboard | **FAIL at sign-in, twice.** First a 500: the dashboard reaches Neon directly for better-auth and had no `DATABASE_URL`, so it fell through to libpq defaults (`host: localhost, user: akbarsha`). `apps/dashboard/.env.local.example` exists and the Quickstart never mentions it. Then, once configured, `relation "user" does not exist` — better-auth owns `user`, `session`, `account` and `verification`, drizzle's migrations do not contain them, and nothing told you to run better-auth's own CLI. |
+| 7 · register agent | **FAIL as written.** It blocks indefinitely on BW-30's approval gate, waiting for a human to enter its code in the dashboard. The CLI says so on screen; the doc does not, so a reader scanning the steps sees a one-liner and a hang. It also overwrites `~/.burnwatch/config.json` with no prompt and no backup. |
+| 8 · `sync --days 7` | PASS — 26 events across 7 days |
+
+Also fixed while there: steps 7 and 9 each start a server and block, and the
+old step 6 began `cd apps/dashboard` as though the previous `cd apps/api` had
+not happened. The rewrite says which commands need their own terminal and
+anchors every path at the repo root.
+
+**One thing the walk found that is not a doc bug.** `register` clobbering an
+existing `~/.burnwatch/config.json` is a real hazard — it silently repointed
+this machine from production to localhost, and the production device token in
+that file is not recoverable. Documented as a warning for now; the agent
+should refuse or back up instead. Worth its own ticket.
 
 ### BW-24 · Reconcile REVIEW.md into `docs/audits/`
 **Size S** · no blockers
@@ -1783,3 +1810,31 @@ status is not.
       — names only, 113 = 113, no other drift; see the caveat above
 - [ ] A migration bookkeeping decision applied and recorded, so an unapplied
       migration is detectable without a user finding it
+
+### BW-38 · `register` overwrites an existing agent config with no prompt and no backup
+**Size S** · no blockers
+
+Found 2026-11-06 while walking the Quickstart. `register` writes
+`~/.burnwatch/config.json` unconditionally. If the machine is already
+registered against another BurnWatch, that file is replaced in place: a
+registration against a local dev API silently repointed a laptop that had been
+reporting to production, and the production `accessToken` and `refreshToken`
+in the old file were the only copies. They are not recoverable. The device row
+survives server-side, so the fix for a victim is to register again and have an
+admin approve it — but nothing warns, and nothing hints that it happened.
+
+The whole cost of the failure is that the overwrite is silent. Registering a
+second time is a reasonable thing to want; losing the previous identity
+without being told is not.
+
+Smallest fix that removes the harm: if `config.json` exists and its `apiUrl`
+differs from the one being registered against, copy it to
+`config.json.bak-<timestamp>` before writing, and say so on stdout. A prompt
+is an option but the agent already prompts for email, and a backup needs no
+answer. Do not add a `--force` flag for a problem a backup solves.
+
+**Acceptance**
+- [ ] An existing config is preserved somewhere before a new one replaces it
+- [ ] The agent prints where it went
+- [ ] Registering on a machine with no existing config is unchanged, with a
+      test covering both paths
