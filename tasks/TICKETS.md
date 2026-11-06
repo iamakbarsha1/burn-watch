@@ -29,27 +29,40 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-15 | P3 | Wrap usage submit in a transaction | **done** | M | BW-10 |
 | BW-16 | P3 | `/health` checks DB (Redis dropped in BW-08) | **done** | S | BW-02 |
 | BW-17 | P3 | Generated migration files, stop `db:push` on prod | **done** | M | BW-02 |
-| BW-18 | P4 | Budget alerts API + UI | todo | L | BW-14 |
+| BW-18 | P4 | Budget alerts API + UI | **done** | L | BW-14 |
 | BW-19 | P4 | Invite flow on `invites` table | **done** | L | BW-14 |
-| BW-20 | P4 | Cross-platform agent scheduling | todo | M | BW-14 |
-| BW-21 | P4 | GitHub Copilot integration | todo | L | BW-14 |
+| BW-20 | P4 | Cross-platform agent scheduling | **done** | M | BW-14 |
+| BW-21 | P4 | GitHub Copilot integration | **blocked** | L | operator |
 | BW-22 | P5 | Dashboard inline styles to Tailwind | **done** | L | — |
-| BW-23 | P5 | Fix ARCHITECTURE.md drift | todo | S | BW-08 |
+| BW-23 | P5 | Fix ARCHITECTURE.md drift | **done** | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
-| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | todo | M | — |
-| BW-26 | P5 | Remove the double type assertion in `overview.ts` | todo | S | — |
+| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | **done** | M | — |
+| BW-26 | P5 | Remove the double type assertion in `overview.ts` | **done** | S | — |
 | BW-27 | P3 | Enforce device token revocation | **done** | M | — |
-| BW-28 | P5 | Share the dashboard query schema and cache wrapper | todo | S | — |
-| BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | todo | S | — |
+| BW-28 | P5 | Share the dashboard query schema and cache wrapper | **done (half void)** | S | — |
+| BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | **done** | S | — |
 | BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | **done** | M | — |
 | BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
 | BW-32 | P4 | launchd plist named the runtime, not the burnwatch binary | **done** | S | — |
 | BW-33 | P4 | Copilot usage silently dropped by the ccusage collector | **done** | S | — |
 | BW-34 | **P2** | Agent never collects project breakdown and cache stats | **done** | M | — |
 | BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
-| BW-36 | P5 | Sidebar shows the Admin link to every role | todo | S | — |
+| BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
 
 ---
+
+## Verification debt
+
+Carried deliberately. Each of these is code that passes its tests but has not
+been exercised on the surface that would actually prove it. Listed so none of
+them reads as done.
+
+| From | What is unproven | What would settle it |
+|------|------------------|----------------------|
+| BW-20 | That a systemd timer or a Task Scheduler task actually registers and fires. The generated unit and XML are real and the dispatch is tested by faking `process.platform`, but the agent ran on macOS only. | Build the Linux and Windows binaries, run `install-cron`, confirm with `systemctl --user status burnwatch-sync.timer` and `schtasks /query /tn BurnWatchSync`. There is no `build:win32` script yet. |
+| BW-36 | That a real developer-role session sees no Admin link. Verified by stubbing the role and reading both navs in a browser; the stub was reverted before commit. | Sign in as a genuine developer-role user against a real database. |
+| BW-23 | That the Quickstart works start to finish. Every command was verified to exist and be spelled right, which catches a wrong step but not a missing one. | `git clone` into an empty directory and walk all eight steps against a fresh database. |
+| BW-18 | The admin panel's rendering. The API, the service and the boundary are covered; the React panel is not. | This app has no component-test setup at all, so either add one or drive the page in a browser. |
 
 ## P0 — Unblock CI
 
@@ -1028,11 +1041,36 @@ the Copilot usage API. Business or Enterprise plans only.
 Until this ships, either hide the admin card or label it as not yet available.
 Shipping a dead button is worse than shipping no button.
 
-**Acceptance**
+**Blocked on the operator, 2026-11-06.** Two of the inputs this ticket needs
+cannot be produced from inside the repo:
+
+1. A GitHub OAuth app registered under the target org, which yields the client
+   ID and secret the flow is built around.
+2. A Copilot Business or Enterprise plan to pull against. The usage API does
+   not exist on other plans, so there is nothing to verify an implementation
+   with.
+
+Also note the ticket's own premise is partly stale. It says
+`COPILOT_ENCRYPTION_KEY` "was provisioned in `render.yaml`". BW-07 deleted
+`render.yaml`, and that key now has zero references anywhere in the
+repository. It is not configured on either Vercel project either. Whoever
+picks this up provisions it fresh rather than finding it.
+
+The interim was taken instead: the dead "Connect GitHub org" button is gone,
+replaced by a "Not yet available" badge that says Copilot figures stay at zero
+until the integration exists. That closes the "dead button" harm without
+scaffolding an OAuth flow nobody can exercise.
+
+Deliberately NOT built: encrypted credential storage and a connection-state
+UI. Both are scaffolding for a flow that cannot be tested, and would have to
+be rewritten once the real OAuth shape is known.
+
+**Acceptance** — none of these are met, and none can be without the two inputs above
 - [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY`
 - [ ] Key absent means the feature degrades, not crashes
 - [ ] Copilot usage lands in `usage_events` and flows to snapshots
 - [ ] Admin card reflects real connection state
+- [x] Interim: the admin card no longer ships a dead button
 
 ---
 
