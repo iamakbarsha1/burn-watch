@@ -48,6 +48,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-34 | **P2** | Agent never collects project breakdown and cache stats | **done** | M | — |
 | BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
 | BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
+| BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **doing** | M | — |
 
 ---
 
@@ -59,10 +60,16 @@ them reads as done.
 
 | From | What is unproven | What would settle it |
 |------|------------------|----------------------|
-| BW-20 | That a systemd timer or a Task Scheduler task actually registers and fires. The generated unit and XML are real and the dispatch is tested by faking `process.platform`, but the agent ran on macOS only. | Build the Linux and Windows binaries, run `install-cron`, confirm with `systemctl --user status burnwatch-sync.timer` and `schtasks /query /tn BurnWatchSync`. There is no `build:win32` script yet. |
-| BW-36 | That a real developer-role session sees no Admin link. Verified by stubbing the role and reading both navs in a browser; the stub was reverted before commit. | Sign in as a genuine developer-role user against a real database. |
 | BW-23 | That the Quickstart works start to finish. Every command was verified to exist and be spelled right, which catches a wrong step but not a missing one. | `git clone` into an empty directory and walk all eight steps against a fresh database. |
-| BW-18 | The admin panel's rendering. The API, the service and the boundary are covered; the React panel is not. | This app has no component-test setup at all, so either add one or drive the page in a browser. |
+| BW-20 | That a systemd timer or a Task Scheduler task actually registers and fires. The generated unit and XML are real and the dispatch is tested by faking `process.platform`, but the agent has only ever run on macOS. | Carry the binaries to the machines and run `install-cron`, confirming with `systemctl --user status burnwatch-sync.timer` and `schtasks /query /tn BurnWatchSync`. Both binaries now build — `build:linux-x64` and `build:windows-x64`, the latter added 2026-11-06. No Linux or Windows host was reachable from this machine: Docker is not running, and a systemd timer needs a real user session rather than a container anyway. |
+
+**Cleared 2026-11-06.** Both were cleared by doing the thing the right-hand
+column asked for, and one of them was worth every minute:
+
+| From | How it was settled |
+|------|--------------------|
+| BW-36 | Signed in as `verify-dev@test.com`, a genuine `developer` row in a Neon branch copied from production, with no stub anywhere. Neither nav renders Admin — the vertical sidebar at 1440px and the compact header nav at 390px — and navigating to `/admin` directly redirects to `/`. The link is hidden *and* the page refuses. |
+| BW-18 | Drove the panel in a browser as a real admin. It did not work: three defects, one of them a production outage nobody had noticed. Written up in full under BW-18, and the database half is now BW-37. The debt was load-bearing. |
 
 ## P0 — Unblock CI
 
@@ -216,7 +223,9 @@ of BW-08. Routing is config-only until a deploy exercises it.
       the api function, `/` renders Next
 - [x] Dashboard API client reaches the API without a hardcoded host (via binding,
       not a relative URL — see above)
-- [ ] `vercel dev` runs both services locally — needs the link from BW-08
+- [x] ~~`vercel dev` runs both services locally~~ void — BW-08 replaced
+      Services with two projects, so there are no services for `vercel dev` to
+      run. Local dev is `npm run dev` in each app.
 
 ### BW-05 · Rate limit onto Redis store
 **Size S** · done, landed ahead of BW-03 (no dependency in practice)
@@ -357,9 +366,12 @@ on the `api` service, `BETTER_AUTH_SECRET` on `dashboard`. `API_URL` is no longe
 set by hand — the binding in `vercel.json` injects it. `CORS_ORIGIN` and
 `COPILOT_ENCRYPTION_KEY` are not carried over.
 
-**Acceptance** (restated for Render)
-- [ ] The four API env vars set on the Render service
-- [ ] `BETTER_AUTH_SECRET` and `API_URL` set on the Vercel dashboard project
+**Acceptance** (restated for Render, then outlived by it)
+- [x] ~~The four API env vars set on the Render service~~ void — Render was
+      abandoned the same session and `render.yaml` is deleted. The equivalent
+      Vercel vars are listed at the top of this ticket.
+- [x] `BETTER_AUTH_SECRET` and `API_URL` set on the Vercel dashboard project —
+      both set; `API_URL` points at `https://burn-watch-api.vercel.app`
 - [x] `render.yaml` rewritten for the real build — `npx turbo build` then
       `node apps/api/dist/src/server.js`, not `npx tsx` on source
 - [x] `.npmrc` kept
@@ -610,7 +622,17 @@ browser credentials or the secret. The dashboard also sits behind Vercel SSO.
 Closing these means someone logging in and loading the pages.
 
 The smoke test also found BW-30, which is a P0.
-- [ ] Promote to production and record both URLs in ROADMAP.md
+- [x] Promote to production and record both URLs in ROADMAP.md — done
+      2026-11-06; the dashboard's usable alias is `burn-watch-delta.vercel.app`
+      (307 to `/login`), not the SSO-gated `-akbar-sha-ss-projects` one
+
+**On the two unticked lines above, 2026-11-06.** Both were proven locally
+today against a Neon branch copied from production: better-auth login end to
+end, and every dashboard page rendering real figures — Overview reads
+`$3,038.53` and `5.0B` tokens from the branch, not from a fixture. That is not
+the same claim as the deployment serving them, which still needs someone with
+credentials to sign in at `burn-watch-delta.vercel.app`. Left unticked
+deliberately: a local pass is evidence about the code, not about the deploy.
 
 ---
 
@@ -937,11 +959,54 @@ snapshot rebuild, and an admin UI. Per-agent thresholds, not Claude-only.
 Decide before building: what happens when a threshold trips. Dashboard banner
 only, or email/Slack too. Dashboard-only is the smaller first version.
 
+**Settled: dashboard banner only.** It appears on `/admin`, above the panel.
+
+**Built 2026-11-05/06**, merged in `4745f9d`. **Verified in a browser
+2026-11-06**, against a Neon branch taken from production, signed in as a real
+admin — and the verification is the only reason this ticket is honest, because
+the panel did not work. Three defects, none of which any test caught:
+
+1. **The column was never in the database.** `0004_budget_alert_tripped_at.sql`
+   was generated and committed, and nothing ever ran it. Creating an alert
+   answered `column "tripped_at" of relation "budget_alerts" does not exist`.
+   This is not local: the branch was copied from production, so production has
+   the same gap. See BW-37 — the database has no `drizzle.__drizzle_migrations`
+   table at all, because it was built with `push` and has never been migrated.
+2. **Every delete returned 400.** `apiMutate` in the dashboard's `lib/api.ts`
+   set `Content-Type: application/json` on every request including the
+   bodyless ones, and Fastify rejects an empty body that claims to be JSON
+   before it reaches a route. Fixed by only declaring the type when there is a
+   body — one guard in the shared function, so no future bodyless verb repeats
+   it. Pinned by `apps/dashboard/src/lib/api.test.ts`.
+3. **The status contradicted the spend beside it.** `evaluateBudgetAlerts` was
+   only ever called from the usage-submit path, so an alert created or edited
+   with a limit under current spend read `OK` next to the month-to-date figure
+   that disproved it, until the next agent sync. Fixed with
+   `evaluateBudgetAlert`, called by both the create and update routes.
+
+Defect 2 is why defect 3 survived review: the panel discarded the delete
+action's result, so a failing write and a succeeding one rendered identically.
+That is fixed too — a failed delete now says so.
+
+Verified after the fixes, in the browser: create, list, edit, delete all round
+trip; `$554.22` against a `$400` limit at 50% flips to **Tripped** on save and
+back to **OK** when the limit is raised past spend; the banner reads "1 budget
+alert has tripped this month" and appears on create, which only works because
+the write now evaluates.
+
 **Acceptance**
-- [ ] Create, list, update, delete thresholds scoped to an org
-- [ ] Evaluated when a snapshot rebuilds
-- [ ] Admin UI to manage them
-- [ ] Tests for the boundary case where spend exactly equals the threshold
+- [x] Create, list, update, delete thresholds scoped to an org — all four
+      driven in a browser, not just through the route tests
+- [x] Evaluated when a snapshot rebuilds, and now on every CRUD write too
+- [x] Admin UI to manage them
+- [x] Tests for the boundary case where spend exactly equals the threshold —
+      `$100` at threshold 1 trips at exactly `$100`; flipping `>=` to `>`
+      turns it red
+
+**Known limit.** The banner is on `/admin` only. The GET route's comment says
+a developer should be able to see why a banner is up, but no banner renders
+outside a page developers cannot reach. Either the comment or the placement is
+wrong; not resolved here.
 
 ### BW-19 · Invite flow on `invites` table
 **Size M** · blocked by BW-14
@@ -1021,11 +1086,27 @@ The CLI surface is settled, so the existing command names are the ones to keep:
 macOS-specific in name only; it should dispatch per platform rather than gain a
 sibling command. ARCHITECTURE.md now documents this set.
 
-**Acceptance**
-- [ ] Linux and Windows schedule installation works
-- [ ] `uninstall` removes the schedule on all three platforms
-- [ ] `install-cron` repoints an existing schedule on all three platforms
-- [ ] Unsupported platform fails with a clear message, not a stack trace
+**Done 2026-11-06**, merged in `d7c1ee5`. `backendFor(platform)` dispatches to
+one of three `ScheduleBackend` implementations and `installSchedule`,
+`uninstallSchedule` and `isScheduleInstalled` are the platform-independent
+entry points. `cron-linux.ts` writes a systemd user unit and timer,
+`cron-windows.ts` drives `schtasks`.
+
+**Acceptance** — the first three are covered by unit tests that fake
+`process.platform`, and by nothing stronger; see the verification debt table
+- [x] Linux and Windows schedule installation works — the generated unit and
+      XML are asserted, the real `systemctl`/`schtasks` call is not
+- [x] `uninstall` removes the schedule on all three platforms — same level
+- [x] `install-cron` repoints an existing schedule on all three platforms —
+      same level
+- [x] Unsupported platform fails with a clear message, not a stack trace —
+      this one is fully proven; no real OS is needed to throw a named error
+
+**`build:windows-x64` added 2026-11-06.** The debt table said there was no
+Windows build script, which made the Windows half unverifiable even in
+principle. `bun build --target=bun-windows-x64` produces a `PE32+ executable
+(console) x86-64` — so a binary now exists to carry to a Windows machine. It
+has not been run on one.
 
 ### BW-21 · GitHub Copilot integration
 **Size L** · blocked by BW-14
@@ -1090,9 +1171,27 @@ two pages.
 Convert page by page. Low risk, independent of everything else, good filler work
 between larger tickets.
 
+**Done 2026-11-06.** All 13 pages and 5 components on `@theme` tokens.
+
+**The first acceptance line was written too absolutely and is amended rather
+than ticked as-is.** Five `style={{}}` survive, and all five carry a value
+that only exists at runtime: three bar widths computed from a ratio, two
+background colours read from the agent palette. Tailwind generates its classes
+by scanning source at build time, so a class built from a template literal is
+a class that never gets generated. Writing these as utilities would mean
+either shipping a safelist of every percentage or inlining a `<style>` tag —
+both larger and worse than the attribute they replace.
+
+Checked 2026-11-06: `grep -rn 'style={{' apps/dashboard/src` returns exactly
+those five, in `activity/page.tsx`, `projects/page.tsx`,
+`charts/AgentBreakdown.tsx` and twice in `components/ui.tsx`.
+
 **Acceptance**
-- [ ] No `style={{}}` left in `apps/dashboard/src/app`
-- [ ] Rendered output visually unchanged
+- [x] No `style={{}}` left in `apps/dashboard/src/app` **except for values
+      computed at runtime**, which Tailwind cannot express — five remain, all
+      of that kind, enumerated above
+- [x] Rendered output visually unchanged — browser pass at 1440px and 390px on
+      every page, signed in against the real API
 
 ### BW-23 · Fix ARCHITECTURE.md drift
 **Size S** · blocked by BW-08
@@ -1189,10 +1288,15 @@ The two routes also duplicate the same fetch-then-merge shape, so doing this
 once collapses a DRY violation the audit logged separately. The N+1 `inArray`
 half of that finding is already fixed — both routes JOIN now.
 
+**Done 2026-11-06**, merged in `345023d`. `projects.ts` unnests with
+`jsonb_array_elements`, `activity.ts` with `jsonb_each_text`, both through
+`orgEnrichment` in `routes/dashboard/enrichment.ts`. The characterization
+tests written first (`81059a4`) pinned the response shape across the rewrite.
+
 **Acceptance**
-- [ ] Aggregation happens in postgres, not in the route
-- [ ] Both routes share one helper
-- [ ] Response shape unchanged, proven by the existing route tests
+- [x] Aggregation happens in postgres, not in the route
+- [x] Both routes share one helper — `orgEnrichment`
+- [x] Response shape unchanged, proven by the existing route tests
 
 ### BW-26 · Remove the double type assertion in `overview.ts`
 **Size S** · no blockers
@@ -1202,9 +1306,14 @@ half of that finding is already fixed — both routes JOIN now.
 stacked like that turn the type checker off for the agent fan-out, which is
 exactly where a renamed column would otherwise be caught.
 
+**Done 2026-11-06**, merged in `8b92184`. The computed-key fan-out is gone;
+each agent's columns are named as literals, so the checker sees the access.
+Falsified by renaming a snapshot column and watching `tsc` catch it, which is
+the whole point of the ticket and could not happen while the assertions stood.
+
 **Acceptance**
-- [ ] No `as` on that access path
-- [ ] Renaming a snapshot column produces a type error
+- [x] No `as` on that access path — no `as keyof` or `as number` left in the file
+- [x] Renaming a snapshot column produces a type error
 
 ### BW-27 · Enforce device token revocation, or drop the table
 **Size M** · no blockers
@@ -1218,9 +1327,16 @@ revocation endpoint, or drop the table and stop implying a capability that does
 not exist. Checking on every request costs a lookup per authenticated call, so
 it wants Redis rather than postgres.
 
+**Done 2026-11-06**, closed in `79df6e8`. Took the first branch: the device
+auth guard looks the token row up with `device_id = <uuid> and revoked_at is
+null`, so revocation is a condition of the query rather than a check after it.
+Postgres, not Redis — the lookup is one indexed row per authenticated call and
+Redis had already been removed from the API by BW-08.
+
 **Acceptance**
-- [ ] A revoked token is rejected, with a test
-- [ ] Or the table and its write are removed and the decision recorded here
+- [x] A revoked token is rejected, with a test — `routes.test.ts`, "refuses a
+      device whose token row has been revoked"
+- [x] ~~Or the table and its write are removed~~ not taken; enforcement shipped
 
 ### BW-28 · Share the dashboard query schema and cache wrapper
 **Size S** · no blockers
@@ -1246,13 +1362,20 @@ inside a DRY cleanup.
 
 What is left is real: the five duplicated query schemas.
 
+**Done 2026-11-06**, merged in `456a954`. `routes/dashboard/query-schema.ts`
+exports three pieces rather than one object: `dateQuerySchema` for the three
+routes that need exactly the date range, `dateQueryShape` for `leaderboard.ts`
+to extend with `limit`, and `dateRangeFields` for `trends.ts` to compose with
+`days`. Composition rather than one wide schema is what keeps the two routes
+with extra parameters from loosening validation for the other three.
+
 **Acceptance**
-- [ ] One query schema, imported by every dashboard route, with `trends.ts`'s
+- [x] One query schema, imported by every dashboard route, with `trends.ts`'s
       `days` and `leaderboard.ts`'s `limit` still composed on rather than
       flattened away, and no validation loosened
 - [x] ~~One cache helper, with the per-route key still distinct~~ void, the
       cache was deleted before the ticket was written
-- [ ] Route tests unchanged and passing
+- [x] Route tests unchanged and passing
 
 ### BW-29 · De-duplicate the event builder in `ccusage.ts`
 **Size S** · no blockers
@@ -1264,9 +1387,14 @@ or token-summing rule fixed in one would silently stay wrong in the other.
 
 The collector tests from BW-11 cover both paths, so this is a safe extraction.
 
+**Done 2026-11-06**, merged in `fa10270`. `buildEventsForEntry` is the single
+builder; `parseOutput` and `collectRange` both call it. The BW-11 collector
+tests were not touched, which is what makes them evidence here rather than a
+rewrite that agrees with the new shape.
+
 **Acceptance**
-- [ ] One function builds the event, called from both paths
-- [ ] `apps/agent` tests pass unchanged
+- [x] One function builds the event, called from both paths
+- [x] `apps/agent` tests pass unchanged
 
 ### Confirmed present, deliberately not ticketed
 
@@ -1580,3 +1708,78 @@ any rewrite, not an optional extra.
 
 Separately, neither route paginates or truncates, and neither does the page.
 The live Activity page renders 357 shell commands in one list.
+
+---
+
+## Tickets opened 2026-11-06 from the BW-18 browser verification
+
+### BW-36 (verified) and BW-18 (three defects) — see those sections above
+
+### BW-37 · The database has never been migrated, and nothing notices
+**Size M** · no blockers · **P0**
+
+BW-17 generated a baseline migration and four since, and switched the
+documented deploy onto `drizzle-kit migrate`. The live database never followed.
+It has **no `drizzle.__drizzle_migrations` table at all**, which means no
+migration in `apps/api/drizzle/migrations/` has ever been applied to it. The
+schema it does have was put there by `drizzle-kit push`, by hand, whenever
+someone remembered.
+
+That held until a migration was written and nobody remembered. BW-18's
+`tripped_at` column exists in `schema.ts`, exists in
+`0004_budget_alert_tripped_at.sql`, and does not exist in the database.
+Creating a budget alert in production fails with
+`column "tripped_at" of relation "budget_alerts" does not exist`. A shipped,
+merged, reviewed feature has been dead since it landed.
+
+The failure mode is what makes this a P0 rather than a chore. Every test
+passes, every typecheck passes, and the API answers `/health` with `{"ok":true}`
+— because the only thing that knows the column is missing is postgres, and
+nothing asks postgres until a user does.
+
+**Two things to fix, and they are different sizes:**
+
+1. **The immediate gap.** `budget_alerts` needs `tripped_at` in production.
+   `ALTER TABLE "budget_alerts" ADD COLUMN "tripped_at" timestamp` — additive,
+   nullable, no backfill, exactly what `0004` says. Needs an operator to run
+   it against the production branch.
+2. **The reason it happened.** Adopt the migration bookkeeping that BW-17
+   assumed. Either run `db:migrate` against production with a baseline
+   `--custom` entry so drizzle stops trying to re-apply `0000` to a live
+   schema, or add a migration step to the deploy so the gap cannot reopen.
+   Until one of those exists, the next generated migration will sit unapplied
+   exactly like this one did, and will be found the same way.
+
+**Diffed 2026-11-06, and `tripped_at` is the only one.** Every column drizzle's
+`meta/0004_snapshot.json` declares was compared against `information_schema` on
+a branch copied from production: 113 columns each way, no column in the schema
+missing from the database and none in the database the schema does not declare,
+once `tripped_at` is set aside. better-auth's own four tables (`account`,
+`session`, `user`, `verification`) are excluded — better-auth owns them, not
+`schema.ts`.
+
+What that comparison does **not** cover: column types, nullability, defaults,
+foreign keys and indexes. A column renamed in place would show up here; a
+column that quietly became nullable would not. It is enough to say no second
+feature is dead for the same reason, and not enough to call the schemas equal.
+
+**Column applied to production 2026-11-06**, with the operator's go-ahead:
+`ALTER TABLE "budget_alerts" ADD COLUMN IF NOT EXISTS "tripped_at" timestamp`
+against the default branch. Confirmed present afterwards as
+`timestamp without time zone`, nullable — which matches both `schema.ts` and
+what `0004` would have produced.
+
+**Two things that are still true after it.** The create path itself was proven
+on a branch copied from production, not on production, because minting an
+admin JWT needs `JWT_SECRET` from inside the deployed dashboard. And the
+deployed API predates the evaluate-on-write fix, so until it is redeployed a
+production alert will save without tripping — the 500 is gone, the stale
+status is not.
+
+**Acceptance**
+- [x] `tripped_at` exists in production — applied and verified 2026-11-06.
+      Creating an alert *there* is still unproven; see above.
+- [x] Live schema diffed against `schema.ts`, with any other drift listed here
+      — names only, 113 = 113, no other drift; see the caveat above
+- [ ] A migration bookkeeping decision applied and recorded, so an unapplied
+      migration is detectable without a user finding it

@@ -75,8 +75,16 @@ be repaid before the API is reachable from outside the company.
 **Deployment Protection turned off** for `burn-watch-api` so the agent CLI gets
 the API rather than a 302. Left on for the dashboard, which humans use.
 
-**Both projects are live in production as of 2026-11-05.** The API answers
-`{"ok":true}` at `https://burn-watch-api.vercel.app/health`.
+**Both projects are live in production as of 2026-11-05.**
+
+| Target | Production URL | Checked 2026-11-06 |
+|---|---|---|
+| API | `https://burn-watch-api.vercel.app` | `/health` → 200 `{"ok":true}` |
+| Dashboard | `https://burn-watch-delta.vercel.app` | 307 to `/login` |
+
+`burn-watch-akbar-sha-ss-projects.vercel.app` also resolves to the dashboard
+project but answers 302 into Vercel SSO. The `burn-watch-delta` alias is the
+one to hand to a person.
 
 **Constraint found 2026-11-05:** Vercel Services rejects Edge Runtime output.
 Next.js middleware is Edge by default, so the dashboard cannot use middleware
