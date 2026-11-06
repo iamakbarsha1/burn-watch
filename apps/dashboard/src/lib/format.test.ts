@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatRange, formatAgo, formatCost, resolveRange, ALL_TIME_FROM } from './format'
+import { formatRange, formatAgo, formatCost, resolveRange, rangePresets, ALL_TIME_FROM } from './format'
 
 describe('formatCost', () => {
   it('groups thousands so a four-figure total reads at a glance', () => {
@@ -87,5 +87,48 @@ describe('formatAgo', () => {
     ['2026-11-01T12:00:00.000Z', '4d ago'],
   ])('renders %s as %s', (iso, expected) => {
     expect(formatAgo(iso, now)).toBe(expected)
+  })
+})
+
+describe('rangePresets', () => {
+  const nov5 = new Date('2026-11-05T12:00:00Z')
+  const nov6 = new Date('2026-11-06T12:00:00Z')
+  const find = (params: { from?: string | null; to?: string | null }, label: string, now: Date) =>
+    rangePresets(params, now).find((p) => p.label === label)!
+
+  it('gives All time no end date, so clicking it leaves `to` off the URL', () => {
+    expect(find({}, 'All time', nov5)).toMatchObject({ from: ALL_TIME_FROM, to: null })
+  })
+
+  it('keeps All time lit the next morning, on the URL its own click produced', () => {
+    // The regression, and the reason this is a round trip rather than a hand
+    // written URL: clicking All time wrote today into `to`, so the bookmark it
+    // produced stopped matching any preset once the date rolled over. Feeding
+    // the preset's own output back in is what catches that.
+    const clicked = find({}, 'All time', nov5)
+    const url = { from: clicked.from, to: clicked.to }
+    expect(find(url, 'All time', nov5).active).toBe(true)
+    expect(find(url, 'All time', nov6).active).toBe(true)
+  })
+
+  it('does not call a range All time just because it starts at the floor', () => {
+    // Matching on `from` alone was the other candidate fix. This range hides
+    // five months, so lighting the button up would be a lie.
+    expect(find({ from: ALL_TIME_FROM, to: '2026-06-01' }, 'All time', nov6).active).toBe(false)
+  })
+
+  it('still matches an explicit `to` of today', () => {
+    expect(find({ from: ALL_TIME_FROM, to: '2026-11-06' }, 'All time', nov6).active).toBe(true)
+  })
+
+  it('leaves the dated presets pinned to real dates', () => {
+    expect(find({}, 'Yesterday', nov6)).toMatchObject({ from: '2026-11-05', to: '2026-11-05' })
+    expect(find({}, 'Today', nov6)).toMatchObject({ from: '2026-11-06', to: '2026-11-06' })
+    expect(find({}, 'Last 7 days', nov6)).toMatchObject({ from: '2026-10-31', to: '2026-11-06' })
+  })
+
+  it('marks exactly one preset active for a given URL', () => {
+    const active = rangePresets({ from: '2026-11-05', to: '2026-11-05' }, nov6).filter((p) => p.active)
+    expect(active.map((p) => p.label)).toEqual(['Yesterday'])
   })
 })
