@@ -65,8 +65,46 @@ export function today(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10)
 }
 
+function daysAgo(n: number, now: Date): string {
+  const d = new Date(now)
+  d.setDate(d.getDate() - n)
+  return today(d)
+}
+
+const oneDay = (n: number, now: Date) => ({ from: daysAgo(n, now), to: daysAgo(n, now) })
+const lastDays = (n: number, now: Date) => ({ from: daysAgo(n - 1, now), to: today(now) })
+
 /**
- * The one place a page turns `?from&to` into a real range.
+ * Every preset, and the only place one is turned into dates.
+ *
+ * `resolveRange` and `rangePresets` both read this, so a preset is a row here
+ * instead of a branch in each of them. The dates sit behind `resolve` rather
+ * than in the row because they depend on when you ask: the URL carries only
+ * the token, and the window is worked out again on every render.
+ */
+const RANGE_PRESETS = [
+  { token: 'today', label: 'Today', resolve: (now: Date) => oneDay(0, now) },
+  { token: 'yesterday', label: 'Yesterday', resolve: (now: Date) => oneDay(1, now) },
+  { token: '7d', label: 'Last 7 days', resolve: (now: Date) => lastDays(7, now) },
+  { token: '30d', label: 'Last 30 days', resolve: (now: Date) => lastDays(30, now) },
+  {
+    token: 'all',
+    label: 'All time',
+    resolve: (now: Date) => ({ from: ALL_TIME_FROM, to: today(now) }),
+  },
+] as const
+
+export type RangeToken = (typeof RANGE_PRESETS)[number]['token']
+
+/** What every page reads off the URL. `range` is a token, `from`/`to` are dates. */
+export interface RangeParams {
+  from?: string
+  to?: string
+  range?: string
+}
+
+/**
+ * The one place a page turns a URL into a real range.
  *
  * Every page used to do this itself, and they disagreed: four defaulted to
  * today and Trends defaulted to the last 30 days, so the same link told you
@@ -75,77 +113,59 @@ export function today(now: Date = new Date()): string {
  * The sidebar now forwards the current params and every page resolves them
  * here, so one answer holds across the whole dashboard.
  *
+ * Two dialects, never both in one URL. A preset click writes `?range=<token>`
+ * and the window is computed here on each render, so a bookmarked "Last 7
+ * days" still means the last seven days next week. Hand-picked dates write
+ * `?from&to` and stay where they were put, which is the point of picking them.
+ *
  * The default is all time. A dashboard that opens on "today" opens empty most
  * mornings, since the agent uploads yesterday on a 6 PM schedule.
  */
 export function resolveRange(
-  params: { from?: string; to?: string },
+  params: RangeParams,
   now: Date = new Date(),
 ): { from: string; to: string } {
-  const end = today(now)
+  // An unrecognised token is a typo or a link from a build that spelled it
+  // differently. Falling through beats throwing a whole page away over it.
+  const preset = RANGE_PRESETS.find((p) => p.token === params.range)
+  if (preset) return preset.resolve(now)
+
   const from = params.from ?? ALL_TIME_FROM
-  const to = params.to ?? end
+  const to = params.to ?? today(now)
   // A hand-edited URL is the only way these come in backwards, but the API
   // answers an inverted range with an empty set, which reads as "no data" and
   // sends the reader hunting for a sync problem that isn't there.
   return from > to ? { from: to, to: from } : { from, to }
 }
 
-const PRESET_DAYS = [
-  { label: 'Today', days: 0 },
-  { label: 'Yesterday', days: 1 },
-  { label: 'Last 7 days', days: 7 },
-  { label: 'Last 30 days', days: 30 },
-  { label: 'All time', days: null },
-] as const
-
-function daysAgo(n: number, now: Date): string {
-  const d = new Date(now)
-  d.setDate(d.getDate() - n)
-  return today(d)
-}
-
 export interface RangePreset {
   label: string
-  from: string
-  /** `null` means "no end date". The range then follows today on its own. */
-  to: string | null
+  token: RangeToken
   active: boolean
 }
 
 /**
  * The preset buttons, and which one the current URL is sitting on.
  *
- * All time is the one preset with no end. Writing today's date into it froze
- * the range: the URL kept saying all time, the button went dark the next
- * morning, and the range quietly stopped including the newest day. Leaving
- * `to` off the URL lets `resolveRange` fill in today on every render, so a
- * bookmark still means all time a week later.
+ * Active state is token equality. Comparing dates is what broke this twice: a
+ * click wrote that day's dates into the URL, and the next morning the
+ * arithmetic had moved on while the bookmark had not, so the button went dark
+ * and the window quietly stopped following the clock.
  *
- * Matching on `from` alone was the other way out, and it lies: it would light
- * the button up for a range that explicitly ends last June.
+ * A URL carrying `from`/`to` lights nothing, including the legacy
+ * `?from=2020-01-01` bookmarks that used to light All time. Those still show
+ * all-time data; they are a pinned range now, and no button pretends otherwise.
+ *
+ * No clock here, unlike `resolveRange`. Which button is lit depends only on
+ * what the URL says, which is the whole point of putting a token in it.
  */
-export function rangePresets(
-  params: { from?: string | null; to?: string | null },
-  now: Date = new Date(),
-): RangePreset[] {
-  const end = today(now)
-  const from = params.from ?? ALL_TIME_FROM
-  const to = params.to ?? end
+export function rangePresets(params: RangeParams): RangePreset[] {
+  const pinned = params.from !== undefined || params.to !== undefined
+  const activeToken = params.range ?? (pinned ? null : 'all')
 
-  return PRESET_DAYS.map((p) => {
-    const presetFrom =
-      p.days === null ? ALL_TIME_FROM
-      : p.days === 0 ? end
-      : p.days === 1 ? daysAgo(1, now)
-      : daysAgo(p.days - 1, now)
-    const presetTo = p.days === null ? null : p.days === 1 ? daysAgo(1, now) : end
-
-    return {
-      label: p.label,
-      from: presetFrom,
-      to: presetTo,
-      active: from === presetFrom && to === (presetTo ?? end),
-    }
-  })
+  return RANGE_PRESETS.map((p) => ({
+    label: p.label,
+    token: p.token,
+    active: p.token === activeToken,
+  }))
 }

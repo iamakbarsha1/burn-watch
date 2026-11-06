@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { fetchActivity } from '@/lib/api'
 import { formatRange, resolveRange } from '@/lib/format'
+import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { PageHeader, Section, EmptyState } from '@/components/ui'
 
@@ -51,7 +52,7 @@ function UsageBars({
 export default async function ActivityPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>
+  searchParams: Promise<RangeParams>
 }) {
   const { from, to } = resolveRange(await searchParams)
 

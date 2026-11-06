@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
 import { formatCost, formatTokens, formatRange, resolveRange, formatCount } from '@/lib/format'
+import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { agentById } from '@/lib/agents'
 import { PageHeader, TableFrame, Th, Td, Tr, EmptyRow, SeriesDot } from '@/components/ui'
@@ -12,7 +13,7 @@ const COPILOT = agentById('copilot')!
 export default async function LeaderboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>
+  searchParams: Promise<RangeParams>
 }) {
   const { from, to } = resolveRange(await searchParams)
 

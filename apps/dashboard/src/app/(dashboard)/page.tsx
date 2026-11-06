@@ -2,13 +2,14 @@ import { redirect } from 'next/navigation'
 import { fetchOverview } from '@/lib/api'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
 import { formatCost, formatTokens, formatRange, resolveRange } from '@/lib/format'
+import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { PageHeader, StatTile, Section, EmptyState } from '@/components/ui'
 
 export default async function OverviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>
+  searchParams: Promise<RangeParams>
 }) {
   const { from, to } = resolveRange(await searchParams)
   const isRange = from !== to

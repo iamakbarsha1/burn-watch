@@ -2,7 +2,7 @@
 
 import { useTransition } from 'react'
 import { useSearchParams, usePathname, useRouter } from 'next/navigation'
-import { ALL_TIME_FROM, rangePresets, today as todayStr } from '@/lib/format'
+import { rangePresets, resolveRange, today as todayStr } from '@/lib/format'
 import { inputClass } from '@/components/ui'
 
 export function DateRangePicker() {
@@ -16,21 +16,31 @@ export function DateRangePicker() {
   const [pending, startTransition] = useTransition()
 
   const today = todayStr()
-  const from = searchParams.get('from') ?? ALL_TIME_FROM
-  const to = searchParams.get('to') ?? today
-  const presets = rangePresets({
-    from: searchParams.get('from'),
-    to: searchParams.get('to'),
-  })
+  const params = {
+    from: searchParams.get('from') ?? undefined,
+    to: searchParams.get('to') ?? undefined,
+    range: searchParams.get('range') ?? undefined,
+  }
+  const presets = rangePresets(params)
+  // The inputs show the resolved window rather than the raw query string.
+  // Under `?range=7d` there is no `from` to read, and the raw value would sit
+  // on the all-time floor while the page beside it shows the last seven days.
+  const { from, to } = resolveRange(params)
 
-  /** A `null` end drops `to` from the URL, which is how a range stays open. */
-  function navigate(newFrom: string, newTo: string | null) {
-    const params = new URLSearchParams(searchParams.toString())
-    params.set('from', newFrom)
-    if (newTo === null) params.delete('to')
-    else params.set('to', newTo)
+  /** One dialect per click. A token clears the dates, dates clear the token. */
+  function navigate(next: { range: string } | { from: string; to: string }) {
+    const q = new URLSearchParams(searchParams.toString())
+    if ('range' in next) {
+      q.set('range', next.range)
+      q.delete('from')
+      q.delete('to')
+    } else {
+      q.set('from', next.from)
+      q.set('to', next.to)
+      q.delete('range')
+    }
     startTransition(() => {
-      router.push(`${pathname}?${params.toString()}`, { scroll: false })
+      router.push(`${pathname}?${q.toString()}`, { scroll: false })
     })
   }
 
@@ -46,9 +56,9 @@ export function DateRangePicker() {
       >
         {presets.map((p) => (
           <button
-            key={p.label}
+            key={p.token}
             type="button"
-            onClick={() => navigate(p.from, p.to)}
+            onClick={() => navigate({ range: p.token })}
             aria-pressed={p.active}
             className={`rounded-md px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
               p.active
@@ -70,7 +80,7 @@ export function DateRangePicker() {
           type="date"
           value={from}
           max={to}
-          onChange={(e) => e.target.value && navigate(e.target.value, to)}
+          onChange={(e) => e.target.value && navigate({ from: e.target.value, to })}
           className={`${inputClass} h-9 text-xs [color-scheme:dark]`}
         />
         <span className="text-xs text-ink-3">to</span>
@@ -83,7 +93,7 @@ export function DateRangePicker() {
           value={to}
           min={from}
           max={today}
-          onChange={(e) => e.target.value && navigate(from, e.target.value)}
+          onChange={(e) => e.target.value && navigate({ from, to: e.target.value })}
           className={`${inputClass} h-9 text-xs [color-scheme:dark]`}
         />
       </div>

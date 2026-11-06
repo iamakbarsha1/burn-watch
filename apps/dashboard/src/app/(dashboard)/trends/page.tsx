@@ -2,13 +2,14 @@ import { redirect } from 'next/navigation'
 import { fetchTrends } from '@/lib/api'
 import { BurnAreaChart, AgentSparklines } from '@/components/charts/BurnAreaChart'
 import { formatRange, resolveRange } from '@/lib/format'
+import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { PageHeader, Card, EmptyState } from '@/components/ui'
 
 export default async function TrendsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>
+  searchParams: Promise<RangeParams>
 }) {
   const { from, to } = resolveRange(await searchParams)
 
