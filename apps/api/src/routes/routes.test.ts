@@ -568,6 +568,49 @@ describe('POST /v1/usage', () => {
     expect(res.statusCode).toBe(500)
     expect(dbState.calls.map((c) => c.op)).toContain('rollback')
   })
+
+  it('evaluates budget alerts inside the same transaction, scoped to the caller org', async () => {
+    liveDeviceToken()
+    dbState.results.push([{ id: 'event-1' }]) // insert ... returning
+    dbState.results.push([]) // update devices
+    dbState.results.push([]) // rebuild: usage aggregated by agent
+    dbState.results.push([]) // rebuild: enrichment
+    dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
+    dbState.results.push([]) // rebuild: snapshot upsert
+    dbState.results.push([
+      {
+        id: 'alert-1',
+        orgId: ORG_A,
+        userId: null,
+        agent: null,
+        monthlyLimitUsd: '10',
+        threshold: '1',
+        trippedAt: null,
+        createdAt: new Date('2026-01-01'),
+      },
+    ]) // evaluate: alerts for this org/user
+    dbState.results.push([{ spend: '10' }]) // evaluate: month-to-date spend, exactly the trip point
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/usage',
+      headers: auth(deviceToken()),
+      payload: { ...payload, enrichment: null },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const ops = dbState.calls.map((c) => c.op)
+    expect(ops).not.toContain('rollback')
+    // The alert update lands after the rebuild's own upsert, inside the one
+    // transaction the whole submission runs in.
+    expect(ops.indexOf('transaction')).toBeLessThan(ops.lastIndexOf('update'))
+    const tripWrite = dbState.calls.find((c) => c.op === 'set' && c.arg && 'trippedAt' in (c.arg as object))
+    expect((tripWrite?.arg as { trippedAt: unknown })?.trippedAt).toBeInstanceOf(Date)
+    // The alert lookup itself must be scoped to the caller's org, the same
+    // posture every dashboard route takes.
+    const whereClauses = dbState.calls.filter((c) => c.op === 'where').map((c) => renderSql(c.arg))
+    expect(whereClauses.some((w) => w.includes(ORG_A))).toBe(true)
+  })
 })
 
 describe('POST /v1/auth/admin/users', () => {
