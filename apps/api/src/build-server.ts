@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm'
 import { dbPlugin } from './plugins/db.js'
 import { pgRateLimitStore } from './plugins/rate-limit-store.js'
 import { callerAddress } from './caller-address.js'
+import { assertSchemaCurrent } from './schema-version.js'
 import { authRoutes } from './routes/auth/device.js'
 import { inviteRoutes } from './routes/auth/invites.js'
 import { usageRoutes } from './routes/usage/submit.js'
@@ -61,14 +62,22 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
   // monitor. Names the failing dependency and nothing else — no connection
   // strings, no driver error text. Still a list so adding a dependency back
   // does not change the response shape.
+  // `schema` is the second check for the reason BW-37 records: a reachable
+  // database running an older schema than the code is an outage this endpoint
+  // used to call healthy. Checked in the same list so one failure still
+  // reports on the other.
   server.get('/health', async (_request, reply) => {
-    const checks = await Promise.allSettled([server.db.execute(sql`select 1`)])
-    const failed = (['database'] as const).filter((_name, i) => checks[i].status === 'rejected')
+    const names = ['database', 'schema'] as const
+    const checks = await Promise.allSettled([
+      server.db.execute(sql`select 1`),
+      assertSchemaCurrent(server.db),
+    ])
+    const failed = names.filter((_name, i) => checks[i].status === 'rejected')
 
     if (failed.length > 0) {
       for (const [i, check] of checks.entries()) {
         if (check.status === 'rejected') {
-          server.log.error({ err: check.reason, dependency: ['database'][i] }, 'Health check failed')
+          server.log.error({ err: check.reason, dependency: names[i] }, 'Health check failed')
         }
       }
       return reply.status(503).send({ ok: false, failed })
