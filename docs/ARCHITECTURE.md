@@ -9,26 +9,24 @@ Target: companies with 50+ developers using AI coding assistants.
 ## System Overview
 
 ```
-Developer Machines                    Infrastructure
-┌─────────────────┐                  ┌──────────────────┐
-│  burnwatch agent │──POST /v1/usage──▶│   Fastify API    │
-│  (Bun CLI)       │                  │   (port 3001)    │
-│                  │                  │                  │
-│  ┌─────────────┐ │                  │  ┌────────────┐  │
-│  │ ccusage     │ │                  │  │ Drizzle ORM│  │
-│  │ (Tier 1)    │ │                  │  └─────┬──────┘  │
-│  └─────────────┘ │                  │        │         │
-│  ┌─────────────┐ │                  │        ▼         │
-│  │ codeburn    │ │                  │  ┌──────────┐    │
-│  │ (Tier 2)    │ │                  │  │ Neon PG  │    │
-│  └─────────────┘ │                  │  └──────────┘    │
-└─────────────────┘                  │                  │
-                                     │  ┌──────────┐    │
-┌─────────────────┐                  │  │  Redis   │    │
-│  Next.js Dash   │──GET /v1/dash──▶ │  │ (cache)  │    │
-│  (port 3000)    │                  │  └──────────┘    │
-└─────────────────┘                  └──────────────────┘
+Developer machine                    Vercel                       Neon
+┌──────────────────┐                ┌──────────────────────┐
+│ burnwatch agent  │───────────────▶│ burn-watch-api       │
+│  ccusage   Tier 1│ POST /v1/usage │ Fastify 5 behind     │──┐
+│  codeburn  Tier 2│                │ api/index.mjs        │  │
+└──────────────────┘                └──────────────────────┘  │
+                                              ▲                │  ┌─────────────┐
+                                              │ GET /v1/       ├─▶│ PostgreSQL  │
+┌──────────────────┐                ┌──────────────────────┐  │  └─────────────┘
+│ Browser          │───────────────▶│ burn-watch           │──┘
+└──────────────────┘                │ Next.js 15 dashboard │
+                                    └──────────────────────┘
 ```
+
+Two Vercel projects, one repository. The dashboard's server components call
+the API for usage data and reach Neon directly for better-auth sessions.
+There is no cache tier: Redis was removed in `57d9d0b`, and every dashboard
+read goes to Postgres on every request.
 
 ## Data Flow
 
@@ -42,8 +40,11 @@ Developer Machines                    Infrastructure
    - `daily_snapshots` rebuilt synchronously after each submission
 
 3. **Aggregation** — API serves dashboard queries from `daily_snapshots` table
-   - All dashboard routes support date ranges (`from`/`to` params)
-   - Results cached in Redis (5-minute TTL)
+   - All dashboard routes support date ranges (`from`/`to` params), validated
+     by the shared schema in `routes/dashboard/query-schema.ts`
+   - Activity and Projects aggregate the `claude_enrichment` JSONB in Postgres
+     via `routes/dashboard/enrichment.ts`, not in Node
+   - Nothing is cached. Each request reads Postgres.
 
 4. **Display** — Next.js dashboard renders overview, leaderboard, trends, activity, and project breakdowns
 
@@ -65,14 +66,17 @@ Developer Machines                    Infrastructure
 
 | File | Purpose |
 |------|---------|
-| `src/server.ts` | App bootstrap, plugin registration |
+| `src/build-server.ts` | `configureServer()`, plugin and route registration, no `listen` |
+| `src/server.ts` | Local entry point that calls `listen` |
+| `api/index.mjs` | Vercel entry point, repo root, wraps Fastify in a plain `@vercel/node` function |
 | `src/plugins/jwt.ts` | Dual JWT setup (access + refresh namespaces) |
 | `src/plugins/db.ts` | Drizzle + Neon connection pool |
-| `src/plugins/redis.ts` | ioredis connection with retry |
+| `src/plugins/rate-limit-store.ts` | Rate limit counters in Postgres, shared across instances |
 | `src/routes/auth/device.ts` | Device registration, verification, admin user management |
-| `src/routes/usage/submit.ts` | Usage event ingestion + snapshot rebuild |
-| `src/routes/dashboard/*.ts` | 5 dashboard query endpoints |
+| `src/routes/usage/submit.ts` | Usage event ingestion + snapshot rebuild, one transaction |
+| `src/routes/dashboard/*.ts` | 5 query endpoints, plus `query-schema.ts` and `enrichment.ts` shared by them |
 | `drizzle/schema.ts` | Full database schema (11 tables) |
+| `drizzle/migrations/` | Generated migrations. `db:push` is not used against deployed databases |
 
 ### `apps/dashboard` — Next.js 15
 
@@ -130,6 +134,43 @@ Key tables:
 4. Role-based access enforced at page level (`getUserRole()`)
 5. API calls use `bw-api-token` cookie as Bearer token
 
+## Deployment
+
+Two Vercel projects build from this one repository. Neither is wired to a git
+push; both are deployed from a local checkout with the CLI, which is why the
+link step below is part of the procedure rather than a one-time setup.
+
+| Project | Config | Builds | Serves |
+|---------|--------|--------|--------|
+| `burn-watch-api` | `vercel.json` at the repo root | `npx turbo build --filter=@burn-watch/api` | Everything rewritten to `/api`, handled by `api/index.mjs` |
+| `burn-watch` | `apps/dashboard/vercel.json` | `npx turbo build --filter=@burn-watch/dashboard` | The Next.js dashboard |
+
+```bash
+# API
+npx vercel link --yes --project burn-watch-api && npx vercel --prod --yes
+
+# Dashboard
+npx vercel link --yes --project burn-watch && npx vercel --prod --yes
+```
+
+Because both projects link from the same directory, `vercel link` rewrites
+`.env.local` each time. Deploy one, then relink for the other.
+
+`api/index.mjs` deliberately avoids Vercel's Fastify framework preset, which
+failed with `INTERNAL_FUNCTION_INVOCATION_FAILED` and no log output. A plain
+`@vercel/node` function wrapping Fastify works. The file carries the full
+reasoning.
+
+Environment variables actually read by the code:
+
+| Project | Variables |
+|---------|-----------|
+| `burn-watch-api` | `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `PORT`, `NODE_ENV` |
+| `burn-watch` | `API_URL`, `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV` |
+
+There is no `REDIS_URL`. Deployment protection is off for `burn-watch-api` so
+the agent CLI can reach it without a bypass token.
+
 ## Setup (Quickstart)
 
 ```bash
@@ -139,10 +180,10 @@ npm install
 
 # 2. Configure API
 cp apps/api/.env.example apps/api/.env
-# Fill: DATABASE_URL, REDIS_URL, JWT_SECRET
+# Fill: DATABASE_URL, JWT_SECRET, JWT_REFRESH_SECRET
 
-# 3. Push database schema
-npm run db:push
+# 3. Apply database migrations
+npm run db:migrate
 
 # 4. Start API
 cd apps/api && npm run dev
@@ -159,5 +200,7 @@ cd apps/dashboard && npm run dev
 cd apps/agent && bun run src/index.ts register --api-url http://localhost:3001
 
 # 8. Sync usage data
-bun run src/index.ts sync
+# A bare `sync` writes yesterday, so the dashboard will not show today until
+# tomorrow. Use --days to backfill a window.
+bun run src/index.ts sync --days 7
 ```
