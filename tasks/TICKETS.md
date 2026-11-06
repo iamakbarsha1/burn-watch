@@ -49,7 +49,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
 | BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
 | BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **done** | M | — |
-| BW-38 | P4 | `register` overwrites an existing agent config silently | **todo** | S | — |
+| BW-38 | P4 | `register` overwrites an existing agent config silently | **done** | S | — |
 
 ---
 
@@ -1948,11 +1948,37 @@ differs from the one being registered against, copy it to
 is an option but the agent already prompts for email, and a backup needs no
 answer. Do not add a `--force` flag for a problem a backup solves.
 
+**Done 2026-11-06.** `backupConfig()` in `lib/config.ts` copies the file aside
+and returns the path; `register` calls it immediately before `saveConfig` and
+prints where it went. The backup is chmod 0600 explicitly rather than
+inheriting the umask, because it holds live tokens. Timestamps use `-` rather
+than `:` so the filename is legal on Windows, where the agent runs since BW-20.
+
+`register` also reads the stored host *before* it writes anything, so when it
+is about to repoint a machine it can say which BurnWatch that machine used to
+report to — both up front, before the approval wait, and again in the
+replacement notice.
+
+`sync` now prints `Target: <host>` as its first line, always, and takes
+`--api-url` to override the stored config for one run. The hazard was never
+that the default was wrong; it was that the host was invisible. Driven through
+the real CLI, not just the suite:
+
+```
+[burnwatch] Target: http://127.0.0.1:9
+  Overriding the registered host for this run (http://localhost:3001)
+```
+
+That first line is exactly what would have made the Quickstart walk's
+accidental production submission obvious before it was sent.
+
 **Acceptance**
-- [ ] An existing config is preserved somewhere before a new one replaces it
-- [ ] The agent prints where it went
-- [ ] Registering on a machine with no existing config is unchanged, with a
-      test covering both paths
-- [ ] `sync` prints the host it resolved before it submits anything, so a run
+- [x] An existing config is preserved somewhere before a new one replaces it
+- [x] The agent prints where it went
+- [x] Registering on a machine with no existing config is unchanged, with a
+      test covering both paths — `backupConfig` returns null and writes
+      nothing when there is no config; 9 tests in `lib/config.test.ts`, and
+      deleting the copy turns three of them red
+- [x] `sync` prints the host it resolved before it submits anything, so a run
       against the wrong BurnWatch is visible in the first line of output
-- [ ] `sync` accepts `--api-url` to override the stored config for one run
+- [x] `sync` accepts `--api-url` to override the stored config for one run
