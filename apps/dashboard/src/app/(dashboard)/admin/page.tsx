@@ -14,7 +14,6 @@ import {
   Tr,
   EmptyRow,
   Badge,
-  secondaryButtonClass,
 } from '@/components/ui'
 
 const linkClass =
@@ -180,11 +179,9 @@ export default async function AdminPage() {
 
         <Section
           title="GitHub Copilot integration"
-          description="Connect your GitHub org to pull Copilot usage data (Business and Enterprise plans only)."
+          description="Pulling Copilot usage needs a GitHub org connection, which is not built yet. Copilot figures stay at zero until it is. Business and Enterprise plans only."
         >
-          <button type="button" className={secondaryButtonClass}>
-            Connect GitHub org
-          </button>
+          <Badge>Not yet available</Badge>
         </Section>
       </div>
     </div>
