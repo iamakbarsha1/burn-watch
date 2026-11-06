@@ -90,3 +90,62 @@ export function resolveRange(
   // sends the reader hunting for a sync problem that isn't there.
   return from > to ? { from: to, to: from } : { from, to }
 }
+
+const PRESET_DAYS = [
+  { label: 'Today', days: 0 },
+  { label: 'Yesterday', days: 1 },
+  { label: 'Last 7 days', days: 7 },
+  { label: 'Last 30 days', days: 30 },
+  { label: 'All time', days: null },
+] as const
+
+function daysAgo(n: number, now: Date): string {
+  const d = new Date(now)
+  d.setDate(d.getDate() - n)
+  return today(d)
+}
+
+export interface RangePreset {
+  label: string
+  from: string
+  /** `null` means "no end date". The range then follows today on its own. */
+  to: string | null
+  active: boolean
+}
+
+/**
+ * The preset buttons, and which one the current URL is sitting on.
+ *
+ * All time is the one preset with no end. Writing today's date into it froze
+ * the range: the URL kept saying all time, the button went dark the next
+ * morning, and the range quietly stopped including the newest day. Leaving
+ * `to` off the URL lets `resolveRange` fill in today on every render, so a
+ * bookmark still means all time a week later.
+ *
+ * Matching on `from` alone was the other way out, and it lies: it would light
+ * the button up for a range that explicitly ends last June.
+ */
+export function rangePresets(
+  params: { from?: string | null; to?: string | null },
+  now: Date = new Date(),
+): RangePreset[] {
+  const end = today(now)
+  const from = params.from ?? ALL_TIME_FROM
+  const to = params.to ?? end
+
+  return PRESET_DAYS.map((p) => {
+    const presetFrom =
+      p.days === null ? ALL_TIME_FROM
+      : p.days === 0 ? end
+      : p.days === 1 ? daysAgo(1, now)
+      : daysAgo(p.days - 1, now)
+    const presetTo = p.days === null ? null : p.days === 1 ? daysAgo(1, now) : end
+
+    return {
+      label: p.label,
+      from: presetFrom,
+      to: presetTo,
+      active: from === presetFrom && to === (presetTo ?? end),
+    }
+  })
+}

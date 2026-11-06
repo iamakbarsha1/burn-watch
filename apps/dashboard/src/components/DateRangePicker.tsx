@@ -2,22 +2,8 @@
 
 import { useTransition } from 'react'
 import { useSearchParams, usePathname, useRouter } from 'next/navigation'
-import { ALL_TIME_FROM, today as todayStr } from '@/lib/format'
+import { ALL_TIME_FROM, rangePresets, today as todayStr } from '@/lib/format'
 import { inputClass } from '@/components/ui'
-
-const PRESETS = [
-  { label: 'Today', days: 0 },
-  { label: 'Yesterday', days: 1 },
-  { label: 'Last 7 days', days: 7 },
-  { label: 'Last 30 days', days: 30 },
-  { label: 'All time', days: null },
-] as const
-
-function daysAgo(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - n)
-  return todayStr(d)
-}
 
 export function DateRangePicker() {
   const searchParams = useSearchParams()
@@ -32,11 +18,17 @@ export function DateRangePicker() {
   const today = todayStr()
   const from = searchParams.get('from') ?? ALL_TIME_FROM
   const to = searchParams.get('to') ?? today
+  const presets = rangePresets({
+    from: searchParams.get('from'),
+    to: searchParams.get('to'),
+  })
 
-  function navigate(newFrom: string, newTo: string) {
+  /** A `null` end drops `to` from the URL, which is how a range stays open. */
+  function navigate(newFrom: string, newTo: string | null) {
     const params = new URLSearchParams(searchParams.toString())
     params.set('from', newFrom)
-    params.set('to', newTo)
+    if (newTo === null) params.delete('to')
+    else params.set('to', newTo)
     startTransition(() => {
       router.push(`${pathname}?${params.toString()}`, { scroll: false })
     })
@@ -52,30 +44,21 @@ export function DateRangePicker() {
         aria-label="Date range presets"
         className="flex flex-wrap items-center gap-1 rounded-lg border border-line bg-surface-1 p-1"
       >
-        {PRESETS.map((p) => {
-          const pFrom =
-            p.days === null ? ALL_TIME_FROM
-            : p.days === 0 ? today
-            : p.days === 1 ? daysAgo(1)
-            : daysAgo(p.days - 1)
-          const pTo = p.days === 1 ? daysAgo(1) : today
-          const isActive = from === pFrom && to === pTo
-          return (
-            <button
-              key={p.label}
-              type="button"
-              onClick={() => navigate(pFrom, pTo)}
-              aria-pressed={isActive}
-              className={`rounded-md px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
-                isActive
-                  ? 'bg-ink text-surface-0'
-                  : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
-              }`}
-            >
-              {p.label}
-            </button>
-          )
-        })}
+        {presets.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            onClick={() => navigate(p.from, p.to)}
+            aria-pressed={p.active}
+            className={`rounded-md px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
+              p.active
+                ? 'bg-ink text-surface-0'
+                : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
       </div>
 
       <div className="flex items-center gap-1.5">
