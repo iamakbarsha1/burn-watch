@@ -6,6 +6,7 @@ import type {
   ToolUsageSummary,
   OrgProjectSummary,
   AdminUserRow,
+  AdminDeviceRow,
   PendingInvite,
 } from '@burn-watch/shared'
 
@@ -77,4 +78,12 @@ export async function inviteUser(email: string, name: string): Promise<{ userId:
 
 export async function approveDevice(code: string): Promise<{ hostname: string; platform: string }> {
   return apiPost('/v1/auth/approve-device', { code })
+}
+
+export async function fetchAdminDevices(): Promise<AdminDeviceRow[]> {
+  return apiFetch('/v1/auth/admin/devices')
+}
+
+export async function revokeDevice(deviceId: string): Promise<{ deviceId: string; revoked: number }> {
+  return apiPost('/v1/auth/admin/devices/revoke', { deviceId })
 }
