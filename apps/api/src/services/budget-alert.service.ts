@@ -101,18 +101,52 @@ export async function evaluateBudgetAlerts(
 
   if (alerts.length === 0) return
 
-  const monthKey = date.slice(0, 7)
-
   for (const alert of alerts) {
-    const spend = await monthToDateSpend(db, orgId, alert.userId, alert.agent, date)
-    const tripPoint = Number(alert.monthlyLimitUsd) * Number(alert.threshold)
-    const shouldTrip = spend >= tripPoint
-    const trippedMonth = alert.trippedAt ? isoMonth(alert.trippedAt) : null
+    await applyTrip(db, orgId, alert, date)
+  }
+}
 
-    if (shouldTrip && trippedMonth !== monthKey) {
-      await db.update(budgetAlerts).set({ trippedAt: new Date() }).where(eq(budgetAlerts.id, alert.id))
-    } else if (!shouldTrip && trippedMonth === monthKey) {
-      await db.update(budgetAlerts).set({ trippedAt: null }).where(eq(budgetAlerts.id, alert.id))
-    }
+/**
+ * Re-evaluates one alert by id, for the CRUD routes to call after they write.
+ *
+ * Without this an admin who sets a limit below current spend is told OK —
+ * directly beside the month-to-date figure that contradicts it — and stays
+ * told that until the next agent sync happens to run the evaluation. The
+ * write that changes the answer is the write that has to record it.
+ *
+ * An alert in another org, or one already deleted, is a no-op rather than an
+ * error: the caller has already answered for whether it exists.
+ */
+export async function evaluateBudgetAlert(
+  db: DbOrTx,
+  orgId: string,
+  id: string,
+  date: string,
+): Promise<void> {
+  const [alert] = await db
+    .select()
+    .from(budgetAlerts)
+    .where(and(eq(budgetAlerts.id, id), eq(budgetAlerts.orgId, orgId)))
+
+  if (!alert) return
+  await applyTrip(db, orgId, alert, date)
+}
+
+async function applyTrip(
+  db: DbOrTx,
+  orgId: string,
+  alert: typeof budgetAlerts.$inferSelect,
+  date: string,
+): Promise<void> {
+  const monthKey = date.slice(0, 7)
+  const spend = await monthToDateSpend(db, orgId, alert.userId, alert.agent, date)
+  const tripPoint = Number(alert.monthlyLimitUsd) * Number(alert.threshold)
+  const shouldTrip = spend >= tripPoint
+  const trippedMonth = alert.trippedAt ? isoMonth(alert.trippedAt) : null
+
+  if (shouldTrip && trippedMonth !== monthKey) {
+    await db.update(budgetAlerts).set({ trippedAt: new Date() }).where(eq(budgetAlerts.id, alert.id))
+  } else if (!shouldTrip && trippedMonth === monthKey) {
+    await db.update(budgetAlerts).set({ trippedAt: null }).where(eq(budgetAlerts.id, alert.id))
   }
 }

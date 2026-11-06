@@ -173,33 +173,71 @@ the agent CLI can reach it without a bypass token.
 
 ## Setup (Quickstart)
 
+Walked end to end on a clean clone against an empty database on 2026-11-06.
+Three steps below exist because that walk failed without them: building
+`shared`, configuring the dashboard, and creating better-auth's tables. All
+commands run from the repo root unless they say otherwise, and the two servers
+each need their own terminal.
+
 ```bash
 # 1. Clone and install
 git clone <repo> && cd burn-watch
 npm install
 
-# 2. Configure API
+# 2. Build the shared package
+# The API imports @burn-watch/shared from its built dist/. Without this the
+# API exits at startup with ERR_MODULE_NOT_FOUND, not a helpful message.
+npx turbo build --filter=@burn-watch/shared
+
+# 3. Configure API
 cp apps/api/.env.example apps/api/.env
 # Fill: DATABASE_URL, JWT_SECRET, JWT_REFRESH_SECRET
+# Ignore REDIS_URL, CORS_ORIGIN and COPILOT_ENCRYPTION_KEY — nothing reads
+# them. See BW-07 and BW-21.
 
-# 3. Apply database migrations
+# 4. Configure dashboard
+# The dashboard talks to Neon directly for better-auth, so it needs its own
+# env. Skip this and the app starts, serves /login, and answers 500 on every
+# sign-in attempt.
+cp apps/dashboard/.env.local.example apps/dashboard/.env.local
+# Fill: API_URL (http://localhost:3001), DATABASE_URL (same as the API),
+# JWT_SECRET (must match the API's), BETTER_AUTH_SECRET (any random string)
+
+# 5. Apply database migrations
 npm run db:migrate
 
-# 4. Start API
+# 6. Create better-auth's tables
+# better-auth owns user, session, account and verification. They are not in
+# drizzle's migrations, so step 5 does not create them and sign-in fails with
+# `relation "user" does not exist`.
+cd apps/dashboard && npx @better-auth/cli@latest migrate --yes && cd ../..
+
+# 7. Start API (own terminal, stays running)
 cd apps/api && npm run dev
 
-# 5. Bootstrap first org + admin
+# 8. Bootstrap first org + admin
 curl -X POST http://localhost:3001/v1/auth/admin/bootstrap \
   -H 'Content-Type: application/json' \
   -d '{"orgName":"Acme","orgSlug":"acme","email":"admin@acme.com","name":"Admin"}'
 
-# 6. Start dashboard
+# 9. Start dashboard (own terminal, stays running)
 cd apps/dashboard && npm run dev
 
-# 7. Register agent on dev machine
+# 10. Set the admin's password
+# Step 8 creates the users row; it does not create a login. Open
+# http://localhost:3000/signup and submit the same email with a password.
+# /login will not work before this — there is nothing to authenticate against.
+
+# 11. Register agent on dev machine
+# This blocks. It prints a six-character code and waits for a human to approve
+# it at the dashboard's Devices page — signed in as the same email. The device
+# is never issued tokens until someone does. See BW-30.
+#
+# It also overwrites ~/.burnwatch/config.json without asking. If this machine
+# already reports to another BurnWatch, copy that file somewhere first.
 cd apps/agent && bun run src/index.ts register --api-url http://localhost:3001
 
-# 8. Sync usage data
+# 12. Sync usage data
 # A bare `sync` writes yesterday, so the dashboard will not show today until
 # tomorrow. Use --days to backfill a window.
 bun run src/index.ts sync --days 7
