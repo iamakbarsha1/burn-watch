@@ -9,6 +9,8 @@ import {
   UsagePayloadSchema,
   RegisterDeviceSchema,
   VerifyDeviceSchema,
+  BudgetAlertInputSchema,
+  BudgetAlertPatchSchema,
 } from './schemas.js'
 
 const usageEvent = {
@@ -200,5 +202,62 @@ describe('VerifyDeviceSchema', () => {
 
   it('rejects a code of the wrong length', () => {
     expect(VerifyDeviceSchema.safeParse({ ...valid, code: 'A1B2C' }).success).toBe(false)
+  })
+})
+
+describe('BudgetAlertInputSchema', () => {
+  const userId = '3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
+
+  it('fills in an org-wide, all-agent alert from the limit alone', () => {
+    expect(BudgetAlertInputSchema.parse({ monthlyLimitUsd: 500 })).toEqual({
+      userId: null,
+      agent: null,
+      monthlyLimitUsd: 500,
+      threshold: 0.8,
+    })
+  })
+
+  it('accepts a threshold of exactly 1, meaning warn at the limit itself', () => {
+    expect(BudgetAlertInputSchema.safeParse({ monthlyLimitUsd: 500, threshold: 1 }).success).toBe(true)
+  })
+
+  it('rejects a threshold above 1, which would fire after the budget is blown', () => {
+    expect(BudgetAlertInputSchema.safeParse({ monthlyLimitUsd: 500, threshold: 1.5 }).success).toBe(false)
+  })
+
+  it('rejects a threshold of 0, which would fire on a day with no spend', () => {
+    expect(BudgetAlertInputSchema.safeParse({ monthlyLimitUsd: 500, threshold: 0 }).success).toBe(false)
+  })
+
+  it('rejects a limit that numeric(10, 2) could not hold', () => {
+    expect(BudgetAlertInputSchema.safeParse({ monthlyLimitUsd: 1e12 }).success).toBe(false)
+  })
+
+  it('rejects an agent outside the five this product collects', () => {
+    expect(BudgetAlertInputSchema.safeParse({ monthlyLimitUsd: 500, agent: 'cursor' }).success).toBe(false)
+  })
+
+  // orgId is never in the body. It comes from the caller's token, so a stray
+  // one is dropped rather than honoured.
+  it('ignores an orgId supplied in the body', () => {
+    const parsed = BudgetAlertInputSchema.parse({ monthlyLimitUsd: 500, userId, orgId: 'somebody-elses-org' })
+    expect(parsed).not.toHaveProperty('orgId')
+  })
+})
+
+describe('BudgetAlertPatchSchema', () => {
+  it('rejects an empty body, which would be a no-op that looks like a saved change', () => {
+    expect(BudgetAlertPatchSchema.safeParse({}).success).toBe(false)
+  })
+
+  // The real hazard of building a patch schema from one carrying defaults: an
+  // admin editing only the limit must not silently have the threshold reset to
+  // 0.8 and the scope widened to the whole org.
+  it('leaves out every field the caller did not send, defaults included', () => {
+    expect(BudgetAlertPatchSchema.parse({ monthlyLimitUsd: 900 })).toEqual({ monthlyLimitUsd: 900 })
+  })
+
+  it('still enforces the threshold cap it inherited', () => {
+    expect(BudgetAlertPatchSchema.safeParse({ threshold: 2 }).success).toBe(false)
   })
 })
