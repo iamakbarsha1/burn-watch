@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { getSession } from '@/lib/session'
+import { getSession, getUserRole } from '@/lib/session'
 import { SidebarNav } from '@/components/SidebarNav'
 import { RangeBar } from '@/components/RangeBar'
 import { SignOutButton } from './SignOutButton'
@@ -12,6 +12,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // checked that a session cookie existed, while `getSession` validates it.
   const session = await getSession()
   if (!session) redirect('/login')
+  const role = await getUserRole()
 
   return (
     <div className="flex min-h-screen bg-surface-0">
@@ -26,7 +27,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         {/* useSearchParams inside the nav needs a boundary so the whole shell
             does not get pulled out of the static render. */}
         <Suspense fallback={<div className="flex-1" />}>
-          <SidebarNav />
+          <SidebarNav role={role} />
         </Suspense>
 
         {session.user && (
@@ -51,7 +52,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           </div>
           <div className="overflow-x-auto px-2 pb-2">
             <Suspense fallback={null}>
-              <SidebarNav orientation="horizontal" />
+              <SidebarNav orientation="horizontal" role={role} />
             </Suspense>
           </div>
         </header>
