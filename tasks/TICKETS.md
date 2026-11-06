@@ -301,8 +301,16 @@ singleton. The reasoning for keeping the WebSocket driver is unaffected.
 **Acceptance**
 - [x] Pool created once per module, not per registration — Redis client gone
 - [x] Still on the WebSocket Neon driver
-- [ ] No connection-exhaustion warnings in Neon after a load pass — recheck
-      after BW-08, needs real traffic
+- [ ] No connection-exhaustion warnings in Neon after a load pass — still
+      open, and deliberately not ticked. Measured on production 2026-11-06:
+      13 connections against a `max_connections` of 901, 6 of them client
+      backends. That is an idle snapshot, not a load pass, and it cannot
+      distinguish "the module-scoped pool works" from "nobody is using it" —
+      ingestion had been down for 22 hours (BW-37) and the dashboard has a
+      handful of users. What would settle it is concurrent submissions from
+      several agents at once, which is what the fleet rollout produces
+      anyway. Worth rechecking then rather than manufacturing load against
+      production now.
 
 ### BW-07 · Env migration, delete `render.yaml`
 **Size S** · no blockers — BW-04 is superseded
@@ -378,8 +386,14 @@ set by hand — the binding in `vercel.json` injects it. `CORS_ORIGIN` and
 - [x] `.npmrc` kept
 - [x] CORS decision applied — plugin, guard and dependency all removed, and the
       justifying comment no longer rests on a shared origin
-- [ ] `apps/api/.env.example` line 8 still sets the dead `CORS_ORIGIN` — drop it
-      by hand, that path is behind a deny rule
+- [ ] `apps/api/.env.example` still ships dead keys — drop them by hand, that
+      path is behind a deny rule for the tooling. The Quickstart walk found
+      three, not one: `CORS_ORIGIN` (CORS removed in this ticket), `REDIS_URL`
+      (Redis dropped in BW-08, and the architecture doc already says "There is
+      no REDIS_URL" two sections above the setup steps) and
+      `COPILOT_ENCRYPTION_KEY` (nothing has read it since BW-07 deleted
+      `render.yaml`; BW-21 would provision it fresh). A reader copying the
+      file is told to configure three variables that no code reads.
 
 ### BW-08 · Deploy and smoke test
 **Size M** · unblocked 2026-11-05 — BW-05, BW-06 and BW-07 are all resolved
@@ -634,6 +648,13 @@ end, and every dashboard page rendering real figures — Overview reads
 the same claim as the deployment serving them, which still needs someone with
 credentials to sign in at `burn-watch-delta.vercel.app`. Left unticked
 deliberately: a local pass is evidence about the code, not about the deploy.
+
+Both projects were redeployed from `main` on 2026-11-06 after the BW-18 fixes,
+so the deployment now carries them — but that only moves the question, it does
+not answer it. Closing these two needs a person with a password. The accounts
+exist; nobody in this session holds one, and minting a fresh admin against the
+production database to self-serve the check is a worse trade than leaving two
+boxes unticked.
 
 ---
 
