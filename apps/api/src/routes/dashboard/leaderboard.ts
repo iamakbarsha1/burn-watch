@@ -3,12 +3,10 @@ import { eq, and, desc, sql, gte, lte, sum } from 'drizzle-orm'
 import { z } from 'zod'
 import { dailySnapshots, users } from '../../../drizzle/schema.js'
 import type { LeaderboardEntry } from '@burn-watch/shared'
+import { dateQueryShape } from './query-schema.js'
 
-const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
-  date: z.string().regex(dateRegex).optional(),
-  from: z.string().regex(dateRegex).optional(),
-  to: z.string().regex(dateRegex).optional(),
+  ...dateQueryShape,
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 }).refine(d => d.date || (d.from && d.to), { message: 'Provide date or from+to' })
