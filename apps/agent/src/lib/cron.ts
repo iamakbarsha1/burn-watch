@@ -16,7 +16,7 @@ const LABEL = 'com.burnwatch.agent'
 export const SELF_CHECK_COMMAND = '__self-check'
 export const SELF_CHECK_SENTINEL = 'burnwatch:self-check:ok'
 
-export function xmlEscape(value: string): string {
+function xmlEscape(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
