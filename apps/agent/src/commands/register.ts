@@ -2,7 +2,7 @@ import { hostname } from 'os'
 import { createInterface } from 'readline'
 import { ApiClient } from '../lib/api.js'
 import { saveConfig, DEFAULT_API_URL } from '../lib/config.js'
-import { installCron, isCronInstalled } from '../lib/cron.js'
+import { installSchedule, isScheduleInstalled } from '../lib/cron.js'
 import { execSync } from 'child_process'
 
 async function prompt(question: string): Promise<string> {
@@ -93,15 +93,22 @@ export async function registerCommand(options: { apiUrl?: string }) {
       console.log('[burnwatch] Device verified and registered successfully!')
       console.log('  Device ID:', response.deviceId)
 
-      // Install launchd cron
-      if (!isCronInstalled()) {
-        const scheduled = installCron()
-        if (scheduled) {
-          console.log('[burnwatch] Scheduled daily sync at 6 PM (launchd):', scheduled.join(' '))
-        } else {
-          console.error('[burnwatch] Could not schedule the daily sync — this build cannot')
-          console.error('           re-invoke itself. Run register from the burnwatch binary.')
+      // Install the daily sync schedule. A dedicated try/catch here, separate
+      // from the polling loop's catch below, so a platform that cannot be
+      // scheduled on reports clearly instead of being read as "not yet
+      // verified" and retried until the 15-minute poll times out.
+      try {
+        if (!isScheduleInstalled()) {
+          const scheduled = installSchedule()
+          if (scheduled) {
+            console.log('[burnwatch] Scheduled daily sync at 6 PM:', scheduled.join(' '))
+          } else {
+            console.error('[burnwatch] Could not schedule the daily sync — this build cannot')
+            console.error('           re-invoke itself. Run register from the burnwatch binary.')
+          }
         }
+      } catch (err) {
+        console.error(`[burnwatch] Could not schedule the daily sync — ${(err as Error).message}`)
       }
 
       console.log('[burnwatch] Run: burnwatch sync --last-7 to backfill the last 7 days')

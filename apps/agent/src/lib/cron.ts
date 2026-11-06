@@ -2,6 +2,8 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { writeFileSync, existsSync, unlinkSync } from 'fs'
 import { execFileSync } from 'child_process'
+import { linuxBackend } from './cron-linux.js'
+import { windowsBackend } from './cron-windows.js'
 
 const PLIST_PATH = join(homedir(), 'Library', 'LaunchAgents', 'com.burnwatch.agent.plist')
 const LABEL = 'com.burnwatch.agent'
@@ -82,28 +84,70 @@ export function resolveSelfCommand(
   return candidates.find(probe) ?? null
 }
 
+/** One OS's way of installing, removing, and detecting the daily sync schedule. */
+export type ScheduleBackend = {
+  install(programArguments: string[]): void
+  uninstall(): void
+  isInstalled(): boolean
+}
+
+export const darwinBackend: ScheduleBackend = {
+  install(programArguments) {
+    writeFileSync(PLIST_PATH, buildPlist(programArguments), 'utf8')
+    try {
+      execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'pipe' })
+    } catch {
+      // May fail if already loaded
+    }
+  },
+  uninstall() {
+    if (!existsSync(PLIST_PATH)) return
+    try {
+      execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
+    } catch {}
+    unlinkSync(PLIST_PATH)
+  },
+  isInstalled() {
+    return existsSync(PLIST_PATH)
+  },
+}
+
+const BACKENDS: Record<string, ScheduleBackend> = {
+  darwin: darwinBackend,
+  linux: linuxBackend,
+  win32: windowsBackend,
+}
+
+/** Looks up the schedule backend for `platform`, the shared failure point for every unsupported OS. */
+export function backendFor(platform: string): ScheduleBackend {
+  const backend = BACKENDS[platform]
+  if (!backend) {
+    throw new Error(
+      `Unsupported platform '${platform}'. BurnWatch scheduling supports macOS, Linux and Windows.`,
+    )
+  }
+  return backend
+}
+
 /** Returns the scheduled argv, or null when this build cannot re-invoke itself. */
-export function installCron(): string[] | null {
+export function installSchedule(): string[] | null {
   const self = resolveSelfCommand()
   if (!self) return null
 
   const programArguments = [...self, 'sync']
-  writeFileSync(PLIST_PATH, buildPlist(programArguments), 'utf8')
-  try {
-    execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'pipe' })
-  } catch {
-    // May fail if already loaded
-  }
+  backendFor(process.platform).install(programArguments)
   return programArguments
 }
 
-export function uninstallCron(): void {
-  if (isCronInstalled()) {
-    try { execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' }) } catch {}
-    unlinkSync(PLIST_PATH)
-  }
+export function uninstallSchedule(): void {
+  backendFor(process.platform).uninstall()
 }
 
-export function isCronInstalled(): boolean {
-  return existsSync(PLIST_PATH)
+/** False for both "nothing scheduled" and "this platform can never have a schedule". */
+export function isScheduleInstalled(): boolean {
+  try {
+    return backendFor(process.platform).isInstalled()
+  } catch {
+    return false
+  }
 }
