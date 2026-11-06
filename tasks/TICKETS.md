@@ -30,23 +30,24 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-16 | P3 | `/health` checks DB (Redis dropped in BW-08) | **done** | S | BW-02 |
 | BW-17 | P3 | Generated migration files, stop `db:push` on prod | **done** | M | BW-02 |
 | BW-18 | P4 | Budget alerts API + UI | todo | L | BW-14 |
-| BW-19 | P4 | Invite flow on `invites` table | **doing** | L | BW-14 |
+| BW-19 | P4 | Invite flow on `invites` table | **done** | L | BW-14 |
 | BW-20 | P4 | Cross-platform agent scheduling | todo | M | BW-14 |
 | BW-21 | P4 | GitHub Copilot integration | todo | L | BW-14 |
 | BW-22 | P5 | Dashboard inline styles to Tailwind | **done** | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | todo | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
-| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | todo (re-aimed) | M | BW-34 |
+| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | todo | M | — |
 | BW-26 | P5 | Remove the double type assertion in `overview.ts` | todo | S | — |
-| BW-27 | P3 | Enforce device token revocation, or drop the table | todo | M | — |
+| BW-27 | P3 | Enforce device token revocation | **done** | M | — |
 | BW-28 | P5 | Share the dashboard query schema and cache wrapper | todo | S | — |
 | BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | todo | S | — |
 | BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | **done** | M | — |
 | BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
 | BW-32 | P4 | launchd plist named the runtime, not the burnwatch binary | **done** | S | — |
 | BW-33 | P4 | Copilot usage silently dropped by the ccusage collector | **done** | S | — |
-| BW-34 | **P2** | Agent never collects project or activity breakdown | todo | M | — |
-| BW-35 | P3 | Projects "Users" column counts rows, not users | todo | S | BW-34 |
+| BW-34 | **P2** | Agent never collects project breakdown and cache stats | **done** | M | — |
+| BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
+| BW-36 | P5 | Sidebar shows the Admin link to every role | todo | S | — |
 
 ---
 
@@ -965,27 +966,30 @@ Security decisions worth keeping:
   account. Covered by a test.
 - Org and role come from the invite row, never the request body.
 
-**A decision is needed before the UI can be built.** Accepting an invite and
-creating the better-auth account are two writes to two different places, and
-better-auth keeps its own tables separate from `users`, linked only by email.
-Whichever runs first, a failure in the second leaves an orphan: either a
-`users` row with no way to log in, or a login with no org. There is no
-"set your password" recovery path today. Pick one:
-  a. Accept first, and add a recovery path for an account with no password.
-  b. Sign up first, and have an admin clean up orphaned auth accounts.
-  c. Have the API issue the better-auth account too, making it one write.
+**Ordering settled 2026-11-06: accept first (a), and the recovery path already
+exists.** The choice was never open. `app/api/auth/[...all]/route.ts` answers
+403 on `/sign-up/email` unless the email already has an active `users` row, so
+sign-up cannot run before the invite is redeemed — (b) and (c) both need that
+gate weakened. The orphan the ticket worried about is recoverable as built: if
+sign-up fails after the invite is spent, the `users` row exists, which is
+exactly the state `/signup` was written for ("set a password for the account
+your admin created"). The accept page says so in its error.
 
-**Remaining**
-- `apps/dashboard/src/lib/api.ts`: `createInvite`, `listInvites`
-- Admin form: issue an invite and show the link, instead of creating a user
-- Public `/invite/[token]` page: name + password, then accept and sign up
-- Whichever ordering is chosen above
+**UI side done 2026-11-06.** `createInvite`/`acceptInvite` in
+`lib/api.ts`, the admin form issues an invite and shows the link once, and
+`/invite/[token]` takes name + password.
+
+Verified in a browser against a throwaway Neon branch, not production:
+invite issued, link opened, account created, landed on `/setup` signed in as
+the invitee, admin Team went 4 to 5 and the invite row flipped to Accepted.
+Replaying the spent link and submitting an unknown token both answer
+"Invalid or expired invite", the same string for both.
 
 **Acceptance**
 - [x] Invite token stored hashed, never in plaintext
 - [x] Expiry enforced server-side
 - [x] Used invite cannot be replayed
-- [ ] Existing admin invite form migrated onto it
+- [x] Existing admin invite form migrated onto it
 
 ### BW-20 · Cross-platform agent scheduling
 **Size M** · blocked by BW-14
@@ -1426,6 +1430,28 @@ referenced nowhere, which fits: it is the read side of a column nothing writes.
 
 Blocks BW-25 and BW-35, both of which operate on data this ticket produces.
 
+**Done 2026-11-06, scoped down.** `projectBreakdown`, `cacheHitRate` and
+`writtenTokens` are now filled from the transcripts. `activityBreakdown` and
+`topSessions` are still empty on purpose: nothing in the API or the dashboard
+selects either column, and `OrgActivitySummary` is declared and referenced
+nowhere, so there is no reader to satisfy and no ground truth in a transcript
+for what counts as "Debugging" rather than "Coding". Fill them when a page
+asks.
+
+Per-project cost is the day's ccusage Claude spend split by that project's
+share of the day's tokens. The transcripts carry token counts and no prices,
+and the standing rule is that ccusage is the only source of a cost figure, so
+nothing is priced independently here. The parts sum back to the ccusage total
+exactly; verified against 2026-11-05 on a real machine.
+
+Two things the real data forced that the ticket did not anticipate:
+- Turns group on the enclosing git checkout, not the recorded `cwd`. One repo
+  worked from its root and from `apps/api` and `apps/dashboard` arrived as
+  three projects; 21 rows collapsed to 4.
+- `sessionCount` counted assistant turns containing a tool call, which is a
+  turn count. It now counts distinct session ids, so the number on the
+  Leaderboard will drop sharply once agents re-sync.
+
 ### BW-35 · Projects "Users" column counts rows, not users
 **Size S** · P3 · todo · blocked by BW-34
 
@@ -1443,12 +1469,31 @@ Latent today only because BW-34 leaves `project_breakdown` empty, so the table
 never renders a row. It becomes wrong the moment BW-34 lands. Fix is to count
 distinct `userId`, which means carrying `userId` through the merge.
 
+**Done 2026-11-06.** The query selects `user_id` and the merge collects it
+into a set. The characterization test that pinned the old row-counting
+behaviour was flipped to the fixed behaviour, with two cases added: two people
+on one project count as two, and one person on two projects counts once on
+each.
+
+### BW-36 · Sidebar shows the Admin link to every role
+**Size S** · P5 · todo
+
+`apps/dashboard/src/components/SidebarNav.tsx` lists `/admin` unconditionally.
+A developer sees the link and `/admin` redirects them back to `/`, so this is
+a dead link rather than an access hole: the page guard holds. Found on the
+first screen a freshly invited developer sees, while verifying BW-19.
+
+Fix is to pass the role into `SidebarNav` and filter the item, in both the
+sidebar and the horizontal mobile nav in `(dashboard)/layout.tsx`.
+
 ### Note on BW-25
 
-Re-aimed 2026-11-06 after measuring the data. The Projects half of the ticket
-would move a merge into SQL that reduces over `[]` on every row, because of
-BW-34. Only the Activity half (`tool_usage`, `shell_usage`, `mcp_usage`) touches
-real data today, at 31 rows.
+Re-aimed 2026-11-06 after measuring the data, then unblocked the same day.
+The Projects half would have moved a merge into SQL that reduced over `[]` on
+every row; BW-34 has since landed, so `project_breakdown` will carry real
+rows as soon as agents re-sync and both halves are worth moving. The Activity
+half (`tool_usage`, `shell_usage`, `mcp_usage`) already had real data, at 31
+rows.
 
 Neither merge has any test covering its correctness. `routes.test.ts` reaches
 these two routes only through the shared auth, org-scoping and query-validation
