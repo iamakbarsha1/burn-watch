@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'fs'
 import type { DeviceConfig } from '@burn-watch/shared'
 
 const CONFIG_DIR = join(homedir(), '.burnwatch')
@@ -26,6 +26,10 @@ export function saveConfig(config: DeviceConfig): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8')
   chmodSync(CONFIG_PATH, 0o600)
+}
+
+export function deleteConfig(): void {
+  rmSync(CONFIG_PATH, { force: true })
 }
 
 export function updateConfig(patch: Partial<DeviceConfig>): void {
