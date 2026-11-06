@@ -249,7 +249,7 @@ export interface OrgProjectSummary {
 //
 // `trippedAt` is the latch, written by the evaluation that runs on every
 // snapshot rebuild. `tripped` is that latch read for the month the request
-// falls in, which is the only question a banner asks — an alert that tripped
+// falls in, which is the only question a banner asks. An alert that tripped
 // last month is not news today. `monthToDateSpendUsd` is live, so the admin
 // table can show the figure climbing between trips.
 export interface BudgetAlert {
