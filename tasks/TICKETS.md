@@ -1,6 +1,6 @@
 # BurnWatch Tickets
 
-**Board updated:** 2026-11-05
+**Board updated:** 2026-11-06
 **Plan:** [ROADMAP.md](./ROADMAP.md)
 
 Status: `todo` · `doing` · `blocked` · `done`
@@ -33,10 +33,10 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-19 | P4 | Invite flow on `invites` table | **doing** | L | BW-14 |
 | BW-20 | P4 | Cross-platform agent scheduling | todo | M | BW-14 |
 | BW-21 | P4 | GitHub Copilot integration | todo | L | BW-14 |
-| BW-22 | P5 | Dashboard inline styles to Tailwind | todo | L | — |
+| BW-22 | P5 | Dashboard inline styles to Tailwind | **done** | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | todo | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
-| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | todo | M | — |
+| BW-25 | P3 | Push the JSONB merge in activity/projects into SQL | todo (re-aimed) | M | BW-34 |
 | BW-26 | P5 | Remove the double type assertion in `overview.ts` | todo | S | — |
 | BW-27 | P3 | Enforce device token revocation, or drop the table | todo | M | — |
 | BW-28 | P5 | Share the dashboard query schema and cache wrapper | todo | S | — |
@@ -44,6 +44,9 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | **done** | M | — |
 | BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
 | BW-32 | P4 | launchd plist named the runtime, not the burnwatch binary | **done** | S | — |
+| BW-33 | P4 | Copilot usage silently dropped by the ccusage collector | **done** | S | — |
+| BW-34 | **P2** | Agent never collects project or activity breakdown | todo | M | — |
+| BW-35 | P3 | Projects "Users" column counts rows, not users | todo | S | BW-34 |
 
 ---
 
@@ -1387,3 +1390,70 @@ prod. A full-history backfill with the rebuilt binary picks them up.
 BW-07) and `REDIS_URL` (dead since BW-08). Both lines need deleting by hand —
 `.env*` is covered by a Read deny rule in the agent's permission settings, so no
 session can write that file.
+
+---
+
+## Tickets opened 2026-11-06
+
+### BW-34 · Agent never collects project or activity breakdown
+**Size M** · P2 · todo
+
+`apps/agent/src/collectors/codeburn.ts:110-112` hardcodes three enrichment
+fields to empty, alongside two scalars hardcoded to zero:
+
+```ts
+cacheHitRate: 0,
+writtenTokens: 0,
+activityBreakdown: [],
+projectBreakdown: [],
+topSessions: [],
+```
+
+Everything downstream is built and working. `usage.service.ts:62-63` upserts the
+columns, `claude_enrichment` has them, `projects.ts` merges `projectBreakdown`,
+and the Projects page renders a full table off it. The chain is complete except
+at the source, so the page shows "No project data" and always will.
+
+Confirmed against production Neon on 2026-11-06. Of 33 `claude_enrichment`
+rows, 31 carry `tool_usage`, and **0** carry `project_breakdown` or
+`activity_breakdown`. The collector already walks every JSONL transcript and
+buckets tool, shell and MCP counts per day, so the parse loop that would fill
+these arrays is largely there; what is missing is the per-project and
+per-activity grouping on top of it.
+
+`OrgActivitySummary` (`packages/shared/src/types.ts:208-214`) is declared and
+referenced nowhere, which fits: it is the read side of a column nothing writes.
+
+Blocks BW-25 and BW-35, both of which operate on data this ticket produces.
+
+### BW-35 · Projects "Users" column counts rows, not users
+**Size S** · P3 · todo · blocked by BW-34
+
+`apps/api/src/routes/dashboard/projects.ts` increments `userCount` once per
+contributing `claude_enrichment` row. There is one row per user per day
+(`claude_enrichment_unique_user_date`), so the figure is a count of user-days
+that touched the project, not a count of people. One developer on one project
+for 63 days reports 63.
+
+The dashboard renders it under a column headed "Users"
+(`apps/dashboard/src/app/(dashboard)/projects/page.tsx`), so the name promises
+what the number is not.
+
+Latent today only because BW-34 leaves `project_breakdown` empty, so the table
+never renders a row. It becomes wrong the moment BW-34 lands. Fix is to count
+distinct `userId`, which means carrying `userId` through the merge.
+
+### Note on BW-25
+
+Re-aimed 2026-11-06 after measuring the data. The Projects half of the ticket
+would move a merge into SQL that reduces over `[]` on every row, because of
+BW-34. Only the Activity half (`tool_usage`, `shell_usage`, `mcp_usage`) touches
+real data today, at 31 rows.
+
+Neither merge has any test covering its correctness. `routes.test.ts` reaches
+these two routes only through the shared auth, org-scoping and query-validation
+blocks. Characterization tests against current behaviour are a prerequisite for
+any rewrite, not an optional extra.
+
+Separately, neither route paginates or truncates, and neither does the page.
+The live Activity page renders 357 shell commands in one list.
