@@ -25,6 +25,7 @@ export async function projectsRoutes(fastify: FastifyInstance) {
 
       const rows = await fastify.db
         .select({
+          userId: claudeEnrichment.userId,
           projectBreakdown: claudeEnrichment.projectBreakdown,
         })
         .from(claudeEnrichment)
@@ -37,28 +38,26 @@ export async function projectsRoutes(fastify: FastifyInstance) {
           ),
         )
 
-      // Merge project breakdowns across users
+      // Merge project breakdowns across users. There is one row per user per
+      // day, so contributors are collected into a set — counting rows would
+      // report one developer on one project for 63 days as 63 people.
       const merged = new Map<
         string,
-        { totalCost: number; totalSessions: number; userCount: number }
+        { totalCost: number; totalSessions: number; users: Set<string> }
       >()
 
       for (const row of rows) {
         const projects = row.projectBreakdown as ProjectEntry[] | null
         if (!projects) continue
         for (const p of projects) {
-          const existing = merged.get(p.path)
-          if (existing) {
-            existing.totalCost += p.cost
-            existing.totalSessions += p.sessions
-            existing.userCount++
-          } else {
-            merged.set(p.path, {
-              totalCost: p.cost,
-              totalSessions: p.sessions,
-              userCount: 1,
-            })
+          let entry = merged.get(p.path)
+          if (!entry) {
+            entry = { totalCost: 0, totalSessions: 0, users: new Set() }
+            merged.set(p.path, entry)
           }
+          entry.totalCost += p.cost
+          entry.totalSessions += p.sessions
+          entry.users.add(row.userId)
         }
       }
 
@@ -69,7 +68,7 @@ export async function projectsRoutes(fastify: FastifyInstance) {
           totalSessions: data.totalSessions,
           avgCostPerSession:
             data.totalSessions > 0 ? data.totalCost / data.totalSessions : 0,
-          userCount: data.userCount,
+          userCount: data.users.size,
         }),
       )
 

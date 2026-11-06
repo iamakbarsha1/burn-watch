@@ -366,7 +366,10 @@ describe('GET /v1/dashboard/projects — merge behaviour', () => {
     overheadK: 0,
     ...over,
   })
-  const enrichmentRow = (projects: ProjectEntry[] | null | undefined) => ({ projectBreakdown: projects })
+  const enrichmentRow = (
+    projects: ProjectEntry[] | null | undefined,
+    userId = 'user-1',
+  ) => ({ userId, projectBreakdown: projects })
 
   it('sums cost and sessions across rows sharing a path', async () => {
     dbState.results.push([
@@ -408,18 +411,38 @@ describe('GET /v1/dashboard/projects — merge behaviour', () => {
     expect(res.json()).toEqual([])
   })
 
-  it('counts contributing rows for userCount, not distinct users', async () => {
-    // characterized, not endorsed: the query never selects userId, so the
-    // route has no way to tell "two rows, two users" from "two rows, one
-    // user on two dates" even in principle. BW-35 in tasks/TICKETS.md tracks
-    // the fix. The dashboard renders this value under a column header that
-    // reads "Users", so a team of one contributor shows up as two.
+  it('counts one user once however many days they worked on the project', async () => {
+    // There is one enrichment row per user per day, so a row count is a count
+    // of user-days. The column is headed "Users" on the dashboard.
     dbState.results.push([
-      enrichmentRow([project({ path: 'acme/widgets' })]), // same user, 2026-11-04
-      enrichmentRow([project({ path: 'acme/widgets' })]), // same user, 2026-11-05
+      enrichmentRow([project({ path: 'acme/widgets' })], 'user-1'), // 2026-11-04
+      enrichmentRow([project({ path: 'acme/widgets' })], 'user-1'), // 2026-11-05
+    ])
+    const res = await get()
+    expect(res.json()[0]).toMatchObject({ path: 'acme/widgets', userCount: 1 })
+  })
+
+  it('counts two different people on one project as two', async () => {
+    dbState.results.push([
+      enrichmentRow([project({ path: 'acme/widgets' })], 'user-1'),
+      enrichmentRow([project({ path: 'acme/widgets' })], 'user-2'),
     ])
     const res = await get()
     expect(res.json()[0]).toMatchObject({ path: 'acme/widgets', userCount: 2 })
+  })
+
+  it('counts a user on each project they touch, not only the first', async () => {
+    dbState.results.push([
+      enrichmentRow(
+        [project({ path: 'acme/widgets' }), project({ path: 'acme/gadgets' })],
+        'user-1',
+      ),
+    ])
+    const res = await get()
+    expect(res.json()).toEqual([
+      expect.objectContaining({ path: 'acme/widgets', userCount: 1 }),
+      expect.objectContaining({ path: 'acme/gadgets', userCount: 1 }),
+    ])
   })
 })
 
