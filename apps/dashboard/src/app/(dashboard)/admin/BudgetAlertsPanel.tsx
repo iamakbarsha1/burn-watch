@@ -111,10 +111,14 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
     BudgetAlertActionState | null,
     FormData
   >(updateBudgetAlertAction, null)
-  const [, deleteDispatch, deletePending] = useActionState<BudgetAlertActionState | null, FormData>(
-    deleteBudgetAlertAction,
-    null,
-  )
+  // The delete result used to be dropped on the floor, so a failing delete
+  // looked exactly like a successful one: the row simply stayed where it was
+  // with nothing said. A write whose outcome is never rendered cannot be
+  // tested by using the page.
+  const [deleteState, deleteDispatch, deletePending] = useActionState<
+    BudgetAlertActionState | null,
+    FormData
+  >(deleteBudgetAlertAction, null)
 
   const scopeLabel = alert.userId
     ? (users.find((u) => u.id === alert.userId)?.name ?? 'Unknown user')
@@ -170,6 +174,9 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
             {deletePending ? 'Deleting…' : 'Delete'}
           </button>
         </form>
+        {deleteState && !deleteState.ok && (
+          <p className="mt-1 text-xs text-bad">{deleteState.message}</p>
+        )}
       </Td>
     </Tr>
   )
