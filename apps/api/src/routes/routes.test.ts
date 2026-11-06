@@ -117,6 +117,7 @@ const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
 const USER_A = '33333333-3333-4333-8333-333333333333'
 const DEVICE_A = '44444444-4444-4444-8444-444444444444'
+const ALERT_A = '66666666-6666-4666-8666-666666666666'
 const DATE = '2026-11-05'
 
 const DASHBOARD_ROUTES = [
@@ -457,6 +458,198 @@ describe('GET /v1/dashboard/projects — merge behaviour', () => {
   })
 })
 
+const alertRow = (over: Record<string, unknown> = {}) => ({
+  id: 'alert-1',
+  userId: null,
+  userName: null,
+  agent: null,
+  monthlyLimitUsd: '100',
+  threshold: '0.8',
+  createdAt: new Date('2026-01-01'),
+  trippedAt: null,
+  ...over,
+})
+
+describe('GET /v1/dashboard/budget-alerts', () => {
+  const url = '/v1/dashboard/budget-alerts'
+  const get = (headers?: Record<string, string>) => app.inject({ method: 'GET', url, headers })
+
+  it('returns 401 without a token', async () => {
+    const res = await get()
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('returns 403 for a device-role token', async () => {
+    const res = await get(auth(token({ role: 'device', deviceId: DEVICE_A })))
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('returns an empty array when the org has no alerts', async () => {
+    dbState.results.push([])
+    const res = await get(auth(token()))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([])
+  })
+
+  // The IDOR fix every other dashboard route already applies: the query
+  // string is not trusted for anything that decides whose data comes back.
+  it('ignores an orgId supplied in the query', async () => {
+    dbState.results.push([])
+    const res = await app.inject({
+      method: 'GET',
+      url: `${url}?orgId=${ORG_B}`,
+      headers: auth(token({ orgId: ORG_A })),
+    })
+    expect(res.statusCode).toBe(200)
+    const queried = inspect(dbState.calls, { depth: null })
+    expect(queried).toContain(ORG_A)
+    expect(queried).not.toContain(ORG_B)
+  })
+
+  it('reports tripped true only when trippedAt falls in the current calendar month', async () => {
+    const now = new Date()
+    const thisMonth = new Date(now.getFullYear(), now.getMonth(), 5)
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 5)
+
+    dbState.results.push([
+      alertRow({ id: 'alert-1', monthlyLimitUsd: '100', threshold: '0.8', trippedAt: thisMonth }),
+      alertRow({ id: 'alert-2', monthlyLimitUsd: '50', threshold: '0.8', trippedAt: lastMonth }),
+    ])
+    dbState.results.push([{ spend: '90' }]) // alert-1 month-to-date spend
+    dbState.results.push([{ spend: '10' }]) // alert-2 month-to-date spend
+
+    const res = await get(auth(token()))
+    const body = res.json() as Array<Record<string, unknown>>
+
+    expect(body.find((a) => a.id === 'alert-1')).toMatchObject({
+      tripped: true,
+      monthToDateSpendUsd: 90,
+    })
+    expect(body.find((a) => a.id === 'alert-2')).toMatchObject({
+      tripped: false,
+      monthToDateSpendUsd: 10,
+    })
+  })
+})
+
+describe('POST /v1/dashboard/budget-alerts', () => {
+  const url = '/v1/dashboard/budget-alerts'
+  const post = (headers?: Record<string, string>, payload: Record<string, unknown> = { monthlyLimitUsd: 500 }) =>
+    app.inject({ method: 'POST', url, headers, payload })
+
+  it('returns 401 without a token', async () => {
+    const res = await post(undefined)
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await post(auth(token({ role, deviceId: DEVICE_A })))
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('rejects a payload that fails schema validation', async () => {
+    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, threshold: 1.5 })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('creates an org-wide alert when userId is omitted', async () => {
+    dbState.results.push([{ id: 'new-alert-1' }]) // insert ... returning
+    const res = await post(auth(token({ role: 'admin' })))
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toEqual({ id: 'new-alert-1' })
+    expect(dbState.calls.some((c) => c.op === 'select')).toBe(false)
+  })
+
+  it('refuses a userId belonging to another organization, and writes nothing', async () => {
+    dbState.results.push([]) // user lookup matches nothing in this org
+    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_A })
+    expect(res.statusCode).toBe(400)
+    expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+  })
+
+  it('creates a per-user alert once the user is confirmed in the caller org', async () => {
+    dbState.results.push([{ id: USER_A }]) // user lookup
+    dbState.results.push([{ id: 'new-alert-2' }]) // insert ... returning
+    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_A })
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toEqual({ id: 'new-alert-2' })
+  })
+})
+
+describe('PATCH /v1/dashboard/budget-alerts/:id', () => {
+  const url = `/v1/dashboard/budget-alerts/${ALERT_A}`
+  const patch = (headers?: Record<string, string>, payload: Record<string, unknown> = { monthlyLimitUsd: 250 }) =>
+    app.inject({ method: 'PATCH', url, headers, payload })
+
+  it('returns 401 without a token', async () => {
+    const res = await patch(undefined)
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await patch(auth(token({ role, deviceId: DEVICE_A })))
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('rejects an id that is not a uuid', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/v1/dashboard/budget-alerts/not-a-uuid',
+      headers: auth(token({ role: 'admin' })),
+      payload: { monthlyLimitUsd: 250 },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('rejects an empty patch body', async () => {
+    const res = await patch(auth(token({ role: 'admin' })), {})
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 404, and writes nothing, for an alert in another organization', async () => {
+    dbState.results.push([]) // update ... returning, nothing matched
+    const res = await patch(auth(token({ role: 'admin', orgId: ORG_B })))
+    expect(res.statusCode).toBe(404)
+    expect(lastWhere()).toContain(ORG_B)
+  })
+
+  it('updates the limit and returns the alert id', async () => {
+    dbState.results.push([{ id: ALERT_A }]) // update ... returning
+    const res = await patch(auth(token({ role: 'admin' })))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ id: ALERT_A })
+  })
+})
+
+describe('DELETE /v1/dashboard/budget-alerts/:id', () => {
+  const url = `/v1/dashboard/budget-alerts/${ALERT_A}`
+  const del = (headers?: Record<string, string>) => app.inject({ method: 'DELETE', url, headers })
+
+  it('returns 401 without a token', async () => {
+    const res = await del(undefined)
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await del(auth(token({ role, deviceId: DEVICE_A })))
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('returns 404, and deletes nothing, for an alert in another organization', async () => {
+    dbState.results.push([]) // delete ... returning, nothing matched
+    const res = await del(auth(token({ role: 'admin', orgId: ORG_B })))
+    expect(res.statusCode).toBe(404)
+    expect(lastWhere()).toContain(ORG_B)
+  })
+
+  it('deletes and returns the alert id', async () => {
+    dbState.results.push([{ id: ALERT_A }]) // delete ... returning
+    const res = await del(auth(token({ role: 'admin' })))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ id: ALERT_A })
+  })
+})
+
 describe('POST /v1/usage', () => {
   const event = {
     agent: 'claude',
@@ -578,6 +771,49 @@ describe('POST /v1/usage', () => {
 
     expect(res.statusCode).toBe(500)
     expect(dbState.calls.map((c) => c.op)).toContain('rollback')
+  })
+
+  it('evaluates budget alerts inside the same transaction, scoped to the caller org', async () => {
+    liveDeviceToken()
+    dbState.results.push([{ id: 'event-1' }]) // insert ... returning
+    dbState.results.push([]) // update devices
+    dbState.results.push([]) // rebuild: usage aggregated by agent
+    dbState.results.push([]) // rebuild: enrichment
+    dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
+    dbState.results.push([]) // rebuild: snapshot upsert
+    dbState.results.push([
+      {
+        id: 'alert-1',
+        orgId: ORG_A,
+        userId: null,
+        agent: null,
+        monthlyLimitUsd: '10',
+        threshold: '1',
+        trippedAt: null,
+        createdAt: new Date('2026-01-01'),
+      },
+    ]) // evaluate: alerts for this org/user
+    dbState.results.push([{ spend: '10' }]) // evaluate: month-to-date spend, exactly the trip point
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/usage',
+      headers: auth(deviceToken()),
+      payload: { ...payload, enrichment: null },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const ops = dbState.calls.map((c) => c.op)
+    expect(ops).not.toContain('rollback')
+    // The alert update lands after the rebuild's own upsert, inside the one
+    // transaction the whole submission runs in.
+    expect(ops.indexOf('transaction')).toBeLessThan(ops.lastIndexOf('update'))
+    const tripWrite = dbState.calls.find((c) => c.op === 'set' && c.arg && 'trippedAt' in (c.arg as object))
+    expect((tripWrite?.arg as { trippedAt: unknown })?.trippedAt).toBeInstanceOf(Date)
+    // The alert lookup itself must be scoped to the caller's org, the same
+    // posture every dashboard route takes.
+    const whereClauses = dbState.calls.filter((c) => c.op === 'where').map((c) => renderSql(c.arg))
+    expect(whereClauses.some((w) => w.includes(ORG_A))).toBe(true)
   })
 })
 

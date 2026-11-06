@@ -6,6 +6,7 @@ import { requireAuth, type JwtPayload } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
 import { upsertUsageEvents, upsertEnrichment } from '../../services/usage.service.js'
 import { rebuildDailySnapshot } from '../../services/snapshot.service.js'
+import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
 
 export async function usageRoutes(fastify: FastifyInstance) {
   // POST /v1/usage
@@ -81,6 +82,11 @@ export async function usageRoutes(fastify: FastifyInstance) {
         // events back so the agent's retry re-submits them, instead of leaving
         // a user's spend recorded but absent from their daily snapshot.
         await rebuildDailySnapshot(tx, jwt.userId, payload.date)
+
+        // Same reasoning extends to the alert check: it reads the snapshot
+        // this transaction just wrote, so it has to see the same commit or
+        // none of it, never a version in between.
+        await evaluateBudgetAlerts(tx, jwt.orgId, jwt.userId, payload.date)
 
         return counts
       })

@@ -8,6 +8,9 @@ import type {
   AdminUserRow,
   AdminDeviceRow,
   PendingInvite,
+  BudgetAlert,
+  BudgetAlertInput,
+  BudgetAlertPatch,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -27,13 +30,13 @@ async function apiFetch<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
-async function apiPost<T>(path: string, body: unknown): Promise<T> {
+async function apiMutate<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers = await authHeaders()
   headers['Content-Type'] = 'application/json'
   const res = await fetch(`${API_URL}${path}`, {
-    method: 'POST',
+    method,
     headers,
-    body: JSON.stringify(body),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
     const text = await res.text()
@@ -42,6 +45,18 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
     throw new Error(msg)
   }
   return res.json() as Promise<T>
+}
+
+async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return apiMutate<T>('POST', path, body)
+}
+
+async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  return apiMutate<T>('PATCH', path, body)
+}
+
+async function apiDelete<T>(path: string): Promise<T> {
+  return apiMutate<T>('DELETE', path)
 }
 
 export async function fetchOverview(from: string, to: string, orgId: string): Promise<OverviewResponse> {
@@ -98,4 +113,20 @@ export async function fetchAdminDevices(): Promise<AdminDeviceRow[]> {
 
 export async function revokeDevice(deviceId: string): Promise<{ deviceId: string; revoked: number }> {
   return apiPost('/v1/auth/admin/devices/revoke', { deviceId })
+}
+
+export async function fetchBudgetAlerts(): Promise<BudgetAlert[]> {
+  return apiFetch('/v1/dashboard/budget-alerts')
+}
+
+export async function createBudgetAlert(input: BudgetAlertInput): Promise<{ id: string }> {
+  return apiPost('/v1/dashboard/budget-alerts', input)
+}
+
+export async function updateBudgetAlert(id: string, patch: BudgetAlertPatch): Promise<{ id: string }> {
+  return apiPatch(`/v1/dashboard/budget-alerts/${id}`, patch)
+}
+
+export async function deleteBudgetAlert(id: string): Promise<{ id: string }> {
+  return apiDelete(`/v1/dashboard/budget-alerts/${id}`)
 }

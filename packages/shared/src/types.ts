@@ -239,3 +239,28 @@ export interface OrgProjectSummary {
   avgCostPerSession: number
   userCount: number
 }
+
+// One budget alert as the dashboard sees it.
+//
+// `userId: null` means the alert watches the whole org, and `agent: null` means
+// it watches every agent, so the four combinations of those two nulls are the
+// whole scope vocabulary. `monthlyLimitUsd` and `threshold` are the stored
+// configuration; everything below them is computed or latched.
+//
+// `trippedAt` is the latch, written by the evaluation that runs on every
+// snapshot rebuild. `tripped` is that latch read for the month the request
+// falls in, which is the only question a banner asks. An alert that tripped
+// last month is not news today. `monthToDateSpendUsd` is live, so the admin
+// table can show the figure climbing between trips.
+export interface BudgetAlert {
+  id: string
+  userId: string | null
+  userName: string | null
+  agent: AgentName | null
+  monthlyLimitUsd: number
+  threshold: number
+  createdAt: string
+  trippedAt: string | null
+  tripped: boolean
+  monthToDateSpendUsd: number
+}

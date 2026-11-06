@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getUserRole } from '@/lib/session'
-import { fetchAdminUsers, fetchPendingInvites } from '@/lib/api'
+import { fetchAdminUsers, fetchPendingInvites, fetchBudgetAlerts } from '@/lib/api'
 import { formatCost, formatTokens, formatAgo } from '@/lib/format'
 import { InviteForm } from './InviteForm'
+import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
 import {
   PageHeader,
   StatTile,
@@ -25,20 +26,30 @@ export default async function AdminPage() {
 
   // The page is still useful when one of these fails — an admin who cannot
   // reach the API should still see the invite form rather than an error screen.
-  const [users, invites] = await Promise.all([
+  const [users, invites, budgetAlerts] = await Promise.all([
     fetchAdminUsers().catch(() => []),
     fetchPendingInvites().catch(() => []),
+    fetchBudgetAlerts().catch(() => []),
   ])
 
   const onboarded = users.filter((u) => u.deviceCount > 0).length
   const totalSpend = users.reduce((sum, u) => sum + u.totalCostUsd, 0)
   const openInvites = invites.filter((i) => !i.usedAt && new Date(i.expiresAt) > new Date())
+  const trippedAlerts = budgetAlerts.filter((a) => a.tripped)
 
   return (
     <div>
       <PageHeader title="Admin" subtitle="Manage team members and integrations" />
 
       <div className="space-y-6">
+        {trippedAlerts.length > 0 && (
+          <div className="rounded-lg border border-bad/35 bg-bad/10 px-4 py-3 text-sm text-bad">
+            {trippedAlerts.length === 1
+              ? '1 budget alert has tripped this month.'
+              : `${trippedAlerts.length} budget alerts have tripped this month.`}
+          </div>
+        )}
+
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatTile label="Team members" value={String(users.length)} />
           <StatTile
@@ -176,6 +187,16 @@ export default async function AdminPage() {
             </TableFrame>
           </section>
         )}
+
+        <Section
+          title="Budget alerts"
+          description="Spend thresholds per developer or the whole org, per agent or across all of them. Tripping one shows the banner above; it clears itself once the month turns over or the limit is raised past current spend."
+        >
+          <div className="space-y-4">
+            <CreateBudgetAlertForm users={users} />
+            <BudgetAlertsTable alerts={budgetAlerts} users={users} />
+          </div>
+        </Section>
 
         <Section
           title="GitHub Copilot integration"
