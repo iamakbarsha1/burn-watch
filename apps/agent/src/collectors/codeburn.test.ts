@@ -40,6 +40,35 @@ function assistant(blocks: unknown[], timestamp = `${DATE}T10:00:00.000Z`) {
   })
 }
 
+// An assistant turn carrying the fields the enrichment maths reads: which
+// session and project it belongs to, and what it burned.
+function turn(opts: {
+  session: string
+  cwd?: string
+  input?: number
+  output?: number
+  cacheCreate?: number
+  cacheRead?: number
+  timestamp?: string
+}) {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: opts.timestamp ?? `${DATE}T10:00:00.000Z`,
+    sessionId: opts.session,
+    cwd: opts.cwd,
+    message: {
+      role: 'assistant',
+      content: [],
+      usage: {
+        input_tokens: opts.input ?? 0,
+        output_tokens: opts.output ?? 0,
+        cache_creation_input_tokens: opts.cacheCreate ?? 0,
+        cache_read_input_tokens: opts.cacheRead ?? 0,
+      },
+    },
+  })
+}
+
 const toolUse = (name: string, input: Record<string, unknown> = {}) => ({
   type: 'tool_use',
   name,
@@ -149,5 +178,88 @@ describe('CodeburnCollector', () => {
     const byDate = await new CodeburnCollector(root).collectRange(['2026-11-04', DATE])
     expect([...byDate.keys()].sort()).toEqual(['2026-11-04', '2026-11-05'])
     expect(byDate.get('2026-11-04')?.toolUsage).toEqual({ grep: 1 })
+  })
+
+  it('counts distinct sessions, not turns', async () => {
+    writeSession('a.jsonl', [
+      turn({ session: 's1' }),
+      turn({ session: 's1' }),
+      turn({ session: 's2' }),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.callCount).toBe(3)
+    expect(enrichment?.sessionCount).toBe(2)
+  })
+
+  it('reads cache hit rate and written tokens off the usage block', async () => {
+    writeSession('a.jsonl', [
+      turn({ session: 's1', input: 100, cacheCreate: 300, cacheRead: 600, output: 50 }),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    // Hit rate is cache reads over everything read in: 600 / (100 + 300 + 600).
+    expect(enrichment?.cacheHitRate).toBe(60)
+    // Written tokens are output only, so the 1000 read in must not leak here.
+    expect(enrichment?.writtenTokens).toBe(50)
+  })
+
+  it('groups projects by cwd and splits the day cost by token share', async () => {
+    writeSession('a.jsonl', [
+      turn({ session: 's1', cwd: '/work/alpha', input: 300, cacheRead: 2000 }),
+      turn({ session: 's2', cwd: '/work/alpha', input: 300 }),
+      turn({ session: 's3', cwd: '/work/beta', input: 400 }),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE, 30)
+
+    const alpha = enrichment?.projectBreakdown.find((p) => p.path === '/work/alpha')
+    const beta = enrichment?.projectBreakdown.find((p) => p.path === '/work/beta')
+
+    // alpha holds 2600 of 3000 tokens, so it carries 2600/3000 of the $30.
+    expect(alpha?.cost).toBeCloseTo(26, 10)
+    expect(beta?.cost).toBeCloseTo(4, 10)
+    // The split is exhaustive: the parts add back up to what ccusage reported.
+    expect((alpha?.cost ?? 0) + (beta?.cost ?? 0)).toBeCloseTo(30, 10)
+
+    expect(alpha?.sessions).toBe(2)
+    expect(alpha?.avgPerSession).toBeCloseTo(13, 10)
+    expect(alpha?.overheadK).toBe(2)
+    expect(beta?.overheadK).toBe(0)
+  })
+
+  it('reports no cost rather than a priced guess when ccusage gave none', async () => {
+    writeSession('a.jsonl', [turn({ session: 's1', cwd: '/work/alpha', input: 100 })])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.projectBreakdown).toEqual([
+      { path: '/work/alpha', cost: 0, sessions: 1, avgPerSession: 0, overheadK: 0 },
+    ])
+  })
+
+  it('groups subdirectories of one checkout under its git root', async () => {
+    const repo = join(root, 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(join(repo, 'apps', 'api'), { recursive: true })
+    writeSession('a.jsonl', [
+      turn({ session: 's1', cwd: repo, input: 100 }),
+      turn({ session: 's2', cwd: join(repo, 'apps', 'api'), input: 100 }),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE, 10)
+    expect(enrichment?.projectBreakdown).toHaveLength(1)
+    expect(enrichment?.projectBreakdown[0]).toMatchObject({ path: repo, sessions: 2, cost: 10 })
+  })
+
+  it('keeps a cwd that is in no checkout as it is', async () => {
+    writeSession('a.jsonl', [turn({ session: 's1', cwd: '/nowhere/at/all', input: 100 })])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.projectBreakdown[0].path).toBe('/nowhere/at/all')
+  })
+
+  it('leaves a turn with no cwd out of the project breakdown but in the day totals', async () => {
+    writeSession('a.jsonl', [
+      turn({ session: 's1', input: 500 }),
+      turn({ session: 's2', cwd: '/work/alpha', input: 500 }),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE, 10)
+    expect(enrichment?.projectBreakdown.map((p) => p.path)).toEqual(['/work/alpha'])
+    // The cwd-less turn still dilutes the share, so alpha gets half, not all.
+    expect(enrichment?.projectBreakdown[0].cost).toBeCloseTo(5, 10)
   })
 })
