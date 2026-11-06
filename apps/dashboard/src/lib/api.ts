@@ -30,9 +30,13 @@ async function apiFetch<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// The content type is only declared when there is something to declare it for.
+// Fastify rejects an empty body that claims to be JSON with a 400, so setting
+// the header unconditionally broke every bodyless DELETE before it reached a
+// route handler.
 async function apiMutate<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers = await authHeaders()
-  headers['Content-Type'] = 'application/json'
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers,
