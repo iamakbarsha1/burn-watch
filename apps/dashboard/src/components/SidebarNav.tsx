@@ -43,11 +43,21 @@ function NavPending() {
   )
 }
 
-export function SidebarNav({ orientation = 'vertical' }: { orientation?: 'vertical' | 'horizontal' }) {
+export function SidebarNav({
+  orientation = 'vertical',
+  role,
+}: {
+  orientation?: 'vertical' | 'horizontal'
+  role?: string | null
+}) {
   const pathname = usePathname()
   const params = useSearchParams().toString()
   const query = params ? `?${params}` : ''
   const horizontal = orientation === 'horizontal'
+  // Cosmetic only: `/admin` still redirects non-admins on its own, via
+  // getUserRole() in the page itself. This just stops a dead link from
+  // showing up in the first place.
+  const items = NAV.filter((item) => item.href !== '/admin' || role === 'admin')
 
   return (
     <nav
@@ -55,7 +65,7 @@ export function SidebarNav({ orientation = 'vertical' }: { orientation?: 'vertic
       aria-label={horizontal ? 'Main (compact)' : 'Main'}
     >
       <ul className={horizontal ? 'flex w-max items-center gap-1 px-1' : 'space-y-0.5'}>
-        {NAV.map((item) => {
+        {items.map((item) => {
           const active = pathname === item.href
           return (
             <li key={item.href}>
