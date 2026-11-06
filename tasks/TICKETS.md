@@ -48,7 +48,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-34 | **P2** | Agent never collects project breakdown and cache stats | **done** | M | — |
 | BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
 | BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
-| BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **doing** | M | — |
+| BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **done** | M | — |
 | BW-38 | P4 | `register` overwrites an existing agent config silently | **todo** | S | — |
 
 ---
@@ -1831,6 +1831,48 @@ nothing asks postgres until a user does.
    Until one of those exists, the next generated migration will sit unapplied
    exactly like this one did, and will be found the same way.
 
+**Both done 2026-11-06.** Rehearsed on a branch copied from production before
+production was touched, which is how the sequencing question got settled:
+
+**"Just add a migrate step to the deploy" does not work, and the rehearsal
+proved it rather than arguing it.** `drizzle-kit migrate` against the
+un-baselined copy died with `relation "budget_alerts" already exists` — with
+no bookkeeping table, drizzle starts from `0000_baseline` and tries to create
+tables that have existed for months. The baseline is a hard prerequisite for
+any automation, not an alternative to it.
+
+Worth knowing for anyone who runs that command and panics: the failed attempt
+is safe. Drizzle applies migrations inside a transaction, so the DDL rolled
+back and the public schema was untouched at 16 tables. It does create the
+`drizzle` schema and an empty `__drizzle_migrations` outside that transaction,
+which is harmless and is in fact the table you are about to fill.
+
+**The baseline.** `drizzle.__drizzle_migrations` is `(id serial, hash text,
+created_at bigint)`, and drizzle's own `readMigrationFiles` defines the two
+values: `hash` is sha256 over the raw `.sql` file and `created_at` is that
+entry's `when` from the journal. Only `created_at` decides anything — the
+migrator compares each migration's `folderMillis` against the single newest
+recorded row — but all five rows carry real hashes so the table describes what
+actually ran. `apps/api/drizzle/baseline-rows.cjs` computes them.
+
+Applied to the rehearsal branch, then to production. `drizzle-kit migrate` is
+now a clean no-op against production instead of a crash, and production still
+reports 16 tables, 151 `usage_events`, 4 users and 4 devices — the baseline
+touched bookkeeping only.
+
+**Detection, so this cannot recur silently.** The gap this ticket is really
+about is not that a migration went unapplied; it is that nothing noticed for
+22 hours. `/health` now checks the newest recorded migration against the
+newest the deployed code expects, and answers 503 naming `schema` when the
+database is behind. A monitor sees it on the first poll after a bad deploy.
+
+A deploy-time `db:migrate` step was considered and **not** taken. Vercel builds
+previews and production from the same repo, so a build-time migration would let
+a preview deploy migrate the production database, and concurrent builds would
+race inside drizzle's transaction. Detection carries none of that and catches
+the same failure one poll later. If it is ever automated, it belongs in a
+release step that runs once, not in a build that runs per deployment.
+
 **Diffed 2026-11-06, and `tripped_at` is the only one.** Every column drizzle's
 `meta/0004_snapshot.json` declares was compared against `information_schema` on
 a branch copied from production: 113 columns each way, no column in the schema
@@ -1862,8 +1904,11 @@ status is not.
       Creating an alert *there* is still unproven; see above.
 - [x] Live schema diffed against `schema.ts`, with any other drift listed here
       — names only, 113 = 113, no other drift; see the caveat above
-- [ ] A migration bookkeeping decision applied and recorded, so an unapplied
-      migration is detectable without a user finding it
+- [x] A migration bookkeeping decision applied and recorded, so an unapplied
+      migration is detectable without a user finding it — production is
+      baselined and `/health` answers 503 naming `schema` when the database
+      runs behind the code. Decision and the rejected alternative recorded
+      above.
 
 ### BW-38 · `register` overwrites an existing agent config with no prompt and no backup
 **Size S** · no blockers

@@ -6,6 +6,7 @@ import { getTableName, is, Table } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
 import type { ProjectEntry } from '@burn-watch/shared'
+import { EXPECTED_SCHEMA_VERSION } from '../schema-version.js'
 
 process.env.JWT_SECRET ??= 'test-access-secret'
 process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret'
@@ -1655,7 +1656,18 @@ describe('GET /v1/auth/admin/devices', () => {
 })
 
 describe('GET /health', () => {
+  // Both checks draw from the fake's one result queue, and the schema check
+  // takes the first slot even though it is second in the list: it awaits its
+  // query while being evaluated as an argument, whereas the `select 1` proxy
+  // does not shift until allSettled attaches a handler. Queue order follows
+  // who awaits first, not who is written first.
+  const schemaThenLiveness = (latest: number) => {
+    dbState.results.push([{ latest }])
+    dbState.results.push([]) // select 1 — the value is never read
+  }
+
   it('needs no authentication and returns 200 when the database answers', async () => {
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
@@ -1665,7 +1677,30 @@ describe('GET /health', () => {
     dbState.failExecute = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(503)
-    expect(res.json()).toEqual({ ok: false, failed: ['database'] })
+    // Both checks go through execute, so a dead database fails both. The point
+    // of the list is that it names every failure rather than the first.
+    expect(res.json().ok).toBe(false)
+    expect(res.json().failed).toContain('database')
+  })
+
+  /**
+   * BW-37. A reachable database running a schema older than the code used to
+   * answer `{ok:true}` here, and did for 22 hours while every usage
+   * submission failed on a column that was never applied. Reverting the
+   * second check in build-server turns this green-on-broken again.
+   */
+  it('returns 503 naming the schema when the database is behind the code', async () => {
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION - 1)
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, failed: ['schema'] })
+  })
+
+  it('names a never-migrated database too, not just one a version behind', async () => {
+    schemaThenLiveness(0)
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(503)
+    expect(res.json().failed).toContain('schema')
   })
 
   it('leaks no connection details into the response body', async () => {
