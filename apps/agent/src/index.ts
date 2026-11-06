@@ -2,7 +2,12 @@ import { Command } from 'commander'
 import { registerCommand } from './commands/register.js'
 import { syncCommand } from './commands/sync.js'
 import { statusCommand } from './commands/status.js'
-import { installCron, uninstallCron, SELF_CHECK_COMMAND, SELF_CHECK_SENTINEL } from './lib/cron.js'
+import {
+  installSchedule,
+  uninstallSchedule,
+  SELF_CHECK_COMMAND,
+  SELF_CHECK_SENTINEL,
+} from './lib/cron.js'
 import { DEFAULT_API_URL, hasConfig, loadConfig, deleteConfig } from './lib/config.js'
 import { ApiClient } from './lib/api.js'
 
@@ -32,22 +37,33 @@ program
 
 program
   .command('install-cron')
-  .description('Install or repoint the launchd daily sync at this build')
+  .description('Install or repoint the daily sync schedule at this build')
   .action(() => {
-    uninstallCron()
-    const scheduled = installCron()
-    if (!scheduled) {
-      console.error('[burnwatch] This build cannot re-invoke itself — nothing scheduled.')
+    try {
+      uninstallSchedule()
+      const scheduled = installSchedule()
+      if (!scheduled) {
+        console.error('[burnwatch] This build cannot re-invoke itself — nothing scheduled.')
+        process.exit(1)
+      }
+      console.log('[burnwatch] Scheduled daily sync at 6 PM:', scheduled.join(' '))
+    } catch (err) {
+      console.error(`[burnwatch] ${(err as Error).message}`)
       process.exit(1)
     }
-    console.log('[burnwatch] Scheduled daily sync at 6 PM (launchd):', scheduled.join(' '))
   })
 
 program
   .command('uninstall')
-  .description('Remove launchd cron and revoke device token')
+  .description('Remove the daily sync schedule and revoke device token')
   .action(async () => {
-    uninstallCron()
+    try {
+      uninstallSchedule()
+    } catch (err) {
+      // Nothing to clean up on a platform that was never schedulable in the
+      // first place — still revoke the device token and clear local config.
+      console.error(`[burnwatch] ${(err as Error).message}`)
+    }
 
     // The local config is deleted whatever the API says. Leaving a usable
     // token on a machine being uninstalled is the thing this command exists to
@@ -68,7 +84,7 @@ program
     console.log('[burnwatch] Uninstalled. Config removed from ~/.burnwatch/config.json')
   })
 
-// How installCron tells a burnwatch build apart from the runtime hosting it.
+// How installSchedule tells a burnwatch build apart from the runtime hosting it.
 program
   .command(SELF_CHECK_COMMAND, { hidden: true })
   .description('Print a sentinel proving this invocation reaches burnwatch')

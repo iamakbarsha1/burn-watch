@@ -57,7 +57,9 @@ Developer Machines                    Infrastructure
 | `src/commands/sync.ts` | Orchestrates both collectors, POSTs to API |
 | `src/collectors/ccusage.ts` | Tier 1: runs ccusage CLI, parses JSON output |
 | `src/collectors/codeburn.ts` | Tier 2: parses JSONL files for Claude enrichment |
-| `src/lib/cron.ts` | launchd plist for the 6 PM daily sync (macOS only, see BW-20) |
+| `src/lib/cron.ts` | Dispatches the 6 PM daily sync schedule to a platform backend: launchd plist (macOS) |
+| `src/lib/cron-linux.ts` | Schedule backend: systemd user service + timer (Linux) |
+| `src/lib/cron-windows.ts` | Schedule backend: Task Scheduler XML task (Windows) |
 
 ### `apps/api` — Fastify 5
 
