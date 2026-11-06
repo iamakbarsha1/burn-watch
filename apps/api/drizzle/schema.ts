@@ -235,6 +235,16 @@ export const budgetAlerts = pgTable('budget_alerts', {
   agent: text('agent'),                                  // null = all agents
   monthlyLimitUsd: numeric('monthly_limit_usd', { precision: 10, scale: 2 }).notNull(),
   threshold: numeric('threshold', { precision: 5, scale: 2 }).notNull().default('0.8'),
+  // When this alert last crossed its trip point, or null if it has not. The
+  // month of this timestamp is the month the trip belongs to, which is what
+  // makes the banner self-clearing: an alert tripped in October reads as
+  // untripped on 1 November with nothing scheduled to go and reset it.
+  //
+  // Both directions are maintained by the same evaluation, so raising a limit
+  // above current spend clears the latch rather than leaving a banner up until
+  // the month turns over. A stored column only belongs in a predicate if every
+  // path that changes the answer writes it.
+  trippedAt: timestamp('tripped_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 })
 
