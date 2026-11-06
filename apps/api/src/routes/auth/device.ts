@@ -446,7 +446,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // GET /v1/auth/admin/devices — every device in the caller's org, with
+  // GET /v1/auth/admin/devices returns every device in the caller's org, with
   // whether it still holds a live token, so the dashboard has something to
   // drive the revoke button with.
   fastify.get('/admin/devices', { preHandler: requireAdmin(fastify) }, async (request) => {
@@ -496,7 +496,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     return result
   })
 
-  // POST /v1/auth/admin/devices/revoke — an admin ends a device's access, the
+  // POST /v1/auth/admin/devices/revoke lets an admin end a device's access, the
   // offboarding path. Until this existed the only way to stop a laptop was
   // rotating JWT_SECRET, which signs out everyone.
   fastify.post('/admin/devices/revoke', {
@@ -522,7 +522,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     return revokeTokensFor(fastify.db, body.deviceId)
   })
 
-  // POST /v1/auth/revoke-device — a device ends its own access. `burnwatch
+  // POST /v1/auth/revoke-device lets a device end its own access. `burnwatch
   // uninstall` is the caller, and it cannot use the admin route above because
   // a device JWT does not pass requireAdmin.
   fastify.post('/revoke-device', {
