@@ -970,9 +970,16 @@ the panel did not work. Three defects, none of which any test caught:
 1. **The column was never in the database.** `0004_budget_alert_tripped_at.sql`
    was generated and committed, and nothing ever ran it. Creating an alert
    answered `column "tripped_at" of relation "budget_alerts" does not exist`.
-   This is not local: the branch was copied from production, so production has
+   This is not local: the branch was copied from production, so production had
    the same gap. See BW-37 — the database has no `drizzle.__drizzle_migrations`
    table at all, because it was built with `push` and has never been migrated.
+
+   **Read BW-37 before believing this line.** "Creating an alert fails" is what
+   the panel showed and it is the smaller half of the truth. The same missing
+   column took down `POST /v1/usage/submit` for every agent for about 22 hours,
+   because the submit transaction evaluates budget alerts and that evaluation
+   selects the column even when no alert rows exist. A browser session driving
+   one feature could not see that; it took a `sync` pointed at production.
 2. **Every delete returned 400.** `apiMutate` in the dashboard's `lib/api.ts`
    set `Content-Type: application/json` on every request including the
    bodyless ones, and Fastify rejects an empty body that claims to be JSON
@@ -1254,7 +1261,31 @@ anchors every path at the repo root.
 existing `~/.burnwatch/config.json` is a real hazard — it silently repointed
 this machine from production to localhost, and the production device token in
 that file is not recoverable. Documented as a warning for now; the agent
-should refuse or back up instead. Worth its own ticket.
+should refuse or back up instead. Now BW-38.
+
+**The walk was run twice, independently, and the second pass earned its keep.**
+The two runs agree exactly on every step that failed and on the errors each
+produced, which is the useful kind of corroboration — same `ERR_MODULE_NOT_FOUND`
+at step 4, same pair of 500s at step 6, same block at step 7.
+
+They diverge on three conclusions, and the first pass was wrong on all three.
+It reported that better-auth's tables could not be created because no CLI
+exists in the repo, that the bootstrapped admin could never have a password,
+and that steps 7 and 8 were therefore unreachable "full stop". All three are
+wrong, and checking cost one command each:
+`npx @better-auth/cli@latest migrate` is fetched from npm rather than being a
+local dependency and creates all four tables; `/signup` is exactly the path
+that sets the bootstrapped admin's password, and the sign-up route gates on an
+existing active `users` row for that reason; with those two done, registration
+completes and `sync --days 7` accepted 26 events. **A dependency being absent
+from `node_modules` is not evidence that a tool does not exist** — that was the
+mistake underneath all three.
+
+What the second pass missed and the first caught: at step 8 it ran `sync` with
+no local device token, the command silently fell back to the pre-existing
+global config pointed at production, and seven consecutive 500s exposed the
+BW-37 outage. That finding is worth more than the three wrong conclusions cost,
+and it is the reason BW-37 is now sized correctly.
 
 ### BW-24 · Reconcile REVIEW.md into `docs/audits/`
 **Size S** · no blockers
@@ -1754,10 +1785,33 @@ someone remembered.
 
 That held until a migration was written and nobody remembered. BW-18's
 `tripped_at` column exists in `schema.ts`, exists in
-`0004_budget_alert_tripped_at.sql`, and does not exist in the database.
-Creating a budget alert in production fails with
-`column "tripped_at" of relation "budget_alerts" does not exist`. A shipped,
-merged, reviewed feature has been dead since it landed.
+`0004_budget_alert_tripped_at.sql`, and did not exist in the database.
+
+**This was not a dead feature. It was a production outage, and it took usage
+ingestion down with it.** Found first as a failing budget-alert create, which
+is how it is described below and under BW-18 — that framing understated it by
+a wide margin. The real blast radius:
+
+`POST /v1/usage/submit` wraps its writes in one transaction (BW-15) and calls
+`evaluateBudgetAlerts` inside it. That function opens with
+`select ... from budget_alerts`, and the generated select names every column
+including `tripped_at` — whether or not a single alert row exists. So the
+select threw, the transaction rolled back, and **every usage submission from
+every agent failed with
+`column "tripped_at" does not exist`**. No org had configured a budget alert;
+it made no difference.
+
+**Outage window: 2026-11-05 16:30 UTC to 2026-11-06 15:00 UTC**, roughly
+22 hours. `usage_events` holds 151 rows and its newest `submitted_at` is
+2026-11-05T16:30:36Z — the last submission before the BW-18 deploy. Nothing
+was written after it and nothing was corrupted, because the transaction did
+its job and rolled every attempt back.
+
+Credit where due: this half was found by a second pass walking the Quickstart,
+whose `sync` step fired at production and collected seven consecutive 500s.
+The browser verification that found the column had no way to see it — the
+panel only ever failed one create, which reads like a broken feature, not a
+stopped pipeline.
 
 The failure mode is what makes this a P0 rather than a chore. Every test
 passes, every typecheck passes, and the API answers `/health` with `{"ok":true}`
@@ -1827,6 +1881,22 @@ The whole cost of the failure is that the overwrite is silent. Registering a
 second time is a reasonable thing to want; losing the previous identity
 without being told is not.
 
+**The same root cause has a second face, and it is the more dangerous one.**
+`sync` takes no `--api-url`. It reads whatever `~/.burnwatch/config.json`
+happens to hold, so it targets whichever BurnWatch that file was last pointed
+at — not the one you just set up. During the Quickstart walk, a `sync` run
+immediately after a local `register --api-url http://localhost:3001` fired
+seven submissions at **production** instead, because the local registration had
+not completed and the stale production config was still in place. Nothing was
+written, but only because production happened to be returning 500 at the time
+(BW-37). On a healthy production it would have pushed a walkthrough's data into
+the real database under a real account, from a machine the operator believed
+was pointed at localhost.
+
+One global config file with no per-invocation override is the shared cause:
+`register` destroys it without warning, and `sync` trusts it without saying
+which host it resolved to. Fixing one and not the other leaves the hazard.
+
 Smallest fix that removes the harm: if `config.json` exists and its `apiUrl`
 differs from the one being registered against, copy it to
 `config.json.bak-<timestamp>` before writing, and say so on stdout. A prompt
@@ -1838,3 +1908,6 @@ answer. Do not add a `--force` flag for a problem a backup solves.
 - [ ] The agent prints where it went
 - [ ] Registering on a machine with no existing config is unchanged, with a
       test covering both paths
+- [ ] `sync` prints the host it resolved before it submits anything, so a run
+      against the wrong BurnWatch is visible in the first line of output
+- [ ] `sync` accepts `--api-url` to override the stored config for one run
