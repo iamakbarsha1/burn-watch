@@ -46,6 +46,37 @@ function runCommand(cmd: string, args: string[], timeout: number): Promise<{ std
   })
 }
 
+function buildEventsForEntry(entry: CcusageDailyEntry, agent: AgentName, date: string): UsageEvent[] {
+  if (entry.modelBreakdowns?.length) {
+    return entry.modelBreakdowns.map((model) => {
+      const totalTokens = model.inputTokens + model.outputTokens +
+        model.cacheCreationTokens + model.cacheReadTokens
+      return {
+        agent, date,
+        modelName: model.modelName,
+        inputTokens: model.inputTokens,
+        outputTokens: model.outputTokens,
+        cacheCreateTokens: model.cacheCreationTokens,
+        cacheReadTokens: model.cacheReadTokens,
+        totalTokens,
+        costUsd: model.cost,
+        isFreeTier: FREE_TIER_AGENTS.has(agent) || model.cost === 0,
+      }
+    })
+  }
+  return [{
+    agent, date,
+    modelName: entry.modelsUsed?.[0] ?? agent,
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    cacheCreateTokens: entry.cacheCreationTokens,
+    cacheReadTokens: entry.cacheReadTokens,
+    totalTokens: entry.totalTokens,
+    costUsd: entry.totalCost,
+    isFreeTier: FREE_TIER_AGENTS.has(agent) || entry.totalCost === 0,
+  }]
+}
+
 function resolveAgent(entry: CcusageDailyEntry): AgentName | null {
   // If agent is not 'all', map directly
   if (entry.agent !== 'all') {
@@ -82,35 +113,7 @@ export class CcusageCollector implements UsageCollector {
       const agent = resolveAgent(entry)
       if (!agent) continue
 
-      if (entry.modelBreakdowns?.length) {
-        for (const model of entry.modelBreakdowns) {
-          const totalTokens = model.inputTokens + model.outputTokens +
-            model.cacheCreationTokens + model.cacheReadTokens
-          events.push({
-            agent, date,
-            modelName: model.modelName,
-            inputTokens: model.inputTokens,
-            outputTokens: model.outputTokens,
-            cacheCreateTokens: model.cacheCreationTokens,
-            cacheReadTokens: model.cacheReadTokens,
-            totalTokens,
-            costUsd: model.cost,
-            isFreeTier: FREE_TIER_AGENTS.has(agent) || model.cost === 0,
-          })
-        }
-      } else {
-        events.push({
-          agent, date,
-          modelName: entry.modelsUsed?.[0] ?? agent,
-          inputTokens: entry.inputTokens,
-          outputTokens: entry.outputTokens,
-          cacheCreateTokens: entry.cacheCreationTokens,
-          cacheReadTokens: entry.cacheReadTokens,
-          totalTokens: entry.totalTokens,
-          costUsd: entry.totalCost,
-          isFreeTier: FREE_TIER_AGENTS.has(agent) || entry.totalCost === 0,
-        })
-      }
+      events.push(...buildEventsForEntry(entry, agent, date))
     }
     return events
   }
@@ -167,35 +170,7 @@ export class CcusageCollector implements UsageCollector {
       if (!result.has(date)) result.set(date, [])
       const events = result.get(date)!
 
-      if (entry.modelBreakdowns?.length) {
-        for (const model of entry.modelBreakdowns) {
-          const totalTokens = model.inputTokens + model.outputTokens +
-            model.cacheCreationTokens + model.cacheReadTokens
-          events.push({
-            agent, date,
-            modelName: model.modelName,
-            inputTokens: model.inputTokens,
-            outputTokens: model.outputTokens,
-            cacheCreateTokens: model.cacheCreationTokens,
-            cacheReadTokens: model.cacheReadTokens,
-            totalTokens,
-            costUsd: model.cost,
-            isFreeTier: FREE_TIER_AGENTS.has(agent) || model.cost === 0,
-          })
-        }
-      } else {
-        events.push({
-          agent, date,
-          modelName: entry.modelsUsed?.[0] ?? agent,
-          inputTokens: entry.inputTokens,
-          outputTokens: entry.outputTokens,
-          cacheCreateTokens: entry.cacheCreationTokens,
-          cacheReadTokens: entry.cacheReadTokens,
-          totalTokens: entry.totalTokens,
-          costUsd: entry.totalCost,
-          isFreeTier: FREE_TIER_AGENTS.has(agent) || entry.totalCost === 0,
-        })
-      }
+      events.push(...buildEventsForEntry(entry, agent, date))
     }
     return result
   }
