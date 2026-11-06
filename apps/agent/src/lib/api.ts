@@ -16,6 +16,15 @@ export class ApiClient {
     return res.json()
   }
 
+  async revokeDevice(): Promise<{ deviceId: string; revoked: number }> {
+    const res = await fetch(`${this.apiUrl}/v1/auth/revoke-device`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.accessToken}` },
+    })
+    if (!res.ok) throw new Error(`Revoke failed: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
   async refreshToken(refreshToken: string): Promise<{ accessToken: string }> {
     const res = await fetch(`${this.apiUrl}/v1/auth/refresh`, {
       method: 'POST',

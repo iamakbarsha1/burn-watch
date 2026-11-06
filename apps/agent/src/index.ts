@@ -3,7 +3,8 @@ import { registerCommand } from './commands/register.js'
 import { syncCommand } from './commands/sync.js'
 import { statusCommand } from './commands/status.js'
 import { installCron, uninstallCron, SELF_CHECK_COMMAND, SELF_CHECK_SENTINEL } from './lib/cron.js'
-import { DEFAULT_API_URL } from './lib/config.js'
+import { DEFAULT_API_URL, hasConfig, loadConfig, deleteConfig } from './lib/config.js'
+import { ApiClient } from './lib/api.js'
 
 const program = new Command()
   .name('burnwatch')
@@ -47,7 +48,24 @@ program
   .description('Remove launchd cron and revoke device token')
   .action(async () => {
     uninstallCron()
-    console.log('[burnwatch] Uninstalled. Config remains at ~/.burnwatch/config.json')
+
+    // The local config is deleted whatever the API says. Leaving a usable
+    // token on a machine being uninstalled is the thing this command exists to
+    // prevent, and a server that cannot be reached is not a reason to keep it.
+    if (hasConfig()) {
+      try {
+        const config = loadConfig()
+        await new ApiClient(config.apiUrl, config.accessToken).revokeDevice()
+        console.log('[burnwatch] Device token revoked.')
+      } catch {
+        console.error(
+          '[burnwatch] Could not revoke the device token. Revoke this device from the dashboard.',
+        )
+      }
+      deleteConfig()
+    }
+
+    console.log('[burnwatch] Uninstalled. Config removed from ~/.burnwatch/config.json')
   })
 
 // How installCron tells a burnwatch build apart from the runtime hosting it.
