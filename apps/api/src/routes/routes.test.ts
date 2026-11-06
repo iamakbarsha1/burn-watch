@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 import fp from 'fastify-plugin'
+import { getTableName, is, Table } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
 import type { ProjectEntry } from '@burn-watch/shared'
@@ -136,6 +137,37 @@ const auth = (t: string) => ({ authorization: `Bearer ${t}` })
 // so every device-authenticated request reads that row before the route's own
 // queries. Queue the hit first or the route's results arrive one slot early.
 const liveDeviceToken = () => dbState.results.push([{ id: 'token-1' }])
+
+/**
+ * A drizzle predicate rendered as the SQL it stands for, roughly
+ * `device_id = <uuid> and revoked_at is null`.
+ *
+ * The older tests reach for `inspect` at full depth, which is fine for asking
+ * whether a value reached the query. It cannot answer which columns a
+ * predicate filters on: at that depth every chunk drags in its whole table
+ * definition, so `expires_at` prints whether or not anything compares against
+ * it. Walking the chunks is the difference between "the query mentions this
+ * column" and "the query filters on it".
+ */
+function renderSql(node: unknown): string {
+  if (node === null || typeof node !== 'object') return String(node)
+  const n = node as Record<string, unknown>
+  if (Array.isArray(n.queryChunks)) return n.queryChunks.map(renderSql).join('')
+  if (Array.isArray(n.value)) return n.value.join('')
+  if (typeof n.name === 'string') return n.name
+  if ('value' in n) return String(n.value)
+  return ''
+}
+
+const lastWhere = () => renderSql(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg)
+
+/** Reads of `device_tokens`, counted by table identity rather than by matching
+ * a string against an inspected object. Every device-authenticated request
+ * pays for these, so the count is the guard's price on the hot path. */
+const deviceTokenReads = () =>
+  dbState.calls.filter(
+    (c) => c.op === 'from' && is(c.arg, Table) && getTableName(c.arg) === 'device_tokens',
+  )
 
 beforeEach(async () => {
   dbState.results = []
@@ -1064,7 +1096,7 @@ describe('device token revocation', () => {
     })
 
   const guardPredicate = () =>
-    inspect(dbState.calls.filter((c) => c.op === 'where').at(0)?.arg, { depth: null })
+    renderSql(dbState.calls.filter((c) => c.op === 'where').at(0)?.arg)
 
   it('refuses a device whose token row has been revoked', async () => {
     dbState.results.push([]) // no unrevoked row for this device
@@ -1100,7 +1132,9 @@ describe('device token revocation', () => {
     expect(res.json()).toEqual({ accepted: 1, skipped: 0, date: DATE })
     // Without this the test passes on a build that never looks the device up,
     // because the queued row is simply consumed by the event insert instead.
-    expect(inspect(dbState.calls, { depth: null })).toContain('device_tokens')
+    // One read, not two: this is the whole cost the guard adds to every
+    // usage submission, and it should stay one statement.
+    expect(deviceTokenReads()).toHaveLength(1)
   })
 
   it('still authorises a device whose row is past expires_at but not revoked', async () => {
@@ -1116,7 +1150,7 @@ describe('device token revocation', () => {
     const res = await submit()
 
     expect(res.statusCode).toBe(200)
-    expect(inspect(dbState.calls, { depth: null })).toContain('device_tokens')
+    expect(deviceTokenReads()).toHaveLength(1)
     expect(guardPredicate()).not.toContain('expires_at')
   })
 
@@ -1131,7 +1165,7 @@ describe('device token revocation', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(inspect(dbState.calls, { depth: null })).not.toContain('device_tokens')
+    expect(deviceTokenReads()).toHaveLength(0)
   })
 
   it('refuses to refresh a revoked device', async () => {
@@ -1160,7 +1194,7 @@ describe('POST /v1/auth/admin/devices/revoke', () => {
   const url = '/v1/auth/admin/devices/revoke'
   const body = { deviceId: DEVICE_A }
 
-  const revoke = (headers?: Record<string, string>, payload: unknown = body) =>
+  const revoke = (headers?: Record<string, string>, payload: Record<string, string> = body) =>
     app.inject({ method: 'POST', url, headers, payload })
 
   it('returns 401 without a token', async () => {
@@ -1190,7 +1224,7 @@ describe('POST /v1/auth/admin/devices/revoke', () => {
     // No limit, and scoped to rows that are still live, so one call ends every
     // token the laptop holds and a second call is a no-op rather than a lie
     // about how many it just ended.
-    const claim = inspect(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg, { depth: null })
+    const claim = lastWhere()
     expect(claim).toContain(DEVICE_A)
     expect(claim).toMatch(/revoked_at[\s\S]*is null/)
     expect(dbState.calls.some((c) => c.op === 'limit')).toBe(false)
@@ -1215,8 +1249,7 @@ describe('POST /v1/auth/admin/devices/revoke', () => {
     expect(dbState.calls.some((c) => c.op === 'update')).toBe(false)
     // The lookup is the whole control: the device has to hang off a user in
     // the caller's own org before anything is written.
-    const lookup = inspect(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg, { depth: null })
-    expect(lookup).toContain(ORG_B)
+    expect(lastWhere()).toContain(ORG_B)
   })
 })
 
@@ -1247,8 +1280,7 @@ describe('POST /v1/auth/revoke-device', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ deviceId: DEVICE_A, revoked: 1 })
-    const claim = inspect(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg, { depth: null })
-    expect(claim).toContain(DEVICE_A)
+    expect(lastWhere()).toContain(DEVICE_A)
   })
 })
 
@@ -1289,6 +1321,24 @@ describe('GET /v1/auth/admin/devices', () => {
     ])
     const wheres = dbState.calls.filter((c) => c.op === 'where')
     expect(wheres.some((c) => inspect(c.arg, { depth: 10 }).includes(ORG_B))).toBe(true)
+  })
+
+  it('takes the org from the token and ignores one supplied in the query', async () => {
+    // A read that leaks the fleet is a smaller hole than a write, not a
+    // non-hole: this route hands back every hostname and owner email in an
+    // org, so the filter has to come from the JWT and nowhere else.
+    dbState.results.push([])
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `${url}?orgId=${ORG_B}`,
+      headers: auth(token({ role: 'admin', orgId: ORG_A })),
+    })
+
+    expect(res.statusCode).toBe(200)
+    const queried = inspect(dbState.calls, { depth: null })
+    expect(queried).toContain(ORG_A)
+    expect(queried).not.toContain(ORG_B)
   })
 
   it('marks a device with no live token as revoked', async () => {

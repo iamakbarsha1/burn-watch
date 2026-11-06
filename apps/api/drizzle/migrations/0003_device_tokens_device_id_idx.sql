@@ -1,0 +1,1 @@
+CREATE INDEX "device_tokens_device_id_idx" ON "device_tokens" USING btree ("device_id");
