@@ -1167,15 +1167,32 @@ it wants Redis rather than postgres.
 **Size S** · no blockers
 
 `dateRegex` and the near-identical `from`/`to`/`date` Zod object are declared
-five times, once per dashboard route. The Redis get, miss, compute, set, expire
-sequence is written out five times too.
+five times, once per dashboard route. ~~The Redis get, miss, compute, set,
+expire sequence is written out five times too.~~
 
-One shared query schema and one `withCache` helper. The audit also suggested
-`fetchOrgEnrichment`; fold it in if BW-25 has not already absorbed it.
+**Half this ticket was void on arrival, corrected 2026-11-06.** The cache it
+describes was deleted in `57d9d0b`, merged under BW-08, one commit before this
+ticket was filed. That commit's own reasoning was that Postgres is fast enough
+at this scale and removing the cache removes a whole dependency. There is no
+Redis import, no get/miss/compute/set/expire sequence and no `ioredis`
+dependency left anywhere. Nothing to extract.
+
+Building a `withCache` helper now would revive an architecture layer the team
+deliberately removed, on no measurement. If Postgres read latency ever becomes
+the complaint, that is a new ticket with a number on it, not a silent revival
+inside a DRY cleanup.
+
+`fetchOrgEnrichment` is also already handled. BW-25 landed `orgEnrichment` in
+`routes/dashboard/enrichment.ts`, shared by Activity and Projects.
+
+What is left is real: the five duplicated query schemas.
 
 **Acceptance**
-- [ ] One query schema, imported by every dashboard route
-- [ ] One cache helper, with the per-route key still distinct
+- [ ] One query schema, imported by every dashboard route, with `trends.ts`'s
+      `days` and `leaderboard.ts`'s `limit` still composed on rather than
+      flattened away, and no validation loosened
+- [x] ~~One cache helper, with the per-route key still distinct~~ void, the
+      cache was deleted before the ticket was written
 - [ ] Route tests unchanged and passing
 
 ### BW-29 · De-duplicate the event builder in `ccusage.ts`
@@ -1197,9 +1214,11 @@ The collector tests from BW-11 cover both paths, so this is a safe extraction.
 **No API versioning beyond the `/v1` prefix.** ROADMAP.md lists this as
 explicitly out of scope. Recorded so the next reader does not re-raise it.
 
-**Dashboard fetches with `cache: 'no-store'`** (`lib/api.ts:23`). Real, but the
-API answers from a 300-second Redis cache, so the repeated load lands on Redis
-and not postgres. Revisit only if Redis shows it.
+**Dashboard fetches with `cache: 'no-store'`** (`lib/api.ts:23`). Real. The
+note here used to say the API answered from a 300-second Redis cache, so the
+repeated load landed on Redis rather than postgres. That stopped being true in
+`57d9d0b`, which dropped Redis entirely. Every dashboard read now goes to
+postgres on every request, by choice. Revisit only if postgres shows it.
 
 ### BW-30 · `verify-device` has no approval gate
 **Size M** · P0 · found 2026-11-05 during the BW-08 smoke test
