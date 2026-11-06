@@ -1,17 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { sql } from 'drizzle-orm'
-import { z } from 'zod'
 import { claudeEnrichment } from '../../../drizzle/schema.js'
 import type { OrgProjectSummary, ProjectEntry } from '@burn-watch/shared'
 import type { DB } from '../../plugins/db.js'
 import { orgEnrichment, type EnrichmentRange } from './enrichment.js'
-
-const dateRegex = /^\d{4}-\d{2}-\d{2}$/
-const QuerySchema = z.object({
-  date: z.string().regex(dateRegex).optional(),
-  from: z.string().regex(dateRegex).optional(),
-  to: z.string().regex(dateRegex).optional(),
-}).refine(d => d.date || (d.from && d.to), { message: 'Provide date or from+to' })
+import { dateQuerySchema as QuerySchema } from './query-schema.js'
 
 type MergedEntry = Pick<ProjectEntry, 'path' | 'cost' | 'sessions'>
 
