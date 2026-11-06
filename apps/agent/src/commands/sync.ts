@@ -3,6 +3,12 @@ import { loadConfig, updateConfig } from '../lib/config.js'
 import { CcusageCollector } from '../collectors/ccusage.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
 
+// ccusage is the only source of a cost figure. The codeburn pass needs the
+// day's Claude spend to split it across projects.
+function claudeCost(events: import('@burn-watch/shared').UsageEvent[]): number {
+  return events.reduce((sum, e) => (e.agent === 'claude' ? sum + e.costUsd : sum), 0)
+}
+
 function yesterdayDate(): string {
   const d = new Date()
   d.setDate(d.getDate() - 1)
@@ -58,7 +64,11 @@ export async function syncCommand(options: { date?: string; last7?: boolean; day
     }
     if (cbAvailable) {
       console.log('[burnwatch] Scanning JSONL files (single pass)...')
-      enrichmentMap = await codeburn.collectRange(dates)
+      const costByDate = new Map<string, number>()
+      for (const [date, events] of eventsMap ?? []) {
+        costByDate.set(date, claudeCost(events))
+      }
+      enrichmentMap = await codeburn.collectRange(dates, costByDate)
       console.log(`[burnwatch] Found enrichment for ${enrichmentMap.size} date(s)`)
     }
   }
@@ -71,7 +81,7 @@ export async function syncCommand(options: { date?: string; last7?: boolean; day
       : ccAvailable ? await ccusage.collect(date) : []
     const enrichment = enrichmentMap
       ? (enrichmentMap.get(date) ?? null)
-      : cbAvailable ? await codeburn.collect(date) : null
+      : cbAvailable ? await codeburn.collect(date, claudeCost(events)) : null
 
     if (events.length === 0 && !enrichment) {
       console.log(`  Skipped — no data`)
