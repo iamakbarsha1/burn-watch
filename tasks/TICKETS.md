@@ -1063,13 +1063,34 @@ Known drift:
 - ~~Documents an `install-schedule` CLI command that does not exist~~ fixed:
   the agent table now lists `register`, `sync`, `status`, `install-cron`,
   `uninstall` and the `src/lib/cron.ts` row
-- Quickstart still describes the Render and local-only setup
-- Needs the Vercel Services topology from BW-04
+- ~~Quickstart still describes the Render and local-only setup~~ fixed
+- ~~Needs the Vercel Services topology from BW-04~~ BW-04 was superseded. The
+  real topology is two Vercel projects from one repo, now documented
+
+**Corrected 2026-11-06.** The doc carried the same stale Redis claim as BW-28
+and BW-29 in four more places: a Redis box in the system diagram, "Results
+cached in Redis (5-minute TTL)" in the data flow, a `src/plugins/redis.ts`
+row for a file that no longer exists, and `REDIS_URL` in the Quickstart. All
+four removed. A fifth lived in a code comment in `api/index.mjs` and was
+removed with them.
+
+Also corrected: the component table now lists `build-server.ts` separately
+from `server.ts` (BW-03), `rate-limit-store.ts`, the shared `query-schema.ts`
+and `enrichment.ts`, and the migrations directory. Quickstart now runs
+`db:migrate` rather than `db:push`, which BW-17 stopped using against
+deployed databases, and the final `sync` step carries `--days` with a note
+that a bare `sync` writes yesterday.
 
 **Acceptance**
-- [x] Every documented command exists
-- [ ] Deployment section matches the Vercel setup
-- [ ] Quickstart followed start to finish on a clean checkout
+- [x] Every documented command exists — verified: root `db:migrate`,
+      `/v1/auth/admin/bootstrap`, `register --api-url`, `sync --days`
+- [x] Deployment section matches the Vercel setup — both projects, both
+      config files, the CLI relink step, and the real env var lists
+- [ ] Quickstart followed start to finish on a clean checkout — NOT done.
+      Every command was verified to exist and be spelled correctly, but
+      nobody has run `git clone` into an empty directory and walked all eight
+      steps against a fresh database. That is the only way to catch a missing
+      step rather than a wrong one.
 
 ### BW-24 · Reconcile REVIEW.md into `docs/audits/`
 **Size S** · no blockers

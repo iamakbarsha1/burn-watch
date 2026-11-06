@@ -11,8 +11,8 @@
 import Fastify from 'fastify'
 import { configureServer } from '../apps/api/dist/src/build-server.js'
 
-// Module scope, so a warm instance reuses the instance, its Neon pool and its
-// Redis connection instead of rebuilding them per request (BW-06).
+// Module scope, so a warm instance reuses the instance and its Neon pool
+// instead of rebuilding them per request (BW-06).
 const app = configureServer(Fastify({ logger: true }))
 const ready = app.ready()
 
