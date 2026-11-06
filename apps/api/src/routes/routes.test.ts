@@ -132,6 +132,11 @@ const token = (over: Partial<JwtPayload> = {}) =>
 
 const auth = (t: string) => ({ authorization: `Bearer ${t}` })
 
+// A device-role token is only good while its device_tokens row is unrevoked,
+// so every device-authenticated request reads that row before the route's own
+// queries. Queue the hit first or the route's results arrive one slot early.
+const liveDeviceToken = () => dbState.results.push([{ id: 'token-1' }])
+
 beforeEach(async () => {
   dbState.results = []
   dbState.calls = []
@@ -409,6 +414,7 @@ describe('POST /v1/usage', () => {
   })
 
   it('returns 403 when the payload deviceId does not match the token', async () => {
+    liveDeviceToken()
     const res = await app.inject({
       method: 'POST',
       url: '/v1/usage',
@@ -420,6 +426,7 @@ describe('POST /v1/usage', () => {
   })
 
   it('returns 400 on a payload that fails schema validation', async () => {
+    liveDeviceToken()
     const res = await app.inject({
       method: 'POST',
       url: '/v1/usage',
@@ -430,6 +437,7 @@ describe('POST /v1/usage', () => {
   })
 
   it('accepts a submission and reports what was written', async () => {
+    liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }]) // insert ... returning
 
     const res = await app.inject({
@@ -446,6 +454,7 @@ describe('POST /v1/usage', () => {
   it('is idempotent: a replayed payload reports zero accepted, not an error', async () => {
     // The unique index on (userId, agent, date, modelName, deviceId) makes the
     // second insert a no-op, so `returning()` comes back empty.
+    liveDeviceToken()
     dbState.results.push([]) // insert ... returning, nothing inserted
 
     const res = await app.inject({
@@ -460,21 +469,22 @@ describe('POST /v1/usage', () => {
   })
 
   it('relies on onConflictDoNothing rather than a pre-read for deduplication', async () => {
+    liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }])
     await app.inject({ method: 'POST', url: '/v1/usage', headers: auth(deviceToken()), payload })
     expect(dbState.calls.some((c) => c.op === 'onConflictDoNothing')).toBe(true)
   })
 
   it('runs every write inside one transaction', async () => {
+    liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }])
     await app.inject({ method: 'POST', url: '/v1/usage', headers: auth(deviceToken()), payload })
 
     const ops = dbState.calls.map((c) => c.op)
-    expect(ops[0]).toBe('transaction')
     // The event insert, the device touch and the snapshot rebuild all land
     // after the transaction opens, so none of them can commit on their own.
-    expect(ops).toContain('insert')
-    expect(ops).toContain('update')
+    expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('insert'))
+    expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('update'))
     expect(ops).not.toContain('rollback')
   })
 
@@ -485,6 +495,7 @@ describe('POST /v1/usage', () => {
     // The transaction's query sequence, in order: the event insert, the device
     // touch, then the rebuild's three selects. The user row has to be present
     // or the rebuild returns early and never reaches the write that fails.
+    liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }]) // insert ... returning
     dbState.results.push([]) // update devices
     dbState.results.push([]) // rebuild: usage aggregated by agent
@@ -1005,6 +1016,7 @@ describe('POST /v1/auth/refresh', () => {
   })
 
   it('issues a new access token for a valid refresh token', async () => {
+    liveDeviceToken()
     const refresh = app.jwt.refresh.sign({
       userId: USER_A,
       orgId: ORG_A,
@@ -1025,6 +1037,276 @@ describe('POST /v1/auth/refresh', () => {
       orgId: ORG_A,
       role: 'device',
     })
+  })
+})
+
+describe('device token revocation', () => {
+  const event = {
+    agent: 'claude',
+    date: DATE,
+    modelName: 'claude-opus-5',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheCreateTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 15,
+    costUsd: 0.5,
+    isFreeTier: false,
+  }
+  const payload = { deviceId: DEVICE_A, date: DATE, events: [event], enrichment: null }
+
+  const submit = () =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/usage',
+      headers: auth(token({ role: 'device', deviceId: DEVICE_A })),
+      payload,
+    })
+
+  const guardPredicate = () =>
+    inspect(dbState.calls.filter((c) => c.op === 'where').at(0)?.arg, { depth: null })
+
+  it('refuses a device whose token row has been revoked', async () => {
+    dbState.results.push([]) // no unrevoked row for this device
+
+    const res = await submit()
+
+    expect(res.statusCode).toBe(401)
+    // The fake database ignores predicates, so an empty result only shows the
+    // guard handles a miss. What makes a revoked laptop fail is the predicate
+    // itself, so assert the lookup asks for a row that is still unrevoked.
+    expect(guardPredicate()).toMatch(/revoked_at[\s\S]*is null/)
+    expect(dbState.calls.some((c) => c.op === 'transaction')).toBe(false)
+  })
+
+  it('refuses a device that has no token row at all', async () => {
+    dbState.results.push([])
+
+    const res = await submit()
+
+    expect(res.statusCode).toBe(401)
+    // Scoped to the device the token names, so another laptop's live row
+    // cannot authorise this one.
+    expect(guardPredicate()).toContain(DEVICE_A)
+  })
+
+  it('lets a device with a live token row through', async () => {
+    liveDeviceToken()
+    dbState.results.push([{ id: 'event-1' }])
+
+    const res = await submit()
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ accepted: 1, skipped: 0, date: DATE })
+    // Without this the test passes on a build that never looks the device up,
+    // because the queued row is simply consumed by the event insert instead.
+    expect(inspect(dbState.calls, { depth: null })).toContain('device_tokens')
+  })
+
+  it('still authorises a device whose row is past expires_at but not revoked', async () => {
+    // Looks wrong until you follow the refresh path. `expires_at` is written
+    // once at registration as now + 30 days and never updated, while
+    // /v1/auth/refresh mints a fresh 30-day access token without inserting a
+    // new row. An `expires_at > now()` term here would 401 every legitimately
+    // refreshing device on day 31. Expiry is the JWT `exp` claim's job, and
+    // accessJwtVerify has already checked it by the time this runs.
+    liveDeviceToken()
+    dbState.results.push([{ id: 'event-1' }])
+
+    const res = await submit()
+
+    expect(res.statusCode).toBe(200)
+    expect(inspect(dbState.calls, { depth: null })).toContain('device_tokens')
+    expect(guardPredicate()).not.toContain('expires_at')
+  })
+
+  it('never reads device_tokens for a dashboard role, which has no row', async () => {
+    // Nothing is queued, so an unconditional lookup would read an empty result
+    // and 401 every dashboard request. Dashboard users come through the same
+    // accessJwtVerify and have no device_tokens row at all.
+    const res = await app.inject({
+      method: 'GET',
+      url: range('/v1/dashboard/overview'),
+      headers: auth(token({ role: 'developer' })),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(inspect(dbState.calls, { depth: null })).not.toContain('device_tokens')
+  })
+
+  it('refuses to refresh a revoked device', async () => {
+    // Without this the ticket undoes itself: a revoked laptop trades its
+    // refresh token for another 30 days of access.
+    dbState.results.push([]) // no unrevoked row
+    const refresh = app.jwt.refresh.sign({
+      userId: USER_A,
+      orgId: ORG_A,
+      deviceId: DEVICE_A,
+      role: 'device',
+    } as JwtPayload)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      headers: auth(refresh),
+    })
+
+    expect(res.statusCode).toBe(401)
+    expect(res.json()).not.toHaveProperty('accessToken')
+  })
+})
+
+describe('POST /v1/auth/admin/devices/revoke', () => {
+  const url = '/v1/auth/admin/devices/revoke'
+  const body = { deviceId: DEVICE_A }
+
+  const revoke = (headers?: Record<string, string>, payload: unknown = body) =>
+    app.inject({ method: 'POST', url, headers, payload })
+
+  it('returns 401 without a token', async () => {
+    const res = await revoke(undefined)
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await revoke(auth(token({ role, deviceId: DEVICE_A })))
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('rejects a deviceId that is not a uuid', async () => {
+    const res = await revoke(auth(token({ role: 'admin' })), { deviceId: 'not-a-uuid' })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('revokes every live row for the device', async () => {
+    dbState.results.push([{ id: DEVICE_A }]) // device sits under a user in the caller's org
+    dbState.results.push([{ id: 'token-1' }, { id: 'token-2' }]) // update ... returning
+
+    const res = await revoke(auth(token({ role: 'admin' })))
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ deviceId: DEVICE_A, revoked: 2 })
+    expect(dbState.calls.find((c) => c.op === 'set')?.arg).toHaveProperty('revokedAt')
+    // No limit, and scoped to rows that are still live, so one call ends every
+    // token the laptop holds and a second call is a no-op rather than a lie
+    // about how many it just ended.
+    const claim = inspect(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg, { depth: null })
+    expect(claim).toContain(DEVICE_A)
+    expect(claim).toMatch(/revoked_at[\s\S]*is null/)
+    expect(dbState.calls.some((c) => c.op === 'limit')).toBe(false)
+  })
+
+  it('reports zero rather than failing when the device holds no live token', async () => {
+    dbState.results.push([{ id: DEVICE_A }])
+    dbState.results.push([]) // nothing left to revoke
+
+    const res = await revoke(auth(token({ role: 'admin' })))
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ deviceId: DEVICE_A, revoked: 0 })
+  })
+
+  it('refuses a device in another organization and writes nothing', async () => {
+    dbState.results.push([]) // the org-scoped lookup matches nothing
+
+    const res = await revoke(auth(token({ role: 'admin', orgId: ORG_B })))
+
+    expect(res.statusCode).toBe(404)
+    expect(dbState.calls.some((c) => c.op === 'update')).toBe(false)
+    // The lookup is the whole control: the device has to hang off a user in
+    // the caller's own org before anything is written.
+    const lookup = inspect(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg, { depth: null })
+    expect(lookup).toContain(ORG_B)
+  })
+})
+
+describe('POST /v1/auth/revoke-device', () => {
+  const url = '/v1/auth/revoke-device'
+
+  it('returns 401 without a token', async () => {
+    const res = await app.inject({ method: 'POST', url })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each(['admin', 'manager', 'developer'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await app.inject({ method: 'POST', url, headers: auth(token({ role })) })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('revokes the caller own device and nothing else', async () => {
+    // `burnwatch uninstall` is the only caller. The admin endpoint cannot
+    // serve it: a device token is not an admin token.
+    liveDeviceToken() // requireAuth's own guard
+    dbState.results.push([{ id: 'token-1' }]) // update ... returning
+
+    const res = await app.inject({
+      method: 'POST',
+      url,
+      headers: auth(token({ role: 'device', deviceId: DEVICE_A })),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ deviceId: DEVICE_A, revoked: 1 })
+    const claim = inspect(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg, { depth: null })
+    expect(claim).toContain(DEVICE_A)
+  })
+})
+
+describe('GET /v1/auth/admin/devices', () => {
+  const url = '/v1/auth/admin/devices'
+
+  it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('lists only devices in the caller own organization', async () => {
+    dbState.results.push([
+      {
+        id: DEVICE_A,
+        hostname: 'laptop-1',
+        platform: 'darwin',
+        lastSeenAt: '2026-11-05T12:00:00.000Z',
+        userName: 'Dev One',
+        userEmail: 'dev1@example.com',
+        liveTokens: 1,
+      },
+    ])
+
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin', orgId: ORG_B })) })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([
+      {
+        id: DEVICE_A,
+        hostname: 'laptop-1',
+        platform: 'darwin',
+        lastSeenAt: '2026-11-05T12:00:00.000Z',
+        userName: 'Dev One',
+        userEmail: 'dev1@example.com',
+        revoked: false,
+      },
+    ])
+    const wheres = dbState.calls.filter((c) => c.op === 'where')
+    expect(wheres.some((c) => inspect(c.arg, { depth: 10 }).includes(ORG_B))).toBe(true)
+  })
+
+  it('marks a device with no live token as revoked', async () => {
+    dbState.results.push([
+      {
+        id: DEVICE_A,
+        hostname: 'laptop-1',
+        platform: 'darwin',
+        lastSeenAt: null,
+        userName: 'Dev One',
+        userEmail: 'dev1@example.com',
+        liveTokens: 0,
+      },
+    ])
+
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+
+    expect(res.json()[0]).toMatchObject({ revoked: true, lastSeenAt: null })
   })
 })
 
