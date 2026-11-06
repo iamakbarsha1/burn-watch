@@ -45,12 +45,20 @@ export async function overviewRoutes(fastify: FastifyInstance) {
         }
       }
 
-      const agents: AgentName[] = ['claude', 'qwen', 'gemini', 'codex', 'copilot']
-      const byAgent: AgentSummary[] = agents.map((agent) => ({
-        agent,
-        tokens: today?.[`${agent}Tokens` as keyof typeof today] as number ?? 0,
-        costUsd: today?.[`${agent}Cost` as keyof typeof today] as number ?? 0,
-        isFreeTier: (today?.[`${agent}Cost` as keyof typeof today] as number ?? 0) === 0,
+      // Spelled out one agent at a time rather than building the column names
+      // from the agent name. The string-built version needed two stacked
+      // assertions, which turned the type checker off across the whole fan-out:
+      // renaming a snapshot column compiled fine and returned undefined.
+      const agentTotals: { agent: AgentName; tokens: number; costUsd: number }[] = [
+        { agent: 'claude', tokens: today?.claudeTokens ?? 0, costUsd: today?.claudeCost ?? 0 },
+        { agent: 'qwen', tokens: today?.qwenTokens ?? 0, costUsd: today?.qwenCost ?? 0 },
+        { agent: 'gemini', tokens: today?.geminiTokens ?? 0, costUsd: today?.geminiCost ?? 0 },
+        { agent: 'codex', tokens: today?.codexTokens ?? 0, costUsd: today?.codexCost ?? 0 },
+        { agent: 'copilot', tokens: today?.copilotTokens ?? 0, costUsd: today?.copilotCost ?? 0 },
+      ]
+      const byAgent: AgentSummary[] = agentTotals.map((row) => ({
+        ...row,
+        isFreeTier: row.costUsd === 0,
       }))
 
       const result: OverviewResponse = {
