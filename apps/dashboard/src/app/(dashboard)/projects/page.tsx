@@ -1,13 +1,14 @@
 import { redirect } from 'next/navigation'
 import { fetchProjects } from '@/lib/api'
 import { formatCost, formatRange, resolveRange, formatCount } from '@/lib/format'
+import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { PageHeader, TableFrame, Th, Td, Tr, EmptyRow } from '@/components/ui'
 
 export default async function ProjectsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>
+  searchParams: Promise<RangeParams>
 }) {
   const { from, to } = resolveRange(await searchParams)
 
