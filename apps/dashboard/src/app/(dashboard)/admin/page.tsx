@@ -132,7 +132,7 @@ export default async function AdminPage() {
 
         <Section
           title="Invite developer"
-          description="Invite by email. They will run burnwatch register on their machine."
+          description="Creates a link that expires in 7 days. They set their own name and password, then run burnwatch register."
         >
           <InviteForm />
         </Section>

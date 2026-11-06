@@ -72,8 +72,20 @@ export async function fetchPendingInvites(): Promise<PendingInvite[]> {
   return apiFetch('/v1/auth/admin/invites')
 }
 
-export async function inviteUser(email: string, name: string): Promise<{ userId: string }> {
-  return apiPost('/v1/auth/admin/users', { email, name })
+// The plaintext token comes back exactly once and is never stored, so whatever
+// shows it to the admin is the only chance to hand it to the invitee.
+export async function createInvite(
+  email: string,
+  role: string,
+): Promise<{ inviteId: string; email: string; role: string; token: string; expiresAt: string }> {
+  return apiPost('/v1/auth/admin/invites', { email, role })
+}
+
+export async function acceptInvite(
+  token: string,
+  name: string,
+): Promise<{ userId: string; orgId: string; email: string; role: string }> {
+  return apiPost('/v1/auth/invites/accept', { token, name })
 }
 
 export async function approveDevice(code: string): Promise<{ hostname: string; platform: string }> {
