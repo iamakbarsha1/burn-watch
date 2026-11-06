@@ -57,16 +57,22 @@ export const devices = pgTable('devices', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 })
 
-export const deviceTokens = pgTable('device_tokens', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id')
-    .notNull()
-    .references(() => devices.id, { onDelete: 'cascade' }),
-  tokenHash: text('token_hash').notNull(),
-  expiresAt: timestamp('expires_at').notNull(),
-  revokedAt: timestamp('revoked_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-})
+export const deviceTokens = pgTable(
+  'device_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    revokedAt: timestamp('revoked_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  // Every authenticated device request looks this table up by device_id, so
+  // the lookup is on the hot path for all usage submission.
+  (t) => [index('device_tokens_device_id_idx').on(t.deviceId)],
+)
 
 // Pending device registration (before user verifies in dashboard)
 export const pendingDevices = pgTable('pending_devices', {

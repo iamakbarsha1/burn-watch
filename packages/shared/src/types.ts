@@ -183,6 +183,19 @@ export interface AdminUserRow {
   activeDays: number
 }
 
+// One row of the admin device view. `revoked` is derived, not stored: it is
+// true when the device holds no unrevoked `device_tokens` row, which is the
+// same condition the auth guard checks.
+export interface AdminDeviceRow {
+  id: string
+  hostname: string
+  platform: string
+  lastSeenAt: string | null
+  userName: string
+  userEmail: string
+  revoked: boolean
+}
+
 export interface PendingInvite {
   id: string
   email: string

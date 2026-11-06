@@ -2,6 +2,9 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 // Aliased so the namespace augmentation below can name the type. A bare `JWT`
 // there is the interface being merged, which declaration emit rejects (TS4033).
 import type { JWT as JwtInstance } from '@fastify/jwt'
+import { and, eq, isNull } from 'drizzle-orm'
+import { deviceTokens } from '../../drizzle/schema.js'
+import type { DB } from './db.js'
 
 export interface JwtPayload {
   deviceId?: string
@@ -36,10 +39,43 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * Whether the device still holds an unrevoked `device_tokens` row.
+ *
+ * `revoked_at is null` is the whole predicate, and the missing half matters.
+ * There is deliberately no `expires_at > now()` term: that column is written
+ * once at registration as now + 30 days and never updated, while
+ * POST /v1/auth/refresh mints a fresh 30-day access token without inserting a
+ * new row. An expiry term here would 401 every legitimately refreshing device
+ * on day 31. Expiry is the JWT `exp` claim's job, and accessJwtVerify has
+ * already checked it by the time this runs.
+ */
+export async function deviceTokenIsLive(db: DB, deviceId: string | undefined): Promise<boolean> {
+  if (!deviceId) return false
+
+  const rows = await db
+    .select({ id: deviceTokens.id })
+    .from(deviceTokens)
+    .where(and(eq(deviceTokens.deviceId, deviceId), isNull(deviceTokens.revokedAt)))
+    .limit(1)
+
+  return rows.length > 0
+}
+
 export function requireAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      await request.accessJwtVerify<JwtPayload>()
+      const payload = await request.accessJwtVerify<JwtPayload>()
+      // Only a device token has a `device_tokens` row. An unconditional lookup
+      // would 401 every dashboard request. Inside the try so a database
+      // failure answers 401 rather than reaching the global error handler,
+      // which echoes error.message and would leak driver connection text.
+      // That makes an outage fail closed, and the cost is bounded: the agent
+      // throws on any non-ok response and never re-registers, so a dead
+      // database costs the fleet one skipped sync that the next run resends.
+      if (payload.role === 'device' && !(await deviceTokenIsLive(fastify.db, payload.deviceId))) {
+        return reply.status(401).send({ error: 'Unauthorized' })
+      }
     } catch {
       return reply.status(401).send({ error: 'Unauthorized' })
     }

@@ -1,12 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { eq, and, isNull, isNotNull, gt, sql } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull, gt, desc, count, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { users, devices, deviceTokens, organizations, pendingDevices, dailySnapshots } from '../../../drizzle/schema.js'
 import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema } from '@burn-watch/shared'
-import type { AdminUserRow } from '@burn-watch/shared'
-import { requireAdmin, requireDashboardAuth, type JwtPayload } from '../../plugins/jwt.js'
+import type { AdminDeviceRow, AdminUserRow } from '@burn-watch/shared'
+import {
+  requireAdmin,
+  requireAuth,
+  requireDashboardAuth,
+  deviceTokenIsLive,
+  type JwtPayload,
+} from '../../plugins/jwt.js'
 import type { DB } from '../../plugins/db.js'
 import { callerAddress } from '../../caller-address.js'
 
@@ -22,6 +28,25 @@ const CreateUserSchema = z.object({
   name: z.string().min(1),
   orgId: z.string().uuid().optional(),
 })
+
+const RevokeDeviceSchema = z.object({
+  deviceId: z.string().uuid(),
+})
+
+/**
+ * Ends every token the device still holds. Scoped to rows that are not already
+ * revoked, so a second call is a no-op rather than stamping a fresh timestamp
+ * over an older revocation, and `revoked` counts what this call actually ended.
+ */
+async function revokeTokensFor(db: DB, deviceId: string) {
+  const rows = await db
+    .update(deviceTokens)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(deviceTokens.deviceId, deviceId), isNull(deviceTokens.revokedAt)))
+    .returning({ id: deviceTokens.id })
+
+  return { deviceId, revoked: rows.length }
+}
 
 /**
  * A calendar day as `YYYY-MM-DD`. The query casts to text so this normally gets
@@ -292,6 +317,15 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/refresh', async (request, reply) => {
     try {
       const payload = await request.refreshJwtVerify<JwtPayload>()
+
+      // The same guard requireAuth applies, for the same reason and on the
+      // same condition: only a device token has a `device_tokens` row.
+      // Without it the revocation undoes itself, because a revoked laptop
+      // trades its refresh token for another 30 days of access.
+      if (payload.role === 'device' && !(await deviceTokenIsLive(fastify.db, payload.deviceId))) {
+        return reply.status(401).send({ error: 'Invalid refresh token' })
+      }
+
       const accessToken = fastify.jwt.access.sign(
         {
           deviceId: payload.deviceId,
@@ -410,5 +444,96 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
       throw err
     }
+  })
+
+  // GET /v1/auth/admin/devices — every device in the caller's org, with
+  // whether it still holds a live token, so the dashboard has something to
+  // drive the revoke button with.
+  fastify.get('/admin/devices', { preHandler: requireAdmin(fastify) }, async (request) => {
+    const jwt = request.user as JwtPayload
+
+    const rows = await fastify.db
+      .select({
+        id: devices.id,
+        hostname: devices.hostname,
+        platform: devices.platform,
+        // Formatted by Postgres for the same reason as adminUserFields above:
+        // the driver parses a timestamp into a local-time Date, and
+        // serialising that shifts it by the server's offset. The column is
+        // UTC, hence the Z.
+        lastSeenAt: sql<string | null>`to_char(${devices.lastSeenAt}, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
+        userName: users.name,
+        userEmail: users.email,
+        liveTokens: count(deviceTokens.id),
+      })
+      .from(devices)
+      .innerJoin(users, eq(users.id, devices.userId))
+      .leftJoin(
+        deviceTokens,
+        and(eq(deviceTokens.deviceId, devices.id), isNull(deviceTokens.revokedAt)),
+      )
+      .where(eq(users.orgId, jwt.orgId))
+      .groupBy(
+        devices.id,
+        devices.hostname,
+        devices.platform,
+        devices.lastSeenAt,
+        users.name,
+        users.email,
+      )
+      .orderBy(desc(devices.lastSeenAt))
+      .limit(500)
+
+    const result: AdminDeviceRow[] = rows.map((r) => ({
+      id: r.id,
+      hostname: r.hostname,
+      platform: r.platform,
+      lastSeenAt: r.lastSeenAt ? String(r.lastSeenAt) : null,
+      userName: r.userName,
+      userEmail: r.userEmail,
+      revoked: Number(r.liveTokens) === 0,
+    }))
+    return result
+  })
+
+  // POST /v1/auth/admin/devices/revoke — an admin ends a device's access, the
+  // offboarding path. Until this existed the only way to stop a laptop was
+  // rotating JWT_SECRET, which signs out everyone.
+  fastify.post('/admin/devices/revoke', {
+    preHandler: requireAdmin(fastify),
+  }, async (request, reply) => {
+    const body = RevokeDeviceSchema.parse(request.body)
+    const jwt = request.user as JwtPayload
+
+    // No limit: devices.id is the primary key and the join to users is
+    // many-to-one, so this matches at most one row.
+    const [device] = await fastify.db
+      .select({ id: devices.id })
+      .from(devices)
+      .innerJoin(users, eq(users.id, devices.userId))
+      .where(and(eq(devices.id, body.deviceId), eq(users.orgId, jwt.orgId)))
+
+    // One answer for "no such device" and "a device in another org", so this
+    // cannot be used to learn which device ids are real.
+    if (!device) {
+      return reply.status(404).send({ error: 'Device not found' })
+    }
+
+    return revokeTokensFor(fastify.db, body.deviceId)
+  })
+
+  // POST /v1/auth/revoke-device — a device ends its own access. `burnwatch
+  // uninstall` is the caller, and it cannot use the admin route above because
+  // a device JWT does not pass requireAdmin.
+  fastify.post('/revoke-device', {
+    preHandler: requireAuth(fastify),
+  }, async (request, reply) => {
+    const jwt = request.user as JwtPayload
+
+    if (jwt.role !== 'device' || !jwt.deviceId) {
+      return reply.status(403).send({ error: 'Device role required' })
+    }
+
+    return revokeTokensFor(fastify.db, jwt.deviceId)
   })
 }
