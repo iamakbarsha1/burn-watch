@@ -56,7 +56,18 @@ vi.mock('../plugins/db.js', async () => {
   // that answers every key with a function makes Fastify read the whole thing
   // as a getter/setter descriptor. `fastify.db` then resolves to whatever that
   // fake getter returned instead of this proxy, and `failExecute` never fires.
-  const DB_METHODS = new Set(['select', 'insert', 'update', 'delete', 'execute', 'transaction'])
+  // `$with` and `with` are here because the activity and projects aggregates
+  // open with a CTE. The chain swallows them like any other builder call.
+  const DB_METHODS = new Set([
+    'select',
+    'insert',
+    'update',
+    'delete',
+    'execute',
+    'transaction',
+    '$with',
+    'with',
+  ])
 
   const db = new Proxy(
     {},
