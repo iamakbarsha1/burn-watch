@@ -198,10 +198,11 @@ export function AgentSparklines({ data }: Props) {
 
   if (panels.length === 0) return null
 
-  // Five agents, so the last breakpoint is five wide. At four columns the
-  // free-tier panel wrapped onto a row of its own.
+  // The row sizes itself to however many panels there are. Fixed breakpoints
+  // had to guess: four columns wrapped the free-tier panel onto a row of its
+  // own, five left an empty cell whenever no free agent ran in the range.
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+    <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))]">
       {panels.map(({ agent: a, dataKey, value, caption, free }) => (
         <div
           key={a.id}
