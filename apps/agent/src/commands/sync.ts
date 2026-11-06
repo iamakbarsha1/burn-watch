@@ -25,9 +25,26 @@ function datesForLastN(n: number): string[] {
   return dates
 }
 
-export async function syncCommand(options: { date?: string; last7?: boolean; days?: string }) {
+export async function syncCommand(options: {
+  date?: string
+  last7?: boolean
+  days?: string
+  apiUrl?: string
+}) {
   const config = loadConfig()
-  const api = new ApiClient(config.apiUrl, config.accessToken)
+  // `sync` used to take whatever host the stored config happened to hold and
+  // say nothing about it. Running it right after setting up a local install
+  // would submit to whichever BurnWatch this machine was last registered with
+  // — production, in the case that found this — with the only evidence being
+  // the URLs in a failure message, if it failed at all. The host is now the
+  // first thing printed, and `--api-url` overrides it for one run.
+  const apiUrl = options.apiUrl ?? config.apiUrl
+  const api = new ApiClient(apiUrl, config.accessToken)
+
+  console.log(`[burnwatch] Target: ${apiUrl}`)
+  if (options.apiUrl && options.apiUrl !== config.apiUrl) {
+    console.log(`  Overriding the registered host for this run (${config.apiUrl})`)
+  }
 
   let dates: string[]
   if (options.days) {

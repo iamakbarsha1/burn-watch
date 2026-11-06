@@ -28,6 +28,7 @@ program
   .option('--date <date>', 'Sync specific date (YYYY-MM-DD)')
   .option('--last-7', 'Backfill last 7 days')
   .option('--days <n>', 'Backfill last N days')
+  .option('--api-url <url>', 'Submit to this host instead of the registered one')
   .action(syncCommand)
 
 program
