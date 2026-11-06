@@ -1,7 +1,7 @@
 import { hostname } from 'os'
 import { createInterface } from 'readline'
 import { ApiClient } from '../lib/api.js'
-import { saveConfig, DEFAULT_API_URL } from '../lib/config.js'
+import { saveConfig, backupConfig, configuredApiUrl, DEFAULT_API_URL } from '../lib/config.js'
 import { installSchedule, isScheduleInstalled } from '../lib/cron.js'
 import { execSync } from 'child_process'
 
@@ -31,8 +31,16 @@ const POLL_TIMEOUT = 15 * 60 * 1000 // 15 minutes (matches server expiry)
 
 export async function registerCommand(options: { apiUrl?: string }) {
   const apiUrl = options.apiUrl ?? DEFAULT_API_URL
+  // Read before anything is written, so the message after verification can say
+  // what this machine used to report to rather than what it reports to now.
+  const previousApiUrl = configuredApiUrl()
 
   console.log('[burnwatch] Registering device with', apiUrl)
+
+  if (previousApiUrl && previousApiUrl !== apiUrl) {
+    console.log(`[burnwatch] This machine is already registered with ${previousApiUrl}.`)
+    console.log('  Completing this registration repoints it. The old config will be backed up.')
+  }
 
   const email = await prompt('Enter your work email: ')
   if (!email || !email.includes('@')) {
@@ -75,6 +83,20 @@ export async function registerCommand(options: { apiUrl?: string }) {
 
     try {
       const response = await ApiClient.verifyDevice(apiUrl, pendingId, code)
+
+      // Copy any existing config aside before replacing it. The tokens in it
+      // are the only copies anywhere, so overwriting silently is how a laptop
+      // stops reporting to the BurnWatch it was already registered with and
+      // nobody finds out until the numbers go flat.
+      const backup = backupConfig()
+      if (backup) {
+        console.log()
+        console.log('[burnwatch] An existing registration was replaced.')
+        if (previousApiUrl && previousApiUrl !== apiUrl) {
+          console.log(`  This machine previously reported to ${previousApiUrl}`)
+        }
+        console.log(`  Previous config saved to ${backup}`)
+      }
 
       // Verified! Save config
       saveConfig({
