@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { budgetAlerts, dailySnapshots } from '../../drizzle/schema.js'
 import type { DbOrTx } from '../plugins/db.js'
-import { costColumnFor, monthToDateSpend, evaluateBudgetAlerts } from './budget-alert.service.js'
+import {
+  costColumnFor,
+  monthToDateSpend,
+  evaluateBudgetAlerts,
+  evaluateBudgetAlert,
+} from './budget-alert.service.js'
 
 const ORG = 'org-1'
 const USER = 'user-1'
@@ -150,6 +155,42 @@ describe('evaluateBudgetAlerts', () => {
       10,
     )
     await evaluateBudgetAlerts(db, ORG, USER, DATE)
+    expect(updates).toHaveLength(0)
+  })
+})
+
+/**
+ * The CRUD entry point. Without it the admin panel told an admin "OK" beside
+ * a month-to-date figure already past the limit they had just typed, and kept
+ * telling them that until the next agent sync ran the other evaluator.
+ */
+describe('evaluateBudgetAlert', () => {
+  it('trips the single alert a create or update just wrote', async () => {
+    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '400', threshold: '0.5' })], 554.22)
+    await evaluateBudgetAlert(db, ORG, 'alert-1', DATE)
+    expect(updates).toHaveLength(1)
+    expect(updates[0].trippedAt).toBeInstanceOf(Date)
+  })
+
+  it('clears a trip latched this month when the limit is raised past spend', async () => {
+    const { db, updates } = fakeDb(
+      [alert({ monthlyLimitUsd: '10000', threshold: '0.8', trippedAt: new Date(`${DATE}T09:00:00Z`) })],
+      554.22,
+    )
+    await evaluateBudgetAlert(db, ORG, 'alert-1', DATE)
+    expect(updates).toHaveLength(1)
+    expect(updates[0].trippedAt).toBeNull()
+  })
+
+  it('leaves an alert alone when it is already in the right state', async () => {
+    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '10000', threshold: '0.8' })], 554.22)
+    await evaluateBudgetAlert(db, ORG, 'alert-1', DATE)
+    expect(updates).toHaveLength(0)
+  })
+
+  it('is a no-op for an id that matches nothing in this org', async () => {
+    const { db, updates } = fakeDb([], 554.22)
+    await evaluateBudgetAlert(db, ORG, 'does-not-exist', DATE)
     expect(updates).toHaveLength(0)
   })
 })

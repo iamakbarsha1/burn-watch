@@ -557,7 +557,31 @@ describe('POST /v1/dashboard/budget-alerts', () => {
     const res = await post(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(201)
     expect(res.json()).toEqual({ id: 'new-alert-1' })
-    expect(dbState.calls.some((c) => c.op === 'select')).toBe(false)
+    // The ownership lookup is what an org-wide alert skips. It is no longer
+    // the only select on this path — the post-write evaluation reads the
+    // alert back — so the assertion names the table instead of counting.
+    expect(
+      dbState.calls.some(
+        (c) => c.op === 'from' && is(c.arg, Table) && getTableName(c.arg) === 'users',
+      ),
+    ).toBe(false)
+  })
+
+  // The create route used to write the row and stop. An admin who set a limit
+  // already below this month's spend was told OK, beside the very figure that
+  // contradicted it, until the next agent sync happened to run the evaluator.
+  it('evaluates the alert it just created, so a limit under current spend trips at once', async () => {
+    dbState.results.push([{ id: 'new-alert-3' }]) // insert ... returning
+    dbState.results.push([
+      { id: 'new-alert-3', orgId: ORG_A, userId: null, agent: null, monthlyLimitUsd: '1', threshold: '0.8', trippedAt: null },
+    ]) // evaluation reads the alert back
+    dbState.results.push([{ spend: 554.22 }]) // month-to-date spend
+
+    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 1 })
+
+    expect(res.statusCode).toBe(201)
+    const trip = dbState.calls.find((c) => c.op === 'set')
+    expect((trip?.arg as { trippedAt?: unknown })?.trippedAt).toBeInstanceOf(Date)
   })
 
   it('refuses a userId belonging to another organization, and writes nothing', async () => {

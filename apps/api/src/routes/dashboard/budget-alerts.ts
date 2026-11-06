@@ -5,7 +5,7 @@ import { BudgetAlertInputSchema, BudgetAlertPatchSchema } from '@burn-watch/shar
 import type { BudgetAlert, AgentName } from '@burn-watch/shared'
 import { budgetAlerts, users } from '../../../drizzle/schema.js'
 import { requireAdmin } from '../../plugins/jwt.js'
-import { monthToDateSpend } from '../../services/budget-alert.service.js'
+import { monthToDateSpend, evaluateBudgetAlert } from '../../services/budget-alert.service.js'
 
 const IdParamSchema = z.object({ id: z.string().uuid() })
 
@@ -94,6 +94,8 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
         })
         .returning({ id: budgetAlerts.id })
 
+      await evaluateBudgetAlert(fastify.db, orgId, created.id, today())
+
       return reply.status(201).send({ id: created.id })
     },
   )
@@ -124,6 +126,9 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
       if (!updated) {
         return reply.status(404).send({ error: 'Budget alert not found' })
       }
+
+      await evaluateBudgetAlert(fastify.db, orgId, updated.id, today())
+
       return { id: updated.id }
     },
   )
