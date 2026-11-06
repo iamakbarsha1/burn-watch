@@ -80,6 +80,32 @@ export const ApproveDeviceSchema = z.object({
   code: DeviceCode,
 })
 
+// A budget alert's stored configuration. `orgId` is deliberately absent: it
+// comes from the caller's token, never from the body, which is the same rule
+// the dashboard routes follow after an org-scoping bug was fixed there.
+//
+// `monthlyLimitUsd` is capped at what numeric(10, 2) holds, so an over-large
+// figure is a 400 rather than a database error. `threshold` is the fraction of
+// the limit that trips the alert, so 0.8 warns at 80%; 1 is allowed and means
+// "tell me when I reach the limit itself", and anything above 1 would describe
+// an alert that fires after the budget is already blown, which nobody wants.
+export const BudgetAlertInputSchema = z.object({
+  userId: z.string().uuid().nullable().default(null),
+  agent: AgentNameSchema.nullable().default(null),
+  monthlyLimitUsd: z.number().positive().max(99999999.99),
+  threshold: z.number().positive().max(1).default(0.8),
+})
+
+// Every field optional, but at least one present. A PATCH with an empty body
+// would otherwise be a successful no-op that looks like a saved change.
+export const BudgetAlertPatchSchema = BudgetAlertInputSchema.partial().refine(
+  (patch) => Object.keys(patch).length > 0,
+  { message: 'Provide at least one field to update' },
+)
+
+export type BudgetAlertInput = z.infer<typeof BudgetAlertInputSchema>
+export type BudgetAlertPatch = z.infer<typeof BudgetAlertPatchSchema>
+
 export type UsageEventInput = z.infer<typeof UsageEventSchema>
 export type ClaudeEnrichmentInput = z.infer<typeof ClaudeEnrichmentSchema>
 export type UsagePayloadInput = z.infer<typeof UsagePayloadSchema>
