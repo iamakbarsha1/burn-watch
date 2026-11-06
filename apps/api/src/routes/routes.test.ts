@@ -4,6 +4,7 @@ import { inspect } from 'node:util'
 import fp from 'fastify-plugin'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
+import type { ProjectEntry } from '@burn-watch/shared'
 
 process.env.JWT_SECRET ??= 'test-access-secret'
 process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret'
@@ -233,6 +234,155 @@ describe('dashboard routes — query validation', () => {
       headers: auth(token()),
     })
     expect(res.statusCode).toBe(400)
+  })
+})
+
+// BW-25 wants the JSONB merge in these two routes moved from Node into SQL.
+// These describe blocks characterize the merge as it exists today, including
+// behaviour that is surprising, so the rewrite has to make a deliberate choice
+// rather than drift. They assert on the mock's queued rows, which match the
+// shape Drizzle's `select({...})` returns but not necessarily what the real
+// driver coerces a JSONB column into — see the characterization note below on
+// absent-vs-null columns.
+describe('GET /v1/dashboard/activity — merge behaviour', () => {
+  const activityUrl = () => range('/v1/dashboard/activity')
+  const get = () => app.inject({ method: 'GET', url: activityUrl(), headers: auth(token()) })
+  const enrichmentRow = (
+    toolUsage: Record<string, number> | null | undefined = {},
+    shellUsage: Record<string, number> | null | undefined = {},
+    mcpUsage: Record<string, number> | null | undefined = {},
+  ) => ({ toolUsage, shellUsage, mcpUsage })
+
+  it('sums a key that two rows share', async () => {
+    dbState.results.push([enrichmentRow({ bash: 5 }), enrichmentRow({ bash: 3 })])
+    const res = await get()
+    expect(res.json()).toContainEqual({ tool: 'bash', count: 8, category: 'tool' })
+  })
+
+  it('keeps a key that only one row has, with that row\'s own value', async () => {
+    dbState.results.push([enrichmentRow({ bash: 5 }), enrichmentRow({ edit: 2 })])
+    const res = await get()
+    expect(res.json()).toEqual(
+      expect.arrayContaining([
+        { tool: 'bash', count: 5, category: 'tool' },
+        { tool: 'edit', count: 2, category: 'tool' },
+      ]),
+    )
+  })
+
+  it('treats an absent or null JSONB field as contributing nothing, without throwing', async () => {
+    // characterized, not endorsed: `?? {}` cannot tell "this column is null"
+    // from "this column is an empty object". A SQL rewrite should pick one
+    // meaning on purpose instead of collapsing both into it.
+    dbState.results.push([{ toolUsage: null, shellUsage: undefined, mcpUsage: { neon: 4 } }])
+    const res = await get()
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([{ tool: 'neon', count: 4, category: 'mcp' }])
+  })
+
+  it('treats an empty object as contributing nothing', async () => {
+    dbState.results.push([enrichmentRow({}, {}, { neon: 1 })])
+    const res = await get()
+    expect(res.json()).toEqual([{ tool: 'neon', count: 1, category: 'mcp' }])
+  })
+
+  it('keeps the same key name separate across categories', async () => {
+    dbState.results.push([enrichmentRow({ git: 1 }, { git: 2 }, {})])
+    const res = await get()
+    expect(res.json()).toEqual(
+      expect.arrayContaining([
+        { tool: 'git', count: 1, category: 'tool' },
+        { tool: 'git', count: 2, category: 'shell' },
+      ]),
+    )
+    expect(res.json()).toHaveLength(2)
+  })
+
+  it('tags each entry with the category of its own source column', async () => {
+    dbState.results.push([enrichmentRow({ bash: 1 }, { npx: 1 }, { playwright: 1 })])
+    const res = await get()
+    expect(res.json()).toEqual(
+      expect.arrayContaining([
+        { tool: 'bash', count: 1, category: 'tool' },
+        { tool: 'npx', count: 1, category: 'shell' },
+        { tool: 'playwright', count: 1, category: 'mcp' },
+      ]),
+    )
+  })
+
+  it('returns an empty array, not null, for zero matching rows', async () => {
+    dbState.results.push([])
+    const res = await get()
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([])
+  })
+})
+
+describe('GET /v1/dashboard/projects — merge behaviour', () => {
+  const projectsUrl = () => range('/v1/dashboard/projects')
+  const get = () => app.inject({ method: 'GET', url: projectsUrl(), headers: auth(token()) })
+  const project = (over: Partial<ProjectEntry> = {}): ProjectEntry => ({
+    path: 'acme/widgets',
+    cost: 10,
+    sessions: 4,
+    avgPerSession: 2.5, // characterized: read off the merged entry, never used downstream
+    overheadK: 0,
+    ...over,
+  })
+  const enrichmentRow = (projects: ProjectEntry[] | null | undefined) => ({ projectBreakdown: projects })
+
+  it('sums cost and sessions across rows sharing a path', async () => {
+    dbState.results.push([
+      enrichmentRow([project({ cost: 10, sessions: 4 })]),
+      enrichmentRow([project({ cost: 5, sessions: 3 })]),
+    ])
+    const res = await get()
+    expect(res.json()).toEqual([
+      expect.objectContaining({ path: 'acme/widgets', totalCost: 15, totalSessions: 7 }),
+    ])
+  })
+
+  it('derives avgCostPerSession as totalCost divided by totalSessions', async () => {
+    dbState.results.push([enrichmentRow([project({ path: 'acme/uneven', cost: 10, sessions: 3 })])])
+    const res = await get()
+    expect(res.json()[0].avgCostPerSession).toBeCloseTo(10 / 3)
+  })
+
+  it('yields avgCostPerSession 0, not NaN or Infinity, when totalSessions is 0', async () => {
+    dbState.results.push([enrichmentRow([project({ path: 'acme/free', cost: 7, sessions: 0 })])])
+    const res = await get()
+    expect(res.json()[0]).toMatchObject({ totalSessions: 0, avgCostPerSession: 0 })
+  })
+
+  it('treats a null or absent project_breakdown as contributing nothing', async () => {
+    dbState.results.push([
+      enrichmentRow(null),
+      enrichmentRow(undefined),
+      enrichmentRow([project({ path: 'acme/widgets' })]),
+    ])
+    const res = await get()
+    expect(res.json()).toHaveLength(1)
+    expect(res.json()[0].path).toBe('acme/widgets')
+  })
+
+  it('treats an empty array as contributing nothing', async () => {
+    dbState.results.push([enrichmentRow([])])
+    const res = await get()
+    expect(res.json()).toEqual([])
+  })
+
+  it('counts contributing rows for userCount, not distinct users', async () => {
+    // characterized, not endorsed: the query never selects userId, so the
+    // route has no way to tell "two rows, two users" from "two rows, one
+    // user on two dates" even in principle. BW-35 in tasks/TICKETS.md tracks
+    // the fix. The dashboard renders this value under a column header that
+    // reads "Users", so a team of one contributor shows up as two.
+    dbState.results.push([
+      enrichmentRow([project({ path: 'acme/widgets' })]), // same user, 2026-11-04
+      enrichmentRow([project({ path: 'acme/widgets' })]), // same user, 2026-11-05
+    ])
+    const res = await get()
+    expect(res.json()[0]).toMatchObject({ path: 'acme/widgets', userCount: 2 })
   })
 })
 
