@@ -27,3 +27,7 @@ Thumbs.db
 .env*
 *.tsbuildinfo
 next-env.d.ts
+
+# Local decision trail for autonomous runs, not part of the project
+.audit/
+.claude/worktrees/
