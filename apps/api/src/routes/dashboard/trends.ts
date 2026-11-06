@@ -3,12 +3,11 @@ import { eq, and, gte, lte, sum, count } from 'drizzle-orm'
 import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { TrendPoint } from '@burn-watch/shared'
+import { dateRangeFields } from './query-schema.js'
 
-const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 const QuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).optional(),
-  from: z.string().regex(dateRegex).optional(),
-  to: z.string().regex(dateRegex).optional(),
+  ...dateRangeFields,
 }).refine(d => d.days || (d.from && d.to), { message: 'Provide days or from+to' })
 
 export async function trendsRoutes(fastify: FastifyInstance) {
