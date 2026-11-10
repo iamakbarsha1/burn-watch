@@ -66,8 +66,38 @@ them reads as done.
 | From | What is unproven | What would settle it |
 |------|------------------|----------------------|
 | BW-21 | Every call to GitHub. The seats walk, the report download, the NDJSON record shape, and whether a fine-grained PAT with "GitHub Copilot Business" read actually reaches these endpoints. All of it runs on fixtures built from the published schema. | A Copilot Business or Enterprise org to point `POST /v1/integrations/copilot/sync` at. Nothing smaller settles it; the endpoints do not exist on other plans. |
-| BW-21 | The admin panel in a browser. `CopilotPanel.tsx` has no render coverage, because the dashboard package carries no React renderer and adding one was out of scope. The logic underneath it is tested; the component is not. | Signing in as an admin and walking all five states: no key, malformed key, disconnected, connected, and a sync that returns unmatched logins. BW-18 found three defects this exact way. |
+| BW-21 | The admin panel's **connected** states. Three of five were walked in a browser on 2026-11-10 (see below); connected, and a sync returning unmatched logins, were not, because reaching them needs a real org. The seat section, the idle dollar figure, the unlinked and ambiguous callouts have never rendered with data. | The same Copilot Business org the row above needs. Everything short of that stops at the connect form. |
 | BW-21 | Report lag. The sync defaults to yesterday because GitHub publishes no cutoff for when a day's report appears, and a 404 is read as "not generated yet". Whether yesterday is reliably available is a guess. | One run against a real org, then a second the next morning, comparing which days returned rows. |
+
+**Partly cleared 2026-11-10, BW-21's panel.** Signed in as `akbar@test.com`
+against a Neon branch copied from production, with the API and dashboard run
+locally and pointed at it. Three of the five states rendered, zero console
+errors:
+
+- API unreachable. "Could not read the Copilot integration status", and it says
+  the rest of the page is still accurate rather than leaving the reader to
+  guess.
+- Key present but unusable. "Cannot be configured",
+  `COPILOT_ENCRYPTION_KEY is set but unusable`, and the remedy named down to
+  `openssl rand -base64 32`. This is the state the three-way encryption split
+  was built for, and it is the one a collapsed "unavailable" would have ruined.
+- Encryption ready, not connected. "Not connected" with the connect form, and
+  the seat section correctly absent, which is the gating claim checked rather
+  than taken on trust.
+
+The route was also exercised over real HTTP against that branch, not through
+the test harness: 503 carrying the encryption reason, 404 when not connected,
+200 from `/status` reporting `encryption: ready`, and 400 from Zod for
+`idleAfterDays=9999`.
+
+**Noted while there, not changed.** `CopilotPanel.tsx:144` tells the admin to
+use a token with the `manage_billing:copilot` scope. That is a classic-PAT
+scope, while this ticket's unblocking note settled on a fine-grained PAT with
+"GitHub Copilot Business" read. Both may reach the endpoint; the point is that
+the panel and the ticket give different instructions, and operator-facing setup
+copy should not be rewritten from memory. It predates the seat roster, arriving
+in `0e3b376`. Settle it against GitHub's current docs when the org above
+exists, since that is the run that proves which token actually works.
 
 **Cleared 2026-11-10.** BW-20's Windows and Linux debt, and with it BW-40's
 last box. Settled on GitHub's `ubuntu-latest` and `windows-latest` runners —
@@ -1322,7 +1352,44 @@ container runtime was up. Neon was Postgres 18 the whole time. This is the
 same shape as BW-20, where "no Linux or Windows hardware" described the shell
 rather than the project.
 
-**Acceptance**
+**Seat coverage delivered 2026-11-10.** The scope gap is closed.
+`listCopilotSeats` had been walking the whole roster on every connect and every
+sync and keeping two counts from it. `GET /copilot/seats` now returns the
+roster itself: who holds a seat, which seats are idle, and what the idle ones
+cost per month.
+
+Read live and stored nowhere. A roster is current state rather than a time
+series, so a table would hold a copy that disagrees with GitHub between syncs
+while GitHub remains the thing that issues seats. No table, no migration, no
+column. The cost is a seat walk per request, which is why nothing calls it on
+page load.
+
+A seat's relation to BurnWatch is one tagged `status` plus one nullable
+`userId`, not a cross product of booleans. Idle is `lastActivityAt` null or
+older than `?idleAfterDays=` (1 to 365, default 30). An unknown `planType`
+yields a null price and counts into `unpricedIdleSeats` rather than being
+guessed, because a wrong dollar figure on a spend dashboard is worse than an
+absent one.
+
+Four defects were found reviewing it, and all four are fixed here:
+
+- An unhandled 500 echoed its exception message to the browser. Reads used to
+  drop the body, so this only became reachable once a failed read started
+  surfacing the API's own words, which it needed to do for the four Copilot
+  failures that each have a different remedy. The handler now passes a message
+  through below 500 and sends a fixed sentence at or above it. Same class as
+  the GitHub-body leak this ticket already fixed once.
+- A login two users share was attributed to whichever row the driver returned
+  last, silently. It now goes to the lowest `users.id` so two reads agree, and
+  the login is reported in `ambiguousLogins` so the pick reads as a tie-break
+  rather than a fact. The missing unique index stays its own ticket.
+- A seat walk that filled every page returned a truncated roster with no
+  signal. It now throws. The cap is 5000 seats and this org has about 50, so
+  this guards a changed pagination contract rather than growth.
+- Every failure of that walk told the operator their token had expired, which
+  after the guard above included a case where GitHub never refused anything.
+  The message now splits on whether an HTTP status was recovered, and all
+  three call sites log the cause, which none of them did before.
 - [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY` — the
       envelope is built and tested, but nothing calls it until the route lands
 - [ ] Key absent means the feature degrades, not crashes — holds at the module
