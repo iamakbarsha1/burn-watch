@@ -348,15 +348,29 @@ describe('PUT /v1/integrations/copilot/connection', () => {
     expect(openWith(KEY, stored)).toBe(TOKEN)
   })
 
-  it('updates the existing row rather than inserting a second one', async () => {
+  /**
+   * Reconnecting must replace the credential, never add a second row beside
+   * it, because every reader here takes the first row it finds. Asserted
+   * through the conflict arbitration rather than by counting rows, since the
+   * fake database has no constraints of its own. Migration 0006 supplies the
+   * unique index this target names, and the pair was exercised against a real
+   * Postgres before being relied on.
+   */
+  it('reconnecting replaces the credential rather than adding a second row', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     dbState.results.push([]) // update organizations.github_org
-    dbState.results.push([{ id: 'integration-1' }]) // update matched an existing row
 
     const res = await put(admin())
 
     expect(res.statusCode).toBe(200)
-    expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+
+    const inserts = dbState.calls.filter((c) => c.op === 'insert')
+    expect(inserts).toHaveLength(1)
+
+    const conflict = dbState.calls.find((c) => c.op === 'onConflictDoUpdate')
+    expect(conflict).toBeDefined()
+    const target = (conflict!.arg as { target: { name: string }[] }).target
+    expect(target.map((c) => c.name)).toEqual(['org_id', 'provider'])
   })
 
   it('rejects a body with no token', async () => {

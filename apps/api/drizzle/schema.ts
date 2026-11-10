@@ -228,16 +228,26 @@ export const dailySnapshots = pgTable(
 )
 
 // GitHub Copilot server-side integration (org-level)
-export const orgIntegrations = pgTable('org_integrations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id')
-    .notNull()
-    .references(() => organizations.id, { onDelete: 'cascade' }),
-  provider: text('provider').notNull(),           // 'copilot'
-  encryptedToken: text('encrypted_token').notNull(),
-  lastSyncAt: timestamp('last_sync_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-})
+export const orgIntegrations = pgTable(
+  'org_integrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),           // 'copilot'
+    encryptedToken: text('encrypted_token').notNull(),
+    lastSyncAt: timestamp('last_sync_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  // One connection per org per provider, which is what every reader here
+  // already assumes: the status and sync routes both take the first row they
+  // find. Without the constraint, connecting is an update-then-insert that two
+  // admins can race into two rows, after which those readers pick one
+  // arbitrarily and reconnecting appears to do nothing. With it, connecting is
+  // a plain upsert and the database refuses the second row.
+  (t) => [unique('org_integrations_unique_org_provider').on(t.orgId, t.provider)],
+)
 
 // Budget alerts per org/user/agent
 export const budgetAlerts = pgTable('budget_alerts', {
