@@ -27,3 +27,11 @@ export const integrationKey = (orgId: OrgId, provider: string): IntegrationKey =
   `${orgId}:${provider}` as IntegrationKey
 
 export const microsFromUsd = (usd: number): Micros => Math.round(usd * 1e6) as Micros
+
+/**
+ * The inverse, for the HTTP boundary only. Everything below a route handler
+ * stays in micros: dividing early reintroduces exactly the binary fractions
+ * the integer encoding exists to avoid, and a cost that has been through a
+ * float round trip no longer sums to the same total.
+ */
+export const usdFromMicros = (micros: Micros): number => micros / 1e6
