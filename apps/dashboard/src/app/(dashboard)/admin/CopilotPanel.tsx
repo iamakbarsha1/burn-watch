@@ -1,12 +1,19 @@
 'use client'
 
 import { useActionState } from 'react'
-import type { CopilotStatus, CopilotSyncResult } from '@burn-watch/shared'
+import type {
+  CopilotSeatRow,
+  CopilotSeatsResponse,
+  CopilotStatus,
+  CopilotSyncResult,
+} from '@burn-watch/shared'
 import {
   connectCopilotAction,
   disconnectCopilotAction,
+  loadCopilotSeatsAction,
   syncCopilotAction,
   type CopilotActionState,
+  type CopilotSeatsState,
   type CopilotSyncState,
 } from './actions'
 import {
@@ -19,8 +26,8 @@ import {
   Tr,
   Badge,
 } from '@/components/ui'
-import { copilotView, ENCRYPTION_FAULTS } from '@/lib/copilot'
-import { formatAgo } from '@/lib/format'
+import { copilotView, describeIdleSeats, unpricedIdleNote, ENCRYPTION_FAULTS } from '@/lib/copilot'
+import { formatAgo, formatCost } from '@/lib/format'
 
 /**
  * The panel the admin page renders in place of the old "Not yet available"
@@ -240,6 +247,188 @@ function Connected({ org, lastSyncAt }: { org: string; lastSyncAt: string | null
           {disconnectState.message}
         </p>
       )}
+
+      <SeatRoster />
+    </div>
+  )
+}
+
+/**
+ * Who holds a paid seat, and which of those seats is idle.
+ *
+ * Behind a button rather than on page load. Every read walks the whole Copilot
+ * seat roster at GitHub, and putting that on the render path would make the
+ * slowest call in the app the price of opening the admin page.
+ */
+function SeatRoster() {
+  const [state, dispatch, pending] = useActionState<CopilotSeatsState | null, FormData>(
+    loadCopilotSeatsAction,
+    null,
+  )
+
+  return (
+    <div className="space-y-3 border-t border-line pt-4">
+      <form action={dispatch} className="flex flex-wrap items-end gap-2">
+        <div className="w-44">
+          <label className="mb-1 block text-xs text-ink-2" htmlFor="copilot-idle-days">
+            Idle after (days)
+          </label>
+          <input
+            id="copilot-idle-days"
+            name="idleAfterDays"
+            type="number"
+            min={1}
+            max={365}
+            defaultValue={30}
+            className={`${inputClass} w-full`}
+          />
+        </div>
+        <button type="submit" disabled={pending} className={secondaryButtonClass}>
+          {pending ? 'Reading seats…' : 'Show seats'}
+        </button>
+      </form>
+
+      <p className="max-w-2xl text-xs text-ink-3">
+        Read from GitHub each time you ask, and stored nowhere. A large organization takes a
+        moment.
+      </p>
+
+      {pending && (
+        <p role="status" className="text-sm text-ink-2">
+          Walking the Copilot seat roster at GitHub.
+        </p>
+      )}
+
+      {state && !state.ok && (
+        <p role="status" className="text-sm text-bad">
+          {state.message}
+        </p>
+      )}
+
+      {state?.ok && state.seats && <SeatRosterResult roster={state.seats} />}
+    </div>
+  )
+}
+
+function SeatRosterResult({ roster }: { roster: CopilotSeatsResponse }) {
+  // An empty roster is an answer, not a fault. GitHub has issued no seats.
+  if (roster.seats.length === 0) {
+    return (
+      <p className="text-sm text-ink-2">
+        GitHub reports no Copilot seats for {roster.org}. Nobody holds a licence, and nothing is
+        wrong.
+      </p>
+    )
+  }
+
+  const caveat = unpricedIdleNote(roster.summary)
+  const unlinked = roster.seats.filter((s) => s.userId === null).map((s) => s.login)
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-medium text-ink">
+        {describeIdleSeats(roster.summary, roster.idleAfterDays)}
+      </p>
+      {caveat && <p className="max-w-2xl text-sm text-ink-2">{caveat}</p>}
+
+      {unlinked.length > 0 && <UnlinkedSeats logins={unlinked} />}
+
+      <TableFrame>
+        <table className="w-full min-w-[760px] border-collapse">
+          <thead className="bg-surface-2">
+            <tr>
+              <Th>Developer</Th>
+              <Th>GitHub login</Th>
+              <Th>Status</Th>
+              <Th>Last activity</Th>
+              <Th>Editor</Th>
+              <Th>Plan</Th>
+              <Th numeric>Monthly cost</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {roster.seats.map((seat) => (
+              <SeatRosterRow key={seat.login} seat={seat} />
+            ))}
+          </tbody>
+        </table>
+      </TableFrame>
+    </div>
+  )
+}
+
+function SeatRosterRow({ seat }: { seat: CopilotSeatRow }) {
+  const ago = formatAgo(seat.lastActivityAt)
+
+  return (
+    <Tr>
+      <Td className="text-ink">
+        {seat.userName ?? (
+          <span className="text-warn">{seat.login}, not linked</span>
+        )}
+      </Td>
+      <Td className="font-mono text-xs text-ink-2">{seat.login}</Td>
+      <Td>
+        <Badge tone={seat.status === 'active' ? 'good' : 'warn'}>
+          {seat.status === 'active' ? 'Active' : 'Idle'}
+        </Badge>
+      </Td>
+      <Td className="text-ink-2">
+        {seat.lastActivityAt ? (
+          <>
+            {seat.lastActivityAt.slice(0, 10)}
+            {ago && <span className="text-ink-3"> ({ago})</span>}
+          </>
+        ) : (
+          <span className="text-ink-3">never</span>
+        )}
+      </Td>
+      <Td className="text-ink-2">
+        {seat.lastActivityEditor ?? <span className="text-ink-3">-</span>}
+      </Td>
+      <Td className="text-ink-2">{seat.planType}</Td>
+      <Td numeric className="text-ink-2">
+        {seat.monthlyCostUsd === null ? (
+          <span className="text-ink-3">-</span>
+        ) : (
+          formatCost(seat.monthlyCostUsd)
+        )}
+      </Td>
+    </Tr>
+  )
+}
+
+/**
+ * The seats that cost money and attribute to nobody.
+ *
+ * Deliberately not `UnmatchedLogins`. That block reports a developer whose
+ * recorded usage a sync has already dropped; this one reports a licence billed
+ * right now whose spend has nowhere to land. Same root gap at two different
+ * moments, and one component serving both would have to go vague to manage it.
+ */
+function UnlinkedSeats({ logins }: { logins: string[] }) {
+  return (
+    <div className="rounded-lg border border-warn/35 bg-warn/10 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="warn">
+          {logins.length === 1 ? '1 seat not linked' : `${logins.length} seats not linked`}
+        </Badge>
+      </div>
+      <p className="mt-2 max-w-2xl text-sm text-ink-2">
+        A paid Copilot licence is billed for each of these GitHub logins, and no BurnWatch user
+        carries them as a github_username. Nothing they spend can be attributed to a person on this
+        dashboard. Set the field on each matching user.
+      </p>
+      <ul className="mt-2 flex flex-wrap gap-1.5">
+        {logins.map((login) => (
+          <li
+            key={login}
+            className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-xs text-ink"
+          >
+            {login}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
