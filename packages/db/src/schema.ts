@@ -200,10 +200,16 @@ function summarise(d: SchemaDrift): string {
 }
 
 export interface SyncReport {
-  readonly createdCollections: readonly string[]
+  /**
+   * Every registry collection this run asked the server for, created or
+   * already there. MongoDB 8 answers a repeat `create` with ok rather than
+   * NamespaceExists, so sync cannot tell the two apart without a round trip
+   * whose answer `check` already gives.
+   */
+  readonly ensuredCollections: readonly string[]
   readonly ranMigrations: readonly string[]
   readonly skippedMigrations: readonly string[]
-  /** `collection.index` for every index handed to createIndexes, created or already there. */
+  /** `collection.index` for every index handed to createIndexes, built or already there. */
   readonly ensuredIndexes: readonly string[]
 }
 
@@ -229,8 +235,11 @@ export async function syncSchema(db: Db): Promise<SyncReport> {
   // with writers today, so a collection added this deploy cannot be born inside
   // the first transaction that touches it. Going first also means a later step
   // throwing still leaves that race closed.
-  const createdCollections: string[] = []
-  for (const [name] of SPECS) if (await createIfAbsent(db, name)) createdCollections.push(name)
+  const ensuredCollections: string[] = []
+  for (const [name] of SPECS) {
+    await ensureCollection(db, name)
+    ensuredCollections.push(name)
+  }
 
   // Then migrations, and only then indexes. A unique index over a field that a
   // backfill populates must not be built before the backfill, or it collides on
@@ -253,7 +262,7 @@ export async function syncSchema(db: Db): Promise<SyncReport> {
     ensuredIndexes.push(...spec.indexes.map((i) => `${name}.${i.name}`))
   }
 
-  return { createdCollections, ranMigrations, skippedMigrations, ensuredIndexes }
+  return { ensuredCollections, ranMigrations, skippedMigrations, ensuredIndexes }
 }
 
 const toDescription = (i: IndexSpec<Document>): IndexDescription => ({
@@ -263,15 +272,15 @@ const toDescription = (i: IndexSpec<Document>): IndexDescription => ({
   ...(i.expireAfterSeconds === undefined ? {} : { expireAfterSeconds: i.expireAfterSeconds }),
 })
 
-/** True when this call created it. */
-async function createIfAbsent(db: Db, name: string): Promise<boolean> {
-  return db.createCollection(name).then(
-    () => true,
-    (err: unknown) => {
-      if (err instanceof MongoServerError && err.codeName === 'NamespaceExists') return false
-      throw err
-    },
-  )
+/**
+ * NamespaceExists is tolerated rather than relied on. MongoDB 8 answers a
+ * repeat create with ok, but an older server and a second operator syncing at
+ * the same moment both still raise it.
+ */
+async function ensureCollection(db: Db, name: string): Promise<void> {
+  await db.createCollection(name).catch((err: unknown) => {
+    if (!(err instanceof MongoServerError && err.codeName === 'NamespaceExists')) throw err
+  })
 }
 
 /** True when this call ran it, false when it was already recorded as done. */
