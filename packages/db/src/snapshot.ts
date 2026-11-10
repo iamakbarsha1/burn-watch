@@ -52,6 +52,14 @@ export function pickWinningSource(rows: AgentSourceTotals[]): AgentTotals[] {
   return [...winner.values()].map(({ agent, tokens, costMicros, models }) => ({ agent, tokens, costMicros, models }))
 }
 
+/**
+ * What a rebuild computes. The enrichment fields (callCount, sessionCount,
+ * cacheHitRate) are not among them: a recompute of agent totals must never
+ * overwrite a field it did not compute, and zero is a legitimate real value, so
+ * a clobber would be invisible.
+ */
+export type SnapshotTotals = Omit<DailySnapshotDoc, 'callCount' | 'sessionCount' | 'cacheHitRate'>
+
 /** Pure. The document the day should hold given what the reads returned. */
 export function buildSnapshot(
   userId: UserId,
@@ -59,7 +67,7 @@ export function buildSnapshot(
   date: IsoDate,
   totals: AgentTotals[],
   now: Date,
-): DailySnapshotDoc {
+): SnapshotTotals {
   const byAgent: DailySnapshotDoc['byAgent'] = {}
   const models = new Set<string>()
   let totalTokens = 0
@@ -78,11 +86,6 @@ export function buildSnapshot(
     byAgent,
     totalTokens,
     totalCostMicros: totalCostMicros as Micros,
-    // Enrichment (calls, sessions, cache hit rate) joins in once claudeEnrichment
-    // exists; until then a day reads as zero calls.
-    callCount: 0,
-    sessionCount: 0,
-    cacheHitRate: null,
     modelsUsed: [...models].sort(),
     updatedAt: now,
   }
@@ -102,5 +105,9 @@ export async function rebuildDailySnapshot(tx: Txn, userId: UserId, date: IsoDat
   const user = await tx.users.findOne({ _id: userId }, { projection: { orgId: 1 } })
   if (!user) return
   const { _id, ...fields } = buildSnapshot(userId, user.orgId, date, pickWinningSource(rows), new Date())
-  await tx.dailySnapshots.updateOne({ _id }, { $set: fields }, { upsert: true })
+  await tx.dailySnapshots.updateOne(
+    { _id },
+    { $set: fields, $setOnInsert: { callCount: 0, sessionCount: 0, cacheHitRate: null } },
+    { upsert: true },
+  )
 }

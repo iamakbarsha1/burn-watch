@@ -1,19 +1,24 @@
 import type { UsageEvent } from '@burn-watch/shared'
 import type { UsageSource } from './documents.js'
 import { microsFromUsd, type DeviceId, type IsoDate, type OrgId, type UserId } from './ids.js'
-import type { Store } from './store.js'
+import type { Txn } from './store.js'
 
 /**
  * Upserts on the deterministic key {userId, date, agent, modelName, deviceId, source}.
- * deviceId is always named in the filter, never omitted, so the unique index
- * sees the null on org-sourced rows and two such rows collide.
+ * deviceId is always named in the filter, never omitted. A filter without it
+ * is unconstrained on deviceId, so a row from another device would match and
+ * this device's write would be suppressed as a repeat.
  *
  * Neither tier can be an insertOne that ignores 11000: inside a transaction any
  * write error aborts the whole transaction, so "first write wins" is an upsert
  * that writes nothing on match.
+ *
+ * Takes a Txn, not a Store: the event upsert and the snapshot rebuild must share
+ * one transaction, or the rebuild can run against events that are not yet
+ * committed from its point of view, which is the BW-41 race.
  */
 export async function upsertUsageEvents(
-  store: Store,
+  tx: Txn,
   userId: UserId,
   orgId: OrgId,
   deviceId: DeviceId | null,
@@ -42,7 +47,7 @@ export async function upsertUsageEvents(
     // A matched document takes the new figures: the org pull may carry corrections.
     return { updateOne: { filter: key, update: { $set: metrics, $setOnInsert: { orgId } }, upsert: true } }
   })
-  const r = await store.usageEvents.bulkWrite(ops)
+  const r = await tx.usageEvents.bulkWrite(ops)
   // agent: only an insert is an acceptance; a match is the skip the agent is told about.
   // copilot-org: every op lands, as ON CONFLICT DO UPDATE ... RETURNING returned every row.
   // matchedCount, not modifiedCount: a no-op re-sync still touches submittedAt.

@@ -1,12 +1,13 @@
 /**
  * BW-41 repro on MongoDB. Two concurrent rebuilds of one (user, date), each in
  * its own transaction on its own client, asserting the stored snapshot ends up
- * holding both writers' tokens.
+ * holding every event that landed.
  *
  * Deliberately not part of `npm test`. Transactions need a replica set, and the
  * defect is two transactions whose reads overlap, which no in-memory fake can
- * model. `scripts/local-replset.sh up` prints a URI for a disposable single-node
- * set.
+ * model. `scripts/local-replset.sh up` prints a URI for a disposable set;
+ * BW_MONGO_NODES=3 gives a three-member one so majority commits wait on real
+ * replication.
  *
  *   MONGODB_URI=mongodb://127.0.0.1:27117/burnwatch_race?replicaSet=rs0 \
  *     BW41_ALLOW_WRITES=1 npx tsx src/scripts/snapshot-race.ts
@@ -15,12 +16,15 @@
  * never reads or writes a document it did not make. Point it at a throwaway
  * database anyway.
  *
- * Two regimes per run, BW41_ROUNDS each (default 5): a fresh day, where both
- * writers race to insert the snapshot document, and a seeded day, where it
- * already exists and both race to update it. The losing writer's error is
- * recorded per round and summarised at the end, because which one MongoDB
- * raises (WriteConflict or DuplicateKey) decides whether runInTxn's 11000
- * fallback is load-bearing or dead.
+ * Three regimes per run, BW41_ROUNDS each (default 5). "fresh day" and "seeded
+ * day" contend on dailySnapshots._id only, with the snapshot absent and then
+ * present when the race starts. "shared key" has both writers upsert the same
+ * usageEvents key (one model, org source, no device), so they also collide on
+ * the unique index, which is what two admins triggering one Copilot sync at
+ * once would do. The losing writer's error is recorded per attempt and
+ * summarised per regime. runInTxn relies on every collision surfacing as a
+ * WriteConflict the driver retries, never as a DuplicateKey it does not, and
+ * this is the run that checks that still holds.
  *
  * BW41_MODE=stale-retry makes the losing writer's retry re-issue only the
  * snapshot write, with the total it computed before the conflict, instead of
@@ -31,6 +35,7 @@
 import { strict as assert } from 'node:assert'
 import { MongoClient, MongoError, MongoServerError } from 'mongodb'
 import type { UsageEvent } from '@burn-watch/shared'
+import type { UsageSource } from '../documents.js'
 import { dayKey, newId, type IsoDate, type Micros, type OrgId, type UserId } from '../ids.js'
 import { agentSourceTotalsPipeline, rebuildDailySnapshot } from '../snapshot.js'
 import { runInTxn, storeFor, type Store, type Txn } from '../store.js'
@@ -42,6 +47,22 @@ const WRITERS = 2
 const ROUNDS = Number(process.env.BW41_ROUNDS ?? 5)
 const MODE: 'whole-body' | 'stale-retry' =
   process.env.BW41_MODE === 'stale-retry' ? 'stale-retry' : 'whole-body'
+
+interface Regime {
+  name: string
+  seedSnapshot: boolean
+  source: UsageSource
+  modelName: (writer: number) => string
+  /** What usageEvents holds once both writers have landed. */
+  held: number
+}
+
+const REGIMES: Regime[] = [
+  { name: 'fresh day', seedSnapshot: false, source: 'agent', modelName: (i) => `bw41-writer-${i}`, held: TOKENS_PER_WRITER * WRITERS },
+  { name: 'seeded day', seedSnapshot: true, source: 'agent', modelName: (i) => `bw41-writer-${i}`, held: TOKENS_PER_WRITER * WRITERS },
+  // One document holds the day, so held is one writer's tokens.
+  { name: 'shared key', seedSnapshot: false, source: 'copilot-org', modelName: () => 'bw41-shared', held: TOKENS_PER_WRITER },
+]
 
 interface LoserError {
   code: number | string | undefined
@@ -67,13 +88,12 @@ function describeError(err: unknown): LoserError {
 const describeKey = (e: LoserError) => `${e.code} ${e.codeName} [${e.labels.join(',')}]`
 
 /**
- * Releases once every writer has upserted its event and none has committed.
+ * Opens once every writer has arrived, and nobody has committed.
  *
  * Without it the two transactions would almost always serialise by luck and the
  * run would pass against a broken runInTxn, which is the failure mode that
  * makes a race test worthless. A writer whose first attempt never arrives
- * (an error before the barrier) would hang the other forever, so the wait
- * fails loudly instead.
+ * would hang the other forever, so the wait fails loudly instead.
  */
 function barrier(parties: number, timeoutMs = 10_000) {
   let arrived = 0
@@ -85,9 +105,14 @@ function barrier(parties: number, timeoutMs = 10_000) {
       timeoutMs,
     ).unref()
   })
-  return () => {
-    if (++arrived === parties) release()
-    return open
+  // The timeout must not become an unhandled rejection when no writer is
+  // waiting on it any more.
+  open.catch(() => {})
+  return {
+    arrive() {
+      if (++arrived === parties) release()
+    },
+    wait: () => open,
   }
 }
 
@@ -111,7 +136,7 @@ async function totalTokensSeen(tx: Txn, userId: UserId): Promise<number> {
   return rows.reduce((sum, r) => sum + r.tokens, 0)
 }
 
-async function race(writers: Store[], control: Store, seedSnapshot: boolean): Promise<RoundResult> {
+async function race(writers: Store[], control: Store, regime: Regime): Promise<RoundResult> {
   const userId = newId<UserId>()
   const orgId = newId<OrgId>()
   await control.users.insertOne({
@@ -124,7 +149,7 @@ async function race(writers: Store[], control: Store, seedSnapshot: boolean): Pr
     isActive: true,
     createdAt: new Date(),
   })
-  if (seedSnapshot) {
+  if (regime.seedSnapshot) {
     await control.dailySnapshots.insertOne({
       _id: dayKey(userId, DATE),
       userId,
@@ -142,7 +167,7 @@ async function race(writers: Store[], control: Store, seedSnapshot: boolean): Pr
   }
 
   try {
-    const reach = barrier(WRITERS)
+    const gate = barrier(WRITERS)
     const attempts = writers.map(() => 0)
     const losers: LoserError[] = []
     // What each writer's first attempt computed, replayed by the stale-retry mode.
@@ -152,16 +177,23 @@ async function race(writers: Store[], control: Store, seedSnapshot: boolean): Pr
       writers.map((store, i) =>
         runInTxn(store, async (tx) => {
           attempts[i]++
-          // Distinct per writer so the two rows do not collide on the unique
-          // key and the aggregate has something to lose.
-          await upsertUsageEvents(tx, userId, orgId, null, DATE, [event(`bw41-writer-${i}`)])
-          // First attempt only. A retried body must not wait on a barrier that
-          // has already opened and will never count a second arrival.
-          if (attempts[i] === 1) {
-            firstTotal[i] = await totalTokensSeen(tx, userId)
-            await reach()
-          }
           try {
+            const events = [event(regime.modelName(i))]
+            if (attempts[i] === 1) {
+              // First attempt only. A retried body must not wait on a barrier
+              // that has already opened and will never count a second arrival.
+              // A writer whose own upsert conflicts has still arrived: it fails
+              // here, retries, and must not leave the other writer waiting.
+              try {
+                await upsertUsageEvents(tx, userId, orgId, null, DATE, events, regime.source)
+              } finally {
+                gate.arrive()
+              }
+              firstTotal[i] = await totalTokensSeen(tx, userId)
+              await gate.wait()
+            } else {
+              await upsertUsageEvents(tx, userId, orgId, null, DATE, events, regime.source)
+            }
             if (MODE === 'stale-retry' && attempts[i] > 1) {
               await tx.dailySnapshots.updateOne(
                 { _id: dayKey(userId, DATE) },
@@ -205,6 +237,8 @@ async function main() {
     process.env.BW41_ALLOW_WRITES === '1',
     'This script writes. Set BW41_ALLOW_WRITES=1 once MONGODB_URI points somewhere disposable.',
   )
+  // Zero rounds would print PASS having proven nothing.
+  assert(Number.isInteger(ROUNDS) && ROUNDS >= 1, `BW41_ROUNDS must be a positive integer, got ${process.env.BW41_ROUNDS}`)
 
   const clients = Array.from({ length: WRITERS + 1 }, () => new MongoClient(uri))
   const [controlClient, ...writerClients] = clients
@@ -230,16 +264,14 @@ async function main() {
       { unique: true, name: 'usageEvents_key' },
     )
 
-  const expected = TOKENS_PER_WRITER * WRITERS
   const seen = new Map<string, number>()
   let lostRounds = 0
   let failures = 0
 
   try {
-    for (const seedSnapshot of [false, true]) {
-      const regime = seedSnapshot ? 'seeded day' : 'fresh day '
+    for (const regime of REGIMES) {
       for (let round = 1; round <= ROUNDS; round++) {
-        const r = await race(writers, control, seedSnapshot)
+        const r = await race(writers, control, regime)
         // A retry the body never saw an error for was raised by the commit
         // itself (withTransaction retries those too), so name it rather than
         // print a retry with no loser.
@@ -247,15 +279,18 @@ async function main() {
         for (let i = r.losers.length; i < retries; i++) {
           r.losers.push({ code: undefined, codeName: 'retried at commit, error not visible to the body', labels: [] })
         }
-        for (const l of r.losers) seen.set(describeKey(l), (seen.get(describeKey(l)) ?? 0) + 1)
+        for (const l of r.losers) {
+          const key = `${regime.name}: ${describeKey(l)}`
+          seen.set(key, (seen.get(key) ?? 0) + 1)
+        }
         const loserText = r.losers.map(describeKey).join('; ') || 'none'
         console.log(
-          `${regime} round ${round}: stored ${r.stored} / held ${r.held}, attempts [${r.attempts}], loser: ${loserText}`,
+          `${regime.name.padEnd(10)} round ${round}: stored ${r.stored} / held ${r.held}, attempts [${r.attempts}], loser: ${loserText}`,
         )
-        assert.equal(r.held, expected, `usageEvents should hold both writers' rows, held ${r.held}`)
+        assert.equal(r.held, regime.held, `usageEvents should hold ${regime.held} tokens after both writers, held ${r.held}`)
         if (r.stored !== r.held) lostRounds++
         if (MODE === 'whole-body') {
-          if (r.stored !== expected) failures++
+          if (r.stored !== r.held) failures++
           // One writer must have retried, or the transactions never overlapped
           // and this round proved nothing.
           if (Math.max(...r.attempts) < 2) {
@@ -269,8 +304,9 @@ async function main() {
     await Promise.all(clients.map((c) => c.close()))
   }
 
-  console.log(`\nloser errors seen: ${JSON.stringify(Object.fromEntries(seen))}`)
-  const total = ROUNDS * 2
+  console.log('\nloser errors seen per regime:')
+  for (const [key, n] of seen) console.log(`  ${key}: ${n}`)
+  const total = ROUNDS * REGIMES.length
   if (MODE === 'stale-retry') {
     console.log(`stale-retry: the snapshot lost a writer in ${lostRounds}/${total} rounds`)
     assert.equal(
@@ -282,7 +318,7 @@ async function main() {
     return
   }
   assert.equal(failures, 0, `${failures} round(s) failed`)
-  console.log(`PASS: ${total} rounds, ${WRITERS} concurrent rebuilds converged on ${expected} every time`)
+  console.log(`PASS: ${total} rounds, ${WRITERS} concurrent rebuilds converged on what usageEvents held every time`)
 }
 
 main().catch((error) => {
