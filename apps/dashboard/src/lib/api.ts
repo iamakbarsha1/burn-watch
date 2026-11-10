@@ -13,6 +13,7 @@ import type {
   BudgetAlertPatch,
   CopilotStatus,
   CopilotSyncResult,
+  CopilotSeatsResponse,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -167,4 +168,12 @@ export async function disconnectCopilot(): Promise<void> {
 // sync would quietly write nothing.
 export async function syncCopilot(day?: string): Promise<CopilotSyncResult> {
   return apiPost('/v1/integrations/copilot/sync', day ? { day } : {})
+}
+
+// Every call walks the org's whole seat roster at GitHub, so this belongs
+// behind a button rather than on a page load. `idleAfterDays` omitted leaves
+// the window to the API, which uses 30.
+export async function fetchCopilotSeats(idleAfterDays?: number): Promise<CopilotSeatsResponse> {
+  const query = idleAfterDays === undefined ? '' : `?idleAfterDays=${idleAfterDays}`
+  return apiFetch(`/v1/integrations/copilot/seats${query}`)
 }

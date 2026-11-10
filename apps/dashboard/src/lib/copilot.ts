@@ -1,4 +1,5 @@
-import type { CopilotStatus } from '@burn-watch/shared'
+import type { CopilotSeatsResponse, CopilotStatus } from '@burn-watch/shared'
+import { formatCost } from '@/lib/format'
 
 /**
  * What the Copilot panel renders, chosen once rather than re-derived by each
@@ -86,6 +87,36 @@ export function describeSync(result: {
   }
   const rows = result.usage.written
   return `${result.day}: ${result.seats.total} ${plural(result.seats.total, 'seat')}, ${rows} ${plural(rows, 'row')} written.`
+}
+
+/**
+ * The one line an admin opened the seat roster for.
+ *
+ * The count alone is a trivia question. The count with the monthly dollars
+ * behind it is a decision, which is why the two are never separated here.
+ */
+export function describeIdleSeats(
+  summary: CopilotSeatsResponse['summary'],
+  idleAfterDays: number,
+): string {
+  const window = `more than ${idleAfterDays} ${plural(idleAfterDays, 'day')}`
+  if (summary.idle === 0) {
+    return `No seat has been idle for ${window}.`
+  }
+  return `${summary.idle} ${plural(summary.idle, 'seat')} idle for ${window}, ${formatCost(summary.idleMonthlyCostUsd)} a month.`
+}
+
+/**
+ * What the dollar figure above leaves out, when it leaves anything out.
+ *
+ * A plan the API has no price for contributes nothing to the total, and a
+ * total that quietly understates the waste is worse than one that says so.
+ * Null when there is nothing to disclose, so the caller renders no empty note.
+ */
+export function unpricedIdleNote(summary: CopilotSeatsResponse['summary']): string | null {
+  const n = summary.unpricedIdleSeats
+  if (n === 0) return null
+  return `That figure excludes ${n} idle ${plural(n, 'seat')} on a plan with no price on file.`
 }
 
 function plural(n: number, word: string): string {

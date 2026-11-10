@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import type { CopilotStatus } from '@burn-watch/shared'
-import { copilotView, describeSync, ENCRYPTION_FAULTS } from './copilot'
+import type { CopilotSeatsResponse, CopilotStatus } from '@burn-watch/shared'
+import {
+  copilotView,
+  describeIdleSeats,
+  describeSync,
+  unpricedIdleNote,
+  ENCRYPTION_FAULTS,
+} from './copilot'
 
 function status(over: Partial<CopilotStatus> = {}): CopilotStatus {
   return {
@@ -165,5 +171,70 @@ describe('describeSync', () => {
         usage: { written: 0 },
       }),
     ).toBe('2026-11-09: 4 seats, 0 rows written.')
+  })
+})
+
+function summary(
+  over: Partial<CopilotSeatsResponse['summary']> = {},
+): CopilotSeatsResponse['summary'] {
+  return {
+    active: 0,
+    idle: 0,
+    unlinked: 0,
+    idleMonthlyCostUsd: 0,
+    unpricedIdleSeats: 0,
+    ...over,
+  }
+}
+
+describe('describeIdleSeats', () => {
+  it('says so plainly when nothing is idle, rather than reporting a $0.00 total', () => {
+    expect(describeIdleSeats(summary({ active: 12 }), 30)).toBe(
+      'No seat has been idle for more than 30 days.',
+    )
+  })
+
+  /**
+   * The count on its own is trivia. An admin is here to decide whether to
+   * revoke seats, and that decision is made on the money, so the two never
+   * travel apart.
+   */
+  it('names the money behind the count', () => {
+    expect(describeIdleSeats(summary({ idle: 4, idleMonthlyCostUsd: 76 }), 30)).toBe(
+      '4 seats idle for more than 30 days, $76.00 a month.',
+    )
+  })
+
+  it('says seat and day in the singular', () => {
+    expect(describeIdleSeats(summary({ idle: 1, idleMonthlyCostUsd: 19 }), 1)).toBe(
+      '1 seat idle for more than 1 day, $19.00 a month.',
+    )
+  })
+
+  it('names the window it was given, not a fixed 30 days', () => {
+    expect(describeIdleSeats(summary({ idle: 2, idleMonthlyCostUsd: 38 }), 90)).toContain(
+      'more than 90 days',
+    )
+  })
+})
+
+describe('unpricedIdleNote', () => {
+  it('stays silent when every idle seat has a price', () => {
+    expect(unpricedIdleNote(summary({ idle: 4, idleMonthlyCostUsd: 76 }))).toBeNull()
+  })
+
+  /**
+   * A total that quietly understates the waste is worse than one that admits
+   * what it left out, so the caveat is not optional once there is one to make.
+   */
+  it('says how many idle seats the figure leaves out', () => {
+    const note = unpricedIdleNote(summary({ idle: 5, idleMonthlyCostUsd: 76, unpricedIdleSeats: 2 }))
+    expect(note).toBe('That figure excludes 2 idle seats on a plan with no price on file.')
+  })
+
+  it('says seat in the singular', () => {
+    expect(unpricedIdleNote(summary({ idle: 1, unpricedIdleSeats: 1 }))).toBe(
+      'That figure excludes 1 idle seat on a plan with no price on file.',
+    )
   })
 })

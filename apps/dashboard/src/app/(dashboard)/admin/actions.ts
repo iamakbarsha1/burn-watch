@@ -9,9 +9,10 @@ import {
   connectCopilot,
   disconnectCopilot,
   syncCopilot,
+  fetchCopilotSeats,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
-import type { AgentName, CopilotSyncResult } from '@burn-watch/shared'
+import type { AgentName, CopilotSeatsResponse, CopilotSyncResult } from '@burn-watch/shared'
 
 export interface InviteState {
   ok: boolean
@@ -251,5 +252,42 @@ export async function syncCopilotAction(
     return { ok: true, message: `Synced ${result.day}.`, result }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : 'Copilot sync failed' }
+  }
+}
+
+/** The roster travels back so the panel can render it. Nothing is stored. */
+export interface CopilotSeatsState extends CopilotActionState {
+  seats?: CopilotSeatsResponse
+}
+
+export async function loadCopilotSeatsAction(
+  _prev: CopilotSeatsState | null,
+  formData: FormData,
+): Promise<CopilotSeatsState> {
+  if ((await getUserRole()) !== 'admin') {
+    return { ok: false, message: 'Admin role required' }
+  }
+
+  // Empty leaves the window to the API. Checked here anyway so a typo comes
+  // back as a sentence instead of a Zod 400.
+  const raw = String(formData.get('idleAfterDays') ?? '').trim()
+  const idleAfterDays = raw ? Number(raw) : undefined
+  if (
+    idleAfterDays !== undefined &&
+    (!Number.isInteger(idleAfterDays) || idleAfterDays < 1 || idleAfterDays > 365)
+  ) {
+    return { ok: false, message: 'Enter a whole number of days between 1 and 365' }
+  }
+
+  try {
+    const seats = await fetchCopilotSeats(idleAfterDays)
+    // No revalidatePath. This reads and writes nothing, and revalidating would
+    // re-run every other fetch the admin page makes for no new information.
+    return { ok: true, message: `Read ${seats.seats.length} seats from ${seats.org}.`, seats }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Failed to read the Copilot seats',
+    }
   }
 }
