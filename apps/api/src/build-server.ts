@@ -13,6 +13,7 @@ import { authRoutes } from './routes/auth/device.js'
 import { inviteRoutes } from './routes/auth/invites.js'
 import { usageRoutes } from './routes/usage/submit.js'
 import { dashboardRoutes } from './routes/dashboard/index.js'
+import { copilotIntegrationRoutes } from './routes/integrations/copilot.js'
 
 /**
  * Registers everything onto an existing instance. Takes the instance rather
@@ -56,6 +57,7 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
   server.register(inviteRoutes, { prefix: '/v1/auth' })
   server.register(usageRoutes, { prefix: '/v1' })
   server.register(dashboardRoutes, { prefix: '/v1/dashboard' })
+  server.register(copilotIntegrationRoutes, { prefix: '/v1/integrations' })
 
   // Actually touches the database. Returning `{ ok: true }` unconditionally
   // meant a dead database still reported healthy to Vercel and to any uptime

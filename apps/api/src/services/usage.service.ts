@@ -4,16 +4,18 @@ import type { UsageEvent, ClaudeEnrichment } from '@burn-watch/shared'
 import type { DbOrTx } from '../plugins/db.js'
 
 /**
- * Who reported these rows. The device path is the only writer today, so it is
- * the default and `deviceId` stays required for it. A source with no device
- * behind it gets its own entry point rather than loosening this signature.
+ * Who reported these rows. The device path stays the default, so an existing
+ * caller that names no source keeps writing 'agent'.
  */
 export type UsageSource = 'agent' | 'copilot-org'
 
 export async function upsertUsageEvents(
   db: DbOrTx,
   userId: string,
-  deviceId: string,
+  // Null for an org-level pull, which has no developer machine behind it. The
+  // column is nullable for the same reason, and the unique constraint over it
+  // is NULLS NOT DISTINCT so two such rows still collide instead of doubling.
+  deviceId: string | null,
   date: string,
   events: UsageEvent[],
   source: UsageSource = 'agent',
