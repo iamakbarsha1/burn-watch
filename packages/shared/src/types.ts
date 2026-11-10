@@ -264,3 +264,39 @@ export interface BudgetAlert {
   tripped: boolean
   monthToDateSpendUsd: number
 }
+
+// GET /v1/integrations/copilot/status.
+//
+// `encryption` keeps all three states rather than collapsing to a boolean.
+// This response is the only place an operator learns that COPILOT_ENCRYPTION_KEY
+// was mistyped rather than never set, and the two faults need different repairs.
+//
+// `connected` and `encryption` are independent. A connection stored while the
+// key was present survives the key being removed from the environment, so
+// `connected: true` with a non-ready `encryption` is reachable and real.
+export interface CopilotStatus {
+  encryption: 'ready' | 'missing-key' | 'malformed-key'
+  connected: boolean
+  org: string | null
+  lastSyncAt: string | null
+}
+
+// POST /v1/integrations/copilot/sync.
+//
+// `unmatchedLogins` is never optional and never empty by omission. A GitHub
+// login with no matching `github_username` on a BurnWatch user contributes
+// nothing to the totals and looks exactly like a developer who did no work,
+// so the list travels to whatever renders the result.
+export interface CopilotSyncResult {
+  day: string
+  seats: {
+    total: number
+    skippedNullAssignee: number
+  }
+  usage: {
+    matched: number
+    written: number
+    skipped: number
+  }
+  unmatchedLogins: string[]
+}

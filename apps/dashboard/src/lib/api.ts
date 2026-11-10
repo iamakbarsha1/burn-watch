@@ -11,6 +11,8 @@ import type {
   BudgetAlert,
   BudgetAlertInput,
   BudgetAlertPatch,
+  CopilotStatus,
+  CopilotSyncResult,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -48,6 +50,10 @@ async function apiMutate<T>(method: string, path: string, body?: unknown): Promi
     try { msg = JSON.parse(text).error ?? msg } catch {}
     throw new Error(msg)
   }
+  // A 204 carries no body, and `res.json()` on an empty one throws a
+  // SyntaxError that reads like a network fault. DELETE /copilot/connection
+  // answers 204; this keeps the next bodyless route from rediscovering it.
+  if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
 
@@ -133,4 +139,32 @@ export async function updateBudgetAlert(id: string, patch: BudgetAlertPatch): Pr
 
 export async function deleteBudgetAlert(id: string): Promise<{ id: string }> {
   return apiDelete(`/v1/dashboard/budget-alerts/${id}`)
+}
+
+export async function fetchCopilotStatus(): Promise<CopilotStatus> {
+  return apiFetch('/v1/integrations/copilot/status')
+}
+
+// The token goes up and is never seen again. Nothing in the response carries
+// it back, not even a prefix, so there is nothing here to be careful with
+// afterwards.
+export async function connectCopilot(
+  org: string,
+  token: string,
+): Promise<{ connected: true; org: string }> {
+  // `apiMutate` directly rather than a one-caller `apiPut` wrapper: PUT has
+  // exactly this one use in the dashboard.
+  return apiMutate('PUT', '/v1/integrations/copilot/connection', { org, token })
+}
+
+// 204, so there is no body. `apiMutate` returns undefined for one.
+export async function disconnectCopilot(): Promise<void> {
+  return apiDelete('/v1/integrations/copilot/connection')
+}
+
+// `day` omitted means yesterday UTC, which the API picks. Today is never a
+// sensible default: GitHub has usually not generated the report yet, and the
+// sync would quietly write nothing.
+export async function syncCopilot(day?: string): Promise<CopilotSyncResult> {
+  return apiPost('/v1/integrations/copilot/sync', day ? { day } : {})
 }
