@@ -55,11 +55,14 @@ jobs:
 
       # install.ps1 edits the user PATH, which the next shell reads, not this
       # one. Call the binary where it was written.
+      # Block scalars: a bare `&` opens a YAML anchor and the file stops parsing.
       - shell: pwsh
-        run: & "$HOME\.local\bin\burnwatch.exe" --version
+        run: |
+          & "$HOME\.local\bin\burnwatch.exe" --version
 
       - shell: pwsh
-        run: & "$HOME\.local\bin\burnwatch.exe" install-cron
+        run: |
+          & "$HOME\.local\bin\burnwatch.exe" install-cron
 
       - shell: cmd
         run: schtasks /query /tn BurnWatchSync /v /fo LIST
