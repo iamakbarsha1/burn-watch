@@ -41,7 +41,12 @@ const IV_BYTES = 12
  * writing to `process.env` and leaving it there for whatever runs next.
  */
 export function credentialCrypto(env: NodeJS.ProcessEnv = process.env): CredentialCrypto {
-  const configured = env.COPILOT_ENCRYPTION_KEY
+  // Trimmed because `openssl rand -base64 32`, the documented way to produce
+  // this value, ends its output with a newline. Piping that straight into a
+  // secret store carries the newline along, and an untrimmed read would then
+  // reject a key the operator generated correctly. Whitespace means nothing in
+  // base64, so there is no input this accepts that it should have refused.
+  const configured = env.COPILOT_ENCRYPTION_KEY?.trim()
   if (!configured) return { available: false, reason: 'missing-key' }
 
   const key = Buffer.from(configured, 'base64')
