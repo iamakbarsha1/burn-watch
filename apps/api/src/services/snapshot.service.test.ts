@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { SQL } from 'drizzle-orm'
 import { PgDialect, getTableConfig } from 'drizzle-orm/pg-core'
 import { drizzle } from 'drizzle-orm/neon-serverless'
 import * as schema from '../../drizzle/schema.js'
@@ -23,6 +24,9 @@ interface FakeTables {
  */
 function fakeDb(tables: FakeTables) {
   const inserted: Record<string, unknown>[] = []
+  // Every statement in the order the service issued it. A raw statement keeps
+  // its SQL so a test can render it; a builder call is only named.
+  const issued: Array<SQL | 'select' | 'insert'> = []
 
   const rowsFor = (table: unknown): unknown[] => {
     if (table === claudeEnrichment) return tables.enrichment ? [tables.enrichment] : []
@@ -54,16 +58,26 @@ function fakeDb(tables: FakeTables) {
   }
 
   const db = {
-    select: () => ({ from: (table: unknown) => chain(rowsFor(table)) }),
-    insert: () => ({
-      values: (row: Record<string, unknown>) => {
-        inserted.push(row)
-        return { onConflictDoUpdate: () => Promise.resolve() }
-      },
-    }),
+    execute: (query: SQL) => {
+      issued.push(query)
+      return Promise.resolve([])
+    },
+    select: () => {
+      issued.push('select')
+      return { from: (table: unknown) => chain(rowsFor(table)) }
+    },
+    insert: () => {
+      issued.push('insert')
+      return {
+        values: (row: Record<string, unknown>) => {
+          inserted.push(row)
+          return { onConflictDoUpdate: () => Promise.resolve() }
+        },
+      }
+    },
   }
 
-  return { db: db as unknown as DB, inserted }
+  return { db: db as unknown as DB, inserted, issued }
 }
 
 const agentRow = (agent: string, tokens: unknown, cost: unknown, models: string[] = []) => ({
@@ -225,6 +239,30 @@ describe('rebuildDailySnapshot', () => {
     await rebuildDailySnapshot(db, USER, DATE)
 
     expect(inserted).toHaveLength(0)
+  })
+
+  /**
+   * The race itself (BW-41) is out of this fake's reach. It resolves every
+   * query inline, so two rebuilds can never overlap here. The live repro is
+   * `src/scripts/bw41-snapshot-race.ts`. What this can check is the shape the
+   * repro depends on. A transaction-scoped lock keyed on this user-day, taken
+   * before the aggregate read. A lock issued after the read, a session-scoped
+   * `pg_advisory_lock` that would leak through Neon's transaction-mode pooler,
+   * or a key missing the date all fail here.
+   */
+  it('locks the user-day before reading anything, with a transaction-scoped lock', async () => {
+    const { db, issued } = fakeDb({
+      user: { orgId: 'org-1' },
+      agentRows: [agentRow('claude', 10, 1)],
+    })
+
+    await rebuildDailySnapshot(db, USER, DATE)
+
+    const [first] = issued
+    expect(first).toBeInstanceOf(SQL)
+    const lock = new PgDialect().sqlToQuery(first as SQL)
+    expect(lock.sql).toMatch(/^select pg_advisory_xact_lock\(hashtext\(/)
+    expect(lock.params).toEqual([USER, DATE])
   })
 })
 
