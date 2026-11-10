@@ -156,10 +156,12 @@ export async function listCopilotSeats(
       })
     }
 
-    if (pageSeats.length < SEATS_PER_PAGE) break
+    if (pageSeats.length < SEATS_PER_PAGE) return { seats, totalSeats, skippedNullAssignee }
   }
 
-  return { seats, totalSeats, skippedNullAssignee }
+  throw new Error(
+    `copilot: seat roster for ${org} still full after ${MAX_SEAT_PAGES} pages; the pagination contract has changed`,
+  )
 }
 
 export async function fetchCopilotUserDays(
