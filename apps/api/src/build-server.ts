@@ -31,7 +31,16 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
       return reply.status(400).send({ error: 'Validation failed', details: error.flatten() })
     }
     server.log.error(error)
-    return reply.status(error.statusCode ?? 500).send({ error: error.message })
+    const status = error.statusCode ?? 500
+    // Under 500, whoever threw chose the status and wrote the message for the
+    // caller: Fastify's own auth and rate-limit text, or a route's deliberate
+    // client error. At 500 the message is whatever failed, and a database
+    // driver's names tables, columns, constraints and sometimes row values.
+    // The dashboard renders `error` in the browser, so that text stays in
+    // the log above and nowhere else.
+    return reply
+      .status(status)
+      .send({ error: status < 500 ? error.message : 'Internal server error' })
   })
 
   // No CORS plugin on purpose, and that survives the API moving to its own

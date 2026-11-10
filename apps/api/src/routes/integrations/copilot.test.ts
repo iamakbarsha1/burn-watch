@@ -621,8 +621,8 @@ describe('POST /v1/integrations/copilot/sync', () => {
    * A fine-grained PAT carries an expiry, so the credential that worked at
    * connect time is exactly the one likeliest to be dead by the next sync.
    * Before this was wrapped, the error escaped to the global handler, which
-   * answers with `{ error: error.message }` — and `apiError` puts GitHub's
-   * whole response body in that message.
+   * then answered with `{ error: error.message }`, and `apiError` puts
+   * GitHub's whole response body in that message.
    */
   it('answers 502 with the GitHub status when the token stopped working', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
@@ -1033,9 +1033,9 @@ describe('GET /v1/integrations/copilot/seats', () => {
   })
 
   it('answers 502 with the GitHub status, and none of its response body', async () => {
-    // `apiError` carries GitHub's whole body in the message and the global
-    // handler sends `error.message`, so an unwrapped call echoes raw upstream
-    // text to the caller.
+    // `apiError` carries GitHub's whole body in the message. An unwrapped
+    // call would be a generic 500 now rather than an echo of that body, and
+    // the caller would lose the status that says which remedy applies.
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsStatus = 401
     dbState.results.push(connectedRow())
