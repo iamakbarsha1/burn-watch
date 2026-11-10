@@ -11,7 +11,7 @@ import {
   type AgentSourceTotals,
 } from './snapshot.js'
 import type { Store, Txn } from './store.js'
-import { upsertUsageEvents } from './usage.js'
+import { upsertEnrichment, upsertUsageEvents } from './usage.js'
 
 const row = (
   agent: AgentSourceTotals['agent'],
@@ -160,6 +160,108 @@ describe('upsertUsageEvents', () => {
     expect(op.update.$setOnInsert).toEqual({ orgId })
     // A no-op re-sync is still an acceptance (matchedCount, not modifiedCount).
     expect(counts).toEqual({ accepted: 1, skipped: 0 })
+  })
+})
+
+/** A Txn that records every updateOne, keyed by the collection it landed on. */
+function fakeWriteTxn() {
+  const writes: Record<string, { filter: Document; update: Document; opts?: Document }[]> = {}
+  const collection = (name: string) => ({
+    updateOne: async (filter: Document, update: Document, opts?: Document) => {
+      ;(writes[name] ??= []).push({ filter, update, opts })
+      return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0, upsertedId: null }
+    },
+  })
+  const tx = {
+    claudeEnrichment: collection('claudeEnrichment'),
+    dailySnapshots: collection('dailySnapshots'),
+  } as unknown as Txn
+  return { tx, writes }
+}
+
+const wireEnrichment = {
+  date: date as string,
+  sessionCount: 4,
+  callCount: 31,
+  cacheHitRate: 92.1,
+  writtenTokens: 1234,
+  activityBreakdown: [{ type: 'Coding', cost: 1, turns: 2, oneShotRate: 50 }],
+  projectBreakdown: [{ path: 'acme/widgets', cost: 1, avgPerSession: 1, sessions: 1, overheadK: 0 }],
+  topSessions: [{ date: date as string, project: 'acme/widgets', cost: 1, calls: 2 }],
+  toolUsage: { bash: 501 },
+  shellUsage: { git: 238 },
+  mcpUsage: { neon: 14 },
+}
+
+describe('upsertEnrichment', () => {
+  it('writes the heavy blobs to claudeEnrichment under the user-day key', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, wireEnrichment)
+    const [{ filter, update, opts }] = writes.claudeEnrichment
+    expect(filter).toEqual({ _id: dayKey(userId, date) })
+    expect(opts).toEqual({ upsert: true })
+    expect(update.$set).toMatchObject({
+      userId,
+      orgId,
+      date,
+      writtenTokens: 1234,
+      toolUsage: { bash: 501 },
+      mcpUsage: { neon: 14 },
+    })
+  })
+
+  /**
+   * The counters only exist on the snapshot now. Postgres kept them on
+   * claude_enrichment and had every rebuild copy them across; the Mongo
+   * rebuild deliberately does not, because it must never overwrite a field it
+   * did not compute. So this write is the only thing that puts them anywhere,
+   * and dropping it leaves the dashboard reading zeros with nothing raised —
+   * zero being a legitimate value for all three.
+   */
+  it('also lands the three counters on the day snapshot, in the same transaction', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, wireEnrichment)
+    expect(writes.dailySnapshots).toHaveLength(1)
+    const [{ filter, update, opts }] = writes.dailySnapshots
+    expect(filter).toEqual({ _id: dayKey(userId, date) })
+    expect(opts).toEqual({ upsert: true })
+    expect(update.$set).toEqual({ callCount: 31, sessionCount: 4, cacheHitRate: 92.1 })
+  })
+
+  it('writes a genuine zero rather than leaving the field alone', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, {
+      ...wireEnrichment,
+      callCount: 0,
+      sessionCount: 0,
+      cacheHitRate: 0,
+    })
+    expect(writes.dailySnapshots[0].update.$set).toEqual({
+      callCount: 0,
+      sessionCount: 0,
+      cacheHitRate: 0,
+    })
+  })
+
+  /**
+   * Enrichment and a rebuild both upsert the same _id, in whichever order they
+   * arrive, and each has to be able to create the day on its own. What makes
+   * that safe is that neither one $sets a field the other one owns: each
+   * $setOnInserts the other's fields as defaults and never touches them again.
+   */
+  it('seeds every field the rebuild owns on insert, and sets none of them', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, wireEnrichment)
+    const { $set, $setOnInsert } = writes.dailySnapshots[0].update
+
+    const rebuildOwns = ['byAgent', 'totalTokens', 'totalCostMicros', 'modelsUsed', 'updatedAt']
+    for (const field of rebuildOwns) {
+      expect($set).not.toHaveProperty(field)
+      expect($setOnInsert).toHaveProperty(field)
+    }
+    // A snapshot created by this write is still a whole document: the dashboard
+    // reads orgId and date off it, and a rebuild may never run for this day.
+    expect($setOnInsert).toMatchObject({ userId, orgId, date, totalCostMicros: 0 })
   })
 })
 

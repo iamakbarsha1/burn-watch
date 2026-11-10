@@ -1,6 +1,14 @@
-import type { UsageEvent } from '@burn-watch/shared'
+import type { ClaudeEnrichment, UsageEvent } from '@burn-watch/shared'
 import type { UsageSource } from './documents.js'
-import { microsFromUsd, type DeviceId, type IsoDate, type OrgId, type UserId } from './ids.js'
+import {
+  dayKey,
+  microsFromUsd,
+  type DeviceId,
+  type IsoDate,
+  type Micros,
+  type OrgId,
+  type UserId,
+} from './ids.js'
 import type { Txn } from './store.js'
 
 /**
@@ -53,4 +61,76 @@ export async function upsertUsageEvents(
   // matchedCount, not modifiedCount: a no-op re-sync still touches submittedAt.
   const accepted = source === 'agent' ? r.upsertedCount : r.upsertedCount + r.matchedCount
   return { accepted, skipped: events.length - accepted }
+}
+
+/**
+ * Writes one user-day of Claude enrichment: the heavy blobs to
+ * claudeEnrichment, and callCount, sessionCount and cacheHitRate to the
+ * day's snapshot.
+ *
+ * Two writes rather than one, and the second is the whole reason this takes a
+ * Txn. ClaudeEnrichmentDoc no longer carries those three counters — they live
+ * only on DailySnapshotDoc, because rebuildDailySnapshot recomputes agent
+ * totals and must not clobber a field it did not compute. Postgres had the
+ * opposite arrangement: the counters lived on claude_enrichment and every
+ * rebuild read them back out and copied them across. Nothing does that copy
+ * now, so if this function only filled claudeEnrichment the dashboard would
+ * read zeros for all three forever, and zero is a legitimate value for every
+ * one of them, so nothing would ever raise.
+ *
+ * Each write $setOnInserts what the other one $sets. The two compose in either
+ * order, and either one can be the write that creates the day, so neither has
+ * to run first and neither leaves a half-formed snapshot behind.
+ */
+export async function upsertEnrichment(
+  tx: Txn,
+  userId: UserId,
+  orgId: OrgId,
+  enrichment: ClaudeEnrichment,
+): Promise<void> {
+  const date = enrichment.date as IsoDate
+  const _id = dayKey(userId, date)
+  const now = new Date()
+
+  await tx.claudeEnrichment.updateOne(
+    { _id },
+    {
+      $set: {
+        userId,
+        orgId,
+        date,
+        writtenTokens: enrichment.writtenTokens,
+        activityBreakdown: enrichment.activityBreakdown,
+        projectBreakdown: enrichment.projectBreakdown,
+        topSessions: enrichment.topSessions,
+        toolUsage: enrichment.toolUsage,
+        shellUsage: enrichment.shellUsage,
+        mcpUsage: enrichment.mcpUsage,
+        submittedAt: now,
+      },
+    },
+    { upsert: true },
+  )
+
+  await tx.dailySnapshots.updateOne(
+    { _id },
+    {
+      $set: {
+        callCount: enrichment.callCount,
+        sessionCount: enrichment.sessionCount,
+        cacheHitRate: enrichment.cacheHitRate,
+      },
+      $setOnInsert: {
+        userId,
+        orgId,
+        date,
+        byAgent: {},
+        totalTokens: 0,
+        totalCostMicros: 0 as Micros,
+        modelsUsed: [],
+        updatedAt: now,
+      },
+    },
+    { upsert: true },
+  )
 }
