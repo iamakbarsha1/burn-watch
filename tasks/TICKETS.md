@@ -628,8 +628,8 @@ behind a deny rule, so the values have to come from the user.
 - [x] Device tokens are correctly refused by the dashboard API — all five
       dashboard routes return 403 `Dashboard access requires user role` for a
       device-role JWT, so a stolen agent token cannot read spend data
-- [ ] Dashboard login works end to end against the deployment
-- [ ] One authenticated query per dashboard page returns real data
+- [x] Dashboard login works end to end against the deployment
+- [x] One authenticated query per dashboard page returns real data
 
 The last two cannot be closed from a terminal. Dashboard reads need a
 **user**-role JWT, and that is minted only by `createApiTokenForEmail` in
@@ -653,10 +653,28 @@ deliberately: a local pass is evidence about the code, not about the deploy.
 
 Both projects were redeployed from `main` on 2026-11-06 after the BW-18 fixes,
 so the deployment now carries them — but that only moves the question, it does
-not answer it. Closing these two needs a person with a password. The accounts
-exist; nobody in this session holds one, and minting a fresh admin against the
-production database to self-serve the check is a worse trade than leaving two
-boxes unticked.
+not answer it. Closing these two needs a person with a password.
+
+**Closed 2026-11-10.** The password existed all along — `akbar@test.com` was
+reset on 2026-11-06 and written down; the previous session's note that nobody
+held one was simply out of date. Signed in at `burn-watch-delta.vercel.app`
+against the real deployment and loaded all eight pages. Every one returned
+production data, not an empty state:
+
+| Page | What came back |
+| --- | --- |
+| Overview | `$3,038.53`, 5.0B tokens, five agents with Qwen flagged free tier |
+| Leaderboard | Akbar Sha, `$3,038.53`, 19,205 sessions |
+| Trends | daily spend 03-26 to 11-05, Claude peak `$303.31` |
+| Activity | 26,317 calls across 399 distinct tools |
+| Projects | per-project cost, top row `al-sorat` at `$450.58` over 406 sessions |
+| Devices | four registered devices, approval form present |
+| Admin | 5 members, 3/5 with the agent installed, 0 open invites |
+| Setup | the BW-40 one-line installer, live |
+
+The lesson is cheaper than the delay: the blocker was recorded as "nobody has
+credentials" and never rechecked after credentials were created in the very
+next session.
 
 ---
 

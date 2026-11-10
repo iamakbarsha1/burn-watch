@@ -143,3 +143,57 @@ against the database (63 rows, 1 real user) and covered by a falsified test.
 - BW-20's debt is unchanged: nobody has watched a systemd timer or a Task
   Scheduler task actually fire. Both documents now say so where a developer
   who could settle it will read it.
+
+---
+
+## BW-40 · Prebuilt binaries and a one-line install — 2026-11-10
+
+### What changed
+
+1. **Release `v0.2.0`** publishes four binaries and `checksums.txt`. A stale
+   `v0.1.0` from 2026-06-24 was already there — three binaries, no checksums,
+   built before BW-31 fixed a default API URL that pointed at a domain which
+   never existed, so `register` on it could only fail. Its `darwin-x64` asset
+   had been downloaded, so a new tag was cut rather than the old one rewritten.
+2. **`scripts/install.sh` rewritten.** It already existed and had never run:
+   it resolved the latest tag through the GitHub API, then downloaded from a
+   release that did not exist. It verified nothing, and defaulted to
+   `/usr/local/bin` with a `sudo` fallback — a password prompt inside a piped
+   shell. Now: checksum-gated, `~/.local/bin`, no sudo, no API call, warns
+   when an older hand-installed copy still wins the PATH lookup.
+3. **`scripts/install.ps1`** for Windows, same checksum gate.
+4. **One version constant.** It was three literals, and the one that matters
+   is `agentVersion` in `register` — the `devices` table stores whatever it is
+   told. `src/version.ts` plus a test against `package.json`.
+5. **`/setup` drops to five steps.** Build-from-source moved into a native
+   `<details>`.
+
+### Verification
+
+- `npm run typecheck` — 5/5 clean
+- `npm test` — 376 passing (shared 36, agent 60, api 232, dashboard 48)
+- Install tested end to end through the real raw.githubusercontent URL:
+  downloaded, checksum verified, `--version` → `0.2.0`, self-check OK, PATH
+  warning fired
+- Refusal paths tested, both exit 1 and install nothing: a release with no
+  `checksums.txt` (real, against `v0.1.0`), and a tampered binary
+- Version drift test falsified
+- Dashboard deployed to production and `/setup` confirmed live
+
+### Also closed
+
+- **BW-08.** Signed in at the real deployment and loaded all eight pages;
+  every one returned production data. The two boxes had been open since
+  2026-11-05 recorded as "nobody has credentials" — credentials were created
+  the next day and the blocker was never rechecked.
+
+### Still open
+
+- `install.ps1` is reviewed, not executed. No PowerShell on this machine to
+  even parse it. Same debt as BW-20.
+- BW-20 itself: nobody has watched a systemd timer or a Task Scheduler task
+  fire.
+- `apps/api/.env.example` still ships `REDIS_URL`, `CORS_ORIGIN` and
+  `COPILOT_ENCRYPTION_KEY`. Nothing reads them. The path is behind a deny
+  rule, so it needs a human: `sed -i '' '/^REDIS_URL=/d; /^CORS_ORIGIN=/d;
+  /^COPILOT_ENCRYPTION_KEY=/d' apps/api/.env.example`
