@@ -151,6 +151,61 @@ describe('diffStructure', () => {
     expect(drift.conflictingIndexes[0].live).not.toContain('unique')
   })
 
+  /**
+   * The one a key-and-uniqueness comparison reads as clean. usageEvents_key
+   * with a partialFilterExpression is still unique, still over the same six
+   * fields in the same order — it simply stops covering every row outside the
+   * filter. Those rows then re-sync as duplicates forever while the check
+   * reports nothing, which is the silent failure this whole phase exists for.
+   */
+  it('catches a unique index narrowed by a partial filter', () => {
+    const o = current()
+    reshape(o, 'usageEvents', 'usageEvents_key', (i) => ({
+      ...i,
+      partialFilterExpression: { source: 'agent' },
+    }))
+
+    const drift = diffStructure(observed(o))
+    expect(drift.conflictingIndexes).toHaveLength(1)
+    expect(drift.conflictingIndexes[0].expected).not.toContain('partial')
+    expect(drift.conflictingIndexes[0].live).toContain('partial={"source":"agent"}')
+  })
+
+  it('catches a sparse index where the registry declares a dense one', () => {
+    const o = current()
+    reshape(o, 'usageEvents', 'usageEvents_key', (i) => ({ ...i, sparse: true }))
+
+    const drift = diffStructure(observed(o))
+    expect(drift.conflictingIndexes).toHaveLength(1)
+    expect(drift.conflictingIndexes[0].live).toContain('sparse')
+  })
+
+  /**
+   * A case-insensitive collation on users_email makes A@corp.com and
+   * a@corp.com collide, so the second signup fails on a duplicate key and
+   * keeps failing. Same key, same uniqueness, different meaning.
+   */
+  it('catches an index carrying a collation', () => {
+    const o = current()
+    reshape(o, 'users', 'users_email', (i) => ({
+      ...i,
+      collation: { locale: 'en', strength: 2 },
+    }))
+
+    const drift = diffStructure(observed(o))
+    expect(drift.conflictingIndexes).toHaveLength(1)
+    expect(drift.conflictingIndexes[0].live).toContain('collation=en/2')
+  })
+
+  it('catches a hidden index, which the planner will not use at all', () => {
+    const o = current()
+    reshape(o, 'usageEvents', 'usageEvents_key', (i) => ({ ...i, hidden: true }))
+
+    const drift = diffStructure(observed(o))
+    expect(drift.conflictingIndexes).toHaveLength(1)
+    expect(drift.conflictingIndexes[0].live).toContain('hidden')
+  })
+
   it('catches a TTL index set to the wrong expiry', () => {
     const o = current()
     reshape(o, 'rateLimits', 'rateLimits_ttl', (i) => ({ ...i, expireAfterSeconds: 3600 }))
@@ -191,6 +246,11 @@ describe('diffStructure', () => {
     const drift = diffStructure(observed(o))
     expect(drift.inFlightMigrations).toEqual(MIGRATIONS.map((m) => m.id))
     expect(isClean(drift)).toBe(false)
+    // Under one heading, not both. "Never started" and "died partway" want
+    // opposite moves from an operator — run sync, versus look before touching
+    // anything — and filtering pending on completion alone printed the same
+    // id under both in the same error.
+    expect(drift.pendingMigrations).toEqual([])
   })
 
   describe('a database ahead of the code is a rollback, not an outage', () => {

@@ -15,14 +15,21 @@ async function main() {
   const client = new MongoClient(uri)
   try {
     await assertSchemaCurrent(client.db())
+    // Said out loud, and inside the try. Below the finally, a close() that
+    // rejected on an otherwise-clean database would exit 1 over a teardown.
+    console.log('clean: every collection, index and migration the code expects is present')
   } finally {
     await client.close()
   }
-  // Said out loud. Silence from a checker reads as a crash.
-  console.log('clean: every collection, index and migration the code expects is present')
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error)
-  process.exit(1)
+  console.error(error instanceof Error ? (error.stack ?? error.message) : error)
+  // exitCode, not exit(). Writes to a pipe are asynchronous on POSIX and
+  // process.exit discards whatever is still queued; in CI stderr is always a
+  // pipe, and the drift report is exactly the long payload that gets cut. A
+  // checker that exits 1 having printed nothing is the one outcome it must
+  // never produce. Both clients are closed in a finally, so nothing holds the
+  // loop open and the process still ends here.
+  process.exitCode = 1
 })
