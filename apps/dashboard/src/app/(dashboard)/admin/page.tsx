@@ -1,10 +1,16 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getUserRole } from '@/lib/session'
-import { fetchAdminUsers, fetchPendingInvites, fetchBudgetAlerts } from '@/lib/api'
+import {
+  fetchAdminUsers,
+  fetchPendingInvites,
+  fetchBudgetAlerts,
+  fetchCopilotStatus,
+} from '@/lib/api'
 import { formatCost, formatTokens, formatAgo } from '@/lib/format'
 import { InviteForm } from './InviteForm'
 import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
+import { CopilotPanel } from './CopilotPanel'
 import {
   PageHeader,
   StatTile,
@@ -26,10 +32,14 @@ export default async function AdminPage() {
 
   // The page is still useful when one of these fails — an admin who cannot
   // reach the API should still see the invite form rather than an error screen.
-  const [users, invites, budgetAlerts] = await Promise.all([
+  // Null rather than [] for the status: there is no empty Copilot status, and
+  // the panel renders "could not read" rather than quietly claiming the
+  // integration is unconfigured when the API is the thing that is down.
+  const [users, invites, budgetAlerts, copilotStatus] = await Promise.all([
     fetchAdminUsers().catch(() => []),
     fetchPendingInvites().catch(() => []),
     fetchBudgetAlerts().catch(() => []),
+    fetchCopilotStatus().catch(() => null),
   ])
 
   const onboarded = users.filter((u) => u.deviceCount > 0).length
@@ -200,9 +210,9 @@ export default async function AdminPage() {
 
         <Section
           title="GitHub Copilot integration"
-          description="Pulling Copilot usage needs a GitHub org connection, which is not built yet. Copilot figures stay at zero until it is. Business and Enterprise plans only."
+          description="Connect a GitHub organization to pull its Copilot seat and usage figures. Copilot spend stays at zero until one is connected. Business and Enterprise plans only."
         >
-          <Badge>Not yet available</Badge>
+          <CopilotPanel status={copilotStatus} />
         </Section>
       </div>
     </div>
