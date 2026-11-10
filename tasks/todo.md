@@ -100,3 +100,46 @@ against the database (63 rows, 1 real user) and covered by a falsified test.
 - `next build` — clean, 13 routes
 - Browser pass at 1440px and 390px on every page, signed in against the real API
 - Both new test groups falsified (reverted the fix, watched them fail, restored)
+
+---
+
+## BW-39 · Cross-platform setup — 2026-11-10
+
+### What changed
+
+1. **Windows could never collect.** `CcusageCollector` spawned `npx` with no
+   shell. On Windows that is `npx.cmd`, which a bare spawn fails `ENOENT` on;
+   the collector logged and returned null, so `collect` returned an empty
+   array and a Windows machine would have reported zero every evening with no
+   error anywhere a user looks. One option — `shell: process.platform ===
+   'win32'` — fixes it, and two tests faking `process.platform` pin it.
+2. **`/setup` is now per-OS.** Body moved into `components/SetupSteps.tsx`
+   behind a macOS/Linux/Windows switch that defaults to the reader's own OS.
+   Four steps differ: installing Bun, building and placing the binary, the
+   config path, and verifying the schedule. Troubleshooting branches too.
+3. **The Linux instruction was wrong, not just missing.** Both documents told
+   Linux users to hand-write a crontab line, which has double-scheduled the
+   sync since BW-20 installed a systemd timer. Gone. `loginctl enable-linger`
+   is documented now, which the systemd backend has quietly needed all along.
+4. **Windows now exists in the docs.** PowerShell build, the `$HOME\bin` PATH
+   line nothing else sets, `schtasks /query /tn BurnWatchSync`, and a
+   `command not found` troubleshooting row.
+5. **`docs/INSTALL.md`, `setup.md`, `docs/ARCHITECTURE.md`** all carry the
+   three-backend story, plus a cross-compile table so one machine can build
+   every binary.
+
+### Verification
+
+- `npm run typecheck` — 5/5 clean
+- `npm test` — agent 58, dashboard 48, 5/5 tasks green
+- `next build` — clean, 13 routes
+- Browser pass at 1440px and 390px on all three OS tabs, signed in against
+  the real API
+- Both new test groups falsified (removed the fix, watched them fail,
+  restored)
+
+### Still open
+
+- BW-20's debt is unchanged: nobody has watched a systemd timer or a Task
+  Scheduler task actually fire. Both documents now say so where a developer
+  who could settle it will read it.

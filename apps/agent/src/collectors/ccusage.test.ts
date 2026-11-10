@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'events'
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -142,5 +142,29 @@ describe('CcusageCollector.collectRange', () => {
     const result = await new CcusageCollector().collectRange([])
     expect(result.size).toBe(0)
     expect(spawnMock).not.toHaveBeenCalled()
+  })
+})
+
+// npx is `npx.cmd` on Windows. A bare spawn fails ENOENT on it, which would
+// mean every Windows machine silently reports zero usage for ever.
+describe('spawn options by platform', () => {
+  const real = process.platform
+
+  function fakePlatform(platform: string) {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+  }
+
+  afterEach(() => fakePlatform(real))
+
+  it('runs npx through a shell on Windows', async () => {
+    fakePlatform('win32')
+    await new CcusageCollector().collect('2026-11-05')
+    expect(spawnMock.mock.calls[0][2]).toMatchObject({ shell: true })
+  })
+
+  it('does not reach for a shell anywhere else', async () => {
+    fakePlatform('darwin')
+    await new CcusageCollector().collect('2026-11-05')
+    expect(spawnMock.mock.calls[0][2]).toMatchObject({ shell: false })
   })
 })

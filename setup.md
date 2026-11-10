@@ -1,103 +1,117 @@
-Next steps to run it
+# Running BurnWatch locally
 
-# 1. Install dependencies
+Bringing the monorepo up on your own machine. For installing the agent as a
+developer, or onboarding the team, see [docs/INSTALL.md](docs/INSTALL.md).
 
+Needs Node 20+ and Bun 1.3+.
+
+## 1. Install dependencies
+
+```bash
 npm install
+```
 
-# 2. Set up Neon DB + Redis (copy .env.example)
+## 2. Point both apps at a database
 
+One Neon database serves the API and the dashboard. The two secrets they share
+have to match, or the dashboard signs you in and then cannot mint an API token.
+
+```bash
 cp apps/api/.env.example apps/api/.env
+cp apps/dashboard/.env.local.example apps/dashboard/.env.local
+```
 
-# Fill DATABASE_URL, REDIS_URL, JWT_SECRET
+| File | Fill |
+| --- | --- |
+| `apps/api/.env` | `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET` |
+| `apps/dashboard/.env.local` | `DATABASE_URL`, `API_URL`, `JWT_SECRET`, `BETTER_AUTH_SECRET` |
 
-# 3. Push DB schema
+`JWT_SECRET` and `DATABASE_URL` must be identical in both.
 
-npm run db:push
+`apps/api/.env.example` still lists `REDIS_URL`, `CORS_ORIGIN` and
+`COPILOT_ENCRYPTION_KEY`. Nothing reads them: Redis went in `57d9d0b`, the cors
+plugin went with it, and the Copilot key waits on BW-21. Leave them blank.
 
-# 4. Bootstrap first org + user (one-time)
+## 3. Create the schema
 
+```bash
+npm run db:migrate
+```
+
+`db:push` also exists and is fine against a scratch branch, but it writes no
+row to `drizzle.__drizzle_migrations`, so a database brought up that way reads
+as un-migrated to the `/health` schema check added in BW-37. Use `db:migrate`.
+
+## 4. Create the first org and admin
+
+Only works while the database holds zero organizations.
+
+```bash
 curl -X POST http://localhost:3001/v1/auth/admin/bootstrap \
- -H "Content-Type: application/json" \
- -d '{"orgName":"Acme Corp","orgSlug":"acme","email":"admin@acme.com","name":"Akbar"}'
+  -H 'content-type: application/json' \
+  -d '{"orgName":"Acme","orgSlug":"acme","email":"admin@acme.com","name":"Admin"}'
+```
 
-# 5. Start API
+Then set a password for that email at `/signup` on the dashboard. Sign-up is
+gated: the route answers 403 for any email without an active `users` row.
 
-cd apps/api && npm run dev
+## 5. Start everything
 
-# 6. Register your device (agent CLI)
+```bash
+npm run dev
+```
 
-cd apps/agent && bun run src/index.ts register --api-url http://localhost:3001
+Runs the API on 3001 and the dashboard on 3000 in parallel. To run one on its
+own, `npm run dev` inside `apps/api` or `apps/dashboard`.
 
-# 7. Sync your data
+## 6. Register the agent against localhost
 
+```bash
+cd apps/agent
+bun run src/index.ts register --api-url http://localhost:3001
 bun run src/index.ts sync --last-7
+```
 
-# 8. Start dashboard
+`sync` prints the host it resolved on its first line. Check it says localhost —
+a stale `~/.burnwatch/config.json` is how a walkthrough's data ends up in
+production (BW-38).
 
-cd apps/dashboard && npm run dev
+## 7. Schedule the daily sync (optional)
 
-# 9. Schedule the daily sync (macOS, optional)
-
+```bash
 bun run src/index.ts install-cron
+```
 
-Writes `~/Library/LaunchAgents/com.burnwatch.agent.plist`, runs `sync` at 6 PM
-daily, logs to `~/.burnwatch/agent.log` and `agent-error.log`. Run it from the
-build you want scheduled: from source it schedules `bun <entry> sync`, from a
-compiled binary it schedules `<binary> sync`.
+Runs `sync` at 6 PM daily, using whatever the OS provides:
 
-`register` already installs the schedule on first registration, but only when no
-plist exists. `install-cron` unloads and rewrites unconditionally, so it is also
-the repair for a plist written before BW-32. That version scheduled
-`process.execPath`, which from source is the bun runtime rather than burnwatch.
-The job fires at 6 PM and dies with `error: Script not found "sync"`. Any machine
-registered before BW-32 needs one `install-cron` run; upgrading the agent alone
-does not fix a plist already on disk.
+| OS | Writes | Check it |
+| --- | --- | --- |
+| macOS | `~/Library/LaunchAgents/com.burnwatch.agent.plist` | `launchctl list \| grep com.burnwatch.agent` |
+| Linux | `~/.config/systemd/user/burnwatch-sync.{service,timer}` | `systemctl --user status burnwatch-sync.timer` |
+| Windows | Task Scheduler task `BurnWatchSync` | `schtasks /query /tn BurnWatchSync` |
 
-# Remove the schedule (and stop the daily sync)
+Run it from the build you want scheduled: from source it schedules
+`bun <entry> sync`, from a compiled binary it schedules `<binary> sync`.
 
+`register` already installs the schedule on first registration, but only when
+none exists. `install-cron` removes and rewrites unconditionally, so it is also
+the repair for a plist written before BW-32 — that version scheduled
+`process.execPath`, which from source is the bun runtime rather than burnwatch,
+and the job dies at 6 PM with `error: Script not found "sync"`. Upgrading the
+agent does not fix a plist already on disk.
+
+Remove the schedule and revoke the device token:
+
+```bash
 bun run src/index.ts uninstall
+```
 
-Config stays at `~/.burnwatch/config.json`.
+The config file stays. Delete `~/.burnwatch/config.json`
+(`%USERPROFILE%\.burnwatch\config.json` on Windows) if you want nothing left.
 
----
+## Checks
 
-Next Prompt:
-Run `npm install` and `npm run typecheck` at the monorepo root to verify zero type errors.
-Fix any issues found. Then test the agent CLI with `burnwatch register` and `burnwatch sync --last-7` against a local API instance.
-
-✻ Sautéed for 53s
-
-⏺ All agents shut down cleanly. Updating memory:
-
-⏺ Wrote 1 memory (ctrl+o to expand)
-
-⏺ Team shut down cleanly. Implementation complete.
-
----
-
-Completed:
-
-- 39 files across monorepo
-- Agent CLI typechecked clean (confirmed by agent-dev)
-- API implemented with zero errors (confirmed by api-dev)
-- Dashboard 15 files with dark theme + Recharts charts
-
-Remains:
-
-- npm install at root
-- Provision Neon DB + Upstash Redis
-- npm run db:push to migrate schema
-- Bootstrap first org via POST /v1/auth/admin/bootstrap
-- End-to-end smoke test
-
----
-
-Next Prompt:
-Run `npm install` then `npm run typecheck` at /Users/akbarsha/Documents/code/burn-watch.
-Fix any TypeScript errors found. Then test the agent sync flow end-to-end:
-
-1. Start API locally (apps/api npm run dev)
-2. Bootstrap org (POST /v1/auth/admin/bootstrap)
-3. burnwatch register --api-url http://localhost:3001
-4. burnwatch sync --last-7
-5. Verify daily_snapshots populated in Neon DB
+```bash
+npm run typecheck
+npm test
+```
