@@ -132,19 +132,17 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
           .set({ githubOrg: body.org })
           .where(eq(organizations.id, orgId))
 
-        // ponytail: update-then-insert, because `org_integrations` carries no
-        // unique index on (org_id, provider) and adding one needs a migration
-        // this slice does not own. Two admins racing a PUT could land two rows.
-        // Upgrade path: the unique constraint, then a plain onConflictDoUpdate.
-        const [updated] = await tx
-          .update(orgIntegrations)
-          .set({ encryptedToken })
-          .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
-          .returning({ id: orgIntegrations.id })
-
-        if (!updated) {
-          await tx.insert(orgIntegrations).values({ orgId, provider: PROVIDER, encryptedToken })
-        }
+        // A plain upsert, arbitrated by the unique index migration 0006 puts on
+        // (org_id, provider). Reconnecting replaces the credential in place.
+        // `last_sync_at` is deliberately left alone: a new token for the same
+        // org does not undo the sync history behind it.
+        await tx
+          .insert(orgIntegrations)
+          .values({ orgId, provider: PROVIDER, encryptedToken })
+          .onConflictDoUpdate({
+            target: [orgIntegrations.orgId, orgIntegrations.provider],
+            set: { encryptedToken },
+          })
       })
 
       // The token never travels back, not even a prefix of it. `connected` is
