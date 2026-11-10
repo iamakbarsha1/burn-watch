@@ -116,6 +116,14 @@ describe('listCopilotSeats', () => {
     expect(result.totalSeats).toBe(3)
   })
 
+  it('throws, naming the cap, when every page is full', async () => {
+    // The roster now feeds a rendered dollar figure, and a walk that gave up
+    // at the cap used to return the pages it had as if they were all of them.
+    const { impl, calls } = stubFetch(() => ({ body: fullSeatPage() }))
+    await expect(listCopilotSeats(TOKEN, ORG, impl)).rejects.toThrow(/50 pages/)
+    expect(calls).toHaveLength(50)
+  })
+
   it('skips a seat with a null assignee and reports how many it dropped', async () => {
     const { impl } = stubFetch(() => ({ body: seatsFixture }))
     const result = await listCopilotSeats(TOKEN, ORG, impl)
