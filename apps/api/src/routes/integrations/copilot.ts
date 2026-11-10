@@ -69,6 +69,30 @@ function githubStatusFrom(error: unknown): number | null {
   return match ? Number(match[1]) : null
 }
 
+/**
+ * What to tell an operator when a call to GitHub did not come back.
+ *
+ * A recovered status means GitHub answered and refused it, and the credential
+ * is the first thing worth checking. No status means the failure never reached
+ * that point. `listCopilotSeats` exhausting its page cap throws exactly such an
+ * error, and telling an operator their token expired would send them to rotate
+ * a working one, which is the kind of wrong remedy a 404 read as "healthy"
+ * already cost this integration once.
+ *
+ * The caller logs the error. It carries GitHub's response body, so the log is
+ * the only place it belongs.
+ */
+function upstreamFailure(error: unknown, subject: string) {
+  const githubStatus = githubStatusFrom(error)
+  return {
+    error:
+      githubStatus === null
+        ? `The ${subject} did not complete, and GitHub never refused it. Check the API log.`
+        : `GitHub rejected the ${subject}. The token may have expired or been revoked.`,
+    githubStatus,
+  }
+}
+
 export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
   // GET /copilot/status — what the dashboard renders the integration panel
   // from. Answers 200 whatever the encryption key is doing, because an absent
@@ -131,6 +155,12 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       try {
         await listCopilotSeats(body.token, body.org)
       } catch (error) {
+        // Logged for the same reason the other two call sites log: the thrown
+        // error names why the walk stopped, and the 400 below deliberately
+        // does not carry it. Kept at 400 with this wording because the
+        // operator is standing here with a token they just pasted, so "that
+        // token did not work" is the right first thing to say whatever broke.
+        request.log.error(error)
         return reply.status(400).send({
           error: 'GitHub rejected this token for that organization',
           githubStatus: githubStatusFrom(error),
@@ -248,10 +278,8 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         fetchCopilotUserDays(token, row.githubOrg, day),
       ])
     } catch (error) {
-      return reply.status(502).send({
-        error: 'GitHub rejected the sync. The token may have expired or been revoked.',
-        githubStatus: githubStatusFrom(error),
-      })
+      request.log.error(error)
+      return reply.status(502).send(upstreamFailure(error, 'sync'))
     }
 
     // Matched case-insensitively. GitHub logins are, and `github_username` is
@@ -442,10 +470,8 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     try {
       seatPage = await listCopilotSeats(token, row.githubOrg)
     } catch (error) {
-      return reply.status(502).send({
-        error: 'GitHub rejected the seat request. The token may have expired or been revoked.',
-        githubStatus: githubStatusFrom(error),
-      })
+      request.log.error(error)
+      return reply.status(502).send(upstreamFailure(error, 'seat roster read'))
     }
 
     // Matched the way POST /copilot/sync matches, down to the lowercasing on
