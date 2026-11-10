@@ -1,35 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { budgetAlerts, dailySnapshots } from '../../drizzle/schema.js'
-import type { DbOrTx } from '../plugins/db.js'
-import {
-  costColumnFor,
-  monthToDateSpend,
-  evaluateBudgetAlerts,
-  evaluateBudgetAlert,
-} from './budget-alert.service.js'
+import { COLLECTIONS } from '@burn-watch/db'
+import type { BudgetAlertDoc, IsoDate, Micros, OrgId, UserId } from '@burn-watch/db'
+import { callsTo, fakeStore, type MongoFakeState } from '../mongo-store.fake.js'
+import { evaluateBudgetAlerts, evaluateBudgetAlert } from './budget-alert.service.js'
 
-const ORG = 'org-1'
-const USER = 'user-1'
-const DATE = '2026-11-05'
+const ORG = 'org-1' as OrgId
+const USER = 'user-1' as UserId
+const DATE = '2026-11-05' as IsoDate
 
-interface AlertRow {
-  id: string
-  orgId: string
-  userId: string | null
-  agent: string | null
-  monthlyLimitUsd: string
-  threshold: string
-  trippedAt: Date | null
-  createdAt: Date
-}
-
-const alert = (over: Partial<AlertRow> = {}): AlertRow => ({
-  id: 'alert-1',
+const alert = (over: Partial<BudgetAlertDoc> = {}): BudgetAlertDoc => ({
+  _id: 'alert-1',
   orgId: ORG,
   userId: null,
   agent: null,
-  monthlyLimitUsd: '100',
-  threshold: '1',
+  monthlyLimitMicros: 100_000_000 as Micros,
+  threshold: 1,
   trippedAt: null,
   createdAt: new Date('2026-01-01'),
   ...over,
@@ -37,125 +22,105 @@ const alert = (over: Partial<AlertRow> = {}): AlertRow => ({
 
 /**
  * One alert per test, so an update in the recorded list unambiguously belongs
- * to it. `spend` stands in for whatever `monthToDateSpend` would have summed;
- * the real aggregation query is exercised separately below.
+ * to it. `spend` is the figure the aggregation would have returned, in micros;
+ * the pipeline that produces it is exercised in `packages/db`.
  */
-function fakeDb(alerts: AlertRow[], spend: unknown) {
-  const updates: Record<string, unknown>[] = []
-
-  const db = {
-    select: () => ({
-      from: (table: unknown) => ({
-        where: () => {
-          if (table === budgetAlerts) return Promise.resolve(alerts)
-          if (table === dailySnapshots) return Promise.resolve([{ spend }])
-          throw new Error('fakeDb: unexpected table in select()')
-        },
-      }),
-    }),
-    update: (table: unknown) => {
-      if (table !== budgetAlerts) throw new Error('fakeDb: unexpected update table')
-      return {
-        set: (values: Record<string, unknown>) => ({
-          where: () => {
-            updates.push(values)
-            return Promise.resolve()
-          },
-        }),
-      }
-    },
+function fake(alerts: BudgetAlertDoc[], spendMicros: number) {
+  const state: MongoFakeState = {
+    docs: { budgetAlerts: alerts },
+    aggregates: { dailySnapshots: [{ _id: null, spend: spendMicros }] },
+    calls: [],
+    failOn: null,
+    bulk: { upsertedCount: 0, matchedCount: 0 },
   }
-
-  return { db: db as unknown as DbOrTx, updates }
+  return {
+    store: fakeStore(state, Object.keys(COLLECTIONS)),
+    updates: () => callsTo(state, 'budgetAlerts', 'updateOne').map(([, update]) => update as { $set: Record<string, unknown> }),
+    reads: () => callsTo(state, 'budgetAlerts', 'find').concat(callsTo(state, 'budgetAlerts', 'findOne')),
+  }
 }
 
-describe('costColumnFor', () => {
-  it('picks the per-agent column for a known agent', () => {
-    expect(costColumnFor('claude')).toBe(dailySnapshots.claudeCostUsd)
-    expect(costColumnFor('qwen')).toBe(dailySnapshots.qwenCostUsd)
-  })
-
-  it('falls back to the all-agent total when agent is null', () => {
-    expect(costColumnFor(null)).toBe(dailySnapshots.totalCostUsd)
-  })
-
-  it('falls back to the all-agent total for a name it does not recognize', () => {
-    expect(costColumnFor('made-up-agent')).toBe(dailySnapshots.totalCostUsd)
-  })
-})
-
-describe('monthToDateSpend', () => {
-  it('coerces a numeric sum that arrives as a string', async () => {
-    const { db } = fakeDb([], '123.45')
-    const spend = await monthToDateSpend(db, ORG, null, null, DATE)
-    expect(spend).toBe(123.45)
-  })
-
-  it('treats a null or unparseable sum as zero', async () => {
-    const { db } = fakeDb([], null)
-    expect(await monthToDateSpend(db, ORG, null, null, DATE)).toBe(0)
-  })
-})
+const USD = 1_000_000
 
 describe('evaluateBudgetAlerts', () => {
   it('does nothing when the org/user has no alerts', async () => {
-    const { db, updates } = fakeDb([], 0)
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(0)
+    const { store, updates } = fake([], 0)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(0)
+  })
+
+  it('reads only this org, and only alerts that cover this user', async () => {
+    const { store, reads } = fake([], 0)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    // An org-wide alert stores a null userId rather than omitting the field,
+    // so the filter has to name it to match one.
+    expect(reads()[0][0]).toEqual({ orgId: ORG, $or: [{ userId: null }, { userId: USER }] })
   })
 
   // The ticket's boundary case: a $100 limit at threshold 1 (100%) must trip
   // the instant spend reaches $100, not only after it passes it. Flipping the
   // service's `>=` to `>` makes this go red.
   it('trips when spend lands exactly on the trip point', async () => {
-    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '100', threshold: '1' })], 100)
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(1)
-    expect(updates[0].trippedAt).toBeInstanceOf(Date)
+    const { store, updates } = fake([alert()], 100 * USD)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(1)
+    expect(updates()[0].$set.trippedAt).toBeInstanceOf(Date)
   })
 
-  it('does not trip one cent under the trip point', async () => {
-    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '100', threshold: '1' })], 99.99)
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(0)
+  /**
+   * The same boundary where the limit and the threshold do not multiply
+   * cleanly. 55% of $10.50 is $5.775 to the micro, but `10_500_000 * 0.55`
+   * evaluates to 5775000.000000001, so spend of exactly 5_775_000 micros
+   * compared against the raw product is one ulp short and does not trip. An
+   * inclusive boundary that holds only when the arithmetic happens to land
+   * exactly is not an inclusive boundary.
+   */
+  it('trips on the boundary when limit times threshold is not exact', async () => {
+    const { store, updates } = fake(
+      [alert({ monthlyLimitMicros: 10_500_000 as Micros, threshold: 0.55 })],
+      5_775_000,
+    )
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(1)
+    expect(updates()[0].$set.trippedAt).toBeInstanceOf(Date)
+  })
+
+  it('does not trip one micro under the trip point', async () => {
+    const { store, updates } = fake([alert()], 100 * USD - 1)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(0)
   })
 
   it('trips when spend is past the trip point', async () => {
-    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '100', threshold: '0.8' })], 85)
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(1)
-    expect(updates[0].trippedAt).toBeInstanceOf(Date)
+    const { store, updates } = fake([alert({ threshold: 0.8 })], 85 * USD)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(1)
+    expect(updates()[0].$set.trippedAt).toBeInstanceOf(Date)
   })
 
   it('does not re-write an alert already tripped this month', async () => {
     const trippedThisMonth = new Date(`${DATE.slice(0, 7)}-02T00:00:00Z`)
-    const { db, updates } = fakeDb(
-      [alert({ monthlyLimitUsd: '100', threshold: '1', trippedAt: trippedThisMonth })],
-      150,
-    )
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(0)
+    const { store, updates } = fake([alert({ trippedAt: trippedThisMonth })], 150 * USD)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(0)
   })
 
   it('clears a trip from this month when spend drops back under (limit raised)', async () => {
     const trippedThisMonth = new Date(`${DATE.slice(0, 7)}-02T00:00:00Z`)
-    const { db, updates } = fakeDb(
-      [alert({ monthlyLimitUsd: '500', threshold: '1', trippedAt: trippedThisMonth })],
-      100,
+    const { store, updates } = fake(
+      [alert({ monthlyLimitMicros: (500 * USD) as Micros, trippedAt: trippedThisMonth })],
+      100 * USD,
     )
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(1)
-    expect(updates[0].trippedAt).toBeNull()
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(1)
+    expect(updates()[0].$set.trippedAt).toBeNull()
   })
 
   it('leaves an earlier month trip alone rather than overwriting it', async () => {
     const trippedLastMonth = new Date('2026-10-15T00:00:00Z')
-    const { db, updates } = fakeDb(
-      [alert({ monthlyLimitUsd: '100', threshold: '1', trippedAt: trippedLastMonth })],
-      10,
-    )
-    await evaluateBudgetAlerts(db, ORG, USER, DATE)
-    expect(updates).toHaveLength(0)
+    const { store, updates } = fake([alert({ trippedAt: trippedLastMonth })], 10 * USD)
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(updates()).toHaveLength(0)
   })
 })
 
@@ -166,31 +131,49 @@ describe('evaluateBudgetAlerts', () => {
  */
 describe('evaluateBudgetAlert', () => {
   it('trips the single alert a create or update just wrote', async () => {
-    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '400', threshold: '0.5' })], 554.22)
-    await evaluateBudgetAlert(db, ORG, 'alert-1', DATE)
-    expect(updates).toHaveLength(1)
-    expect(updates[0].trippedAt).toBeInstanceOf(Date)
+    const { store, updates } = fake(
+      [alert({ monthlyLimitMicros: (400 * USD) as Micros, threshold: 0.5 })],
+      554_220_000,
+    )
+    await evaluateBudgetAlert(store, ORG, 'alert-1', DATE)
+    expect(updates()).toHaveLength(1)
+    expect(updates()[0].$set.trippedAt).toBeInstanceOf(Date)
+  })
+
+  it('looks the alert up inside the caller org, never by id alone', async () => {
+    const { store, reads } = fake([], 0)
+    await evaluateBudgetAlert(store, ORG, 'alert-1', DATE)
+    expect(reads()[0][0]).toEqual({ _id: 'alert-1', orgId: ORG })
   })
 
   it('clears a trip latched this month when the limit is raised past spend', async () => {
-    const { db, updates } = fakeDb(
-      [alert({ monthlyLimitUsd: '10000', threshold: '0.8', trippedAt: new Date(`${DATE}T09:00:00Z`) })],
-      554.22,
+    const { store, updates } = fake(
+      [
+        alert({
+          monthlyLimitMicros: (10_000 * USD) as Micros,
+          threshold: 0.8,
+          trippedAt: new Date(`${DATE}T09:00:00Z`),
+        }),
+      ],
+      554_220_000,
     )
-    await evaluateBudgetAlert(db, ORG, 'alert-1', DATE)
-    expect(updates).toHaveLength(1)
-    expect(updates[0].trippedAt).toBeNull()
+    await evaluateBudgetAlert(store, ORG, 'alert-1', DATE)
+    expect(updates()).toHaveLength(1)
+    expect(updates()[0].$set.trippedAt).toBeNull()
   })
 
   it('leaves an alert alone when it is already in the right state', async () => {
-    const { db, updates } = fakeDb([alert({ monthlyLimitUsd: '10000', threshold: '0.8' })], 554.22)
-    await evaluateBudgetAlert(db, ORG, 'alert-1', DATE)
-    expect(updates).toHaveLength(0)
+    const { store, updates } = fake(
+      [alert({ monthlyLimitMicros: (10_000 * USD) as Micros, threshold: 0.8 })],
+      554_220_000,
+    )
+    await evaluateBudgetAlert(store, ORG, 'alert-1', DATE)
+    expect(updates()).toHaveLength(0)
   })
 
   it('is a no-op for an id that matches nothing in this org', async () => {
-    const { db, updates } = fakeDb([], 554.22)
-    await evaluateBudgetAlert(db, ORG, 'does-not-exist', DATE)
-    expect(updates).toHaveLength(0)
+    const { store, updates } = fake([], 554_220_000)
+    await evaluateBudgetAlert(store, ORG, 'does-not-exist', DATE)
+    expect(updates()).toHaveLength(0)
   })
 })
