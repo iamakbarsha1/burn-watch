@@ -68,8 +68,7 @@ export function requireAuth(fastify: FastifyInstance) {
       const payload = await request.accessJwtVerify<JwtPayload>()
       // Only a device token has a `device_tokens` row. An unconditional lookup
       // would 401 every dashboard request. Inside the try so a database
-      // failure answers 401 rather than reaching the global error handler,
-      // which echoes error.message and would leak driver connection text.
+      // failure answers 401 rather than a 500 from the global error handler.
       // That makes an outage fail closed, and the cost is bounded: the agent
       // throws on any non-ok response and never re-registers, so a dead
       // database costs the fleet one skipped sync that the next run resends.
