@@ -2102,7 +2102,13 @@ fallback — a password prompt in the middle of a piped-to-shell install.
 
 **Done 2026-11-10.**
 
-Release `v0.1.0` publishes four binaries and a `checksums.txt`. The asset
+Release `v0.2.0` publishes four binaries and a `checksums.txt`. A `v0.1.0`
+from 2026-06-24 was already there — three binaries, no checksums, built before
+BW-31 fixed the default API URL, so `register` on it dies with a DNS error. Its
+`darwin-x64` asset has two downloads, so it was not overwritten; a new tag was
+cut instead. The agent version is now one constant in `src/version.ts`, tested
+against `package.json`, rather than three literals that had already drifted
+into the `devices` table. The asset
 names are the contract: `scripts/install.sh` maps `uname -s`/`uname -m`
 straight onto them, so renaming one silently breaks every install command in
 the docs and on `/setup`. `docs/INSTALL.md` says so next to the release

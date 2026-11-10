@@ -10,11 +10,12 @@ import {
 } from './lib/cron.js'
 import { DEFAULT_API_URL, hasConfig, loadConfig, deleteConfig } from './lib/config.js'
 import { ApiClient } from './lib/api.js'
+import { AGENT_VERSION } from './version.js'
 
 const program = new Command()
   .name('burnwatch')
   .description('AI token usage sync agent for BurnWatch dashboard')
-  .version('0.1.0')
+  .version(AGENT_VERSION)
 
 program
   .command('register')
