@@ -52,7 +52,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-38 | P4 | `register` overwrites an existing agent config silently | **done** | S | — |
 | BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
 | BW-40 | P4 | Every developer has to install Bun and build from source | **done** | M | BW-39 |
-| BW-41 | **P2** | Concurrent rebuilds overwrite a daily snapshot with stale totals | **open** | S | — |
+| BW-41 | **P2** | Concurrent rebuilds overwrite a daily snapshot with stale totals | **fixed 2026-11-10** | S | — |
 
 ---
 
@@ -1364,9 +1364,43 @@ settled:
    developer's local day; the GitHub report is UTC. A US Pacific developer
    working after 16:00 local lands under D for the agent and D+1 for the org,
    where no agent copilot row exists, so the org row counts in full and the
-   per-day preference is defeated across the midnight boundary. The proposed
-   fix widens the agent-sourced test to `date between d-1 and d+1` while
-   still filtering output to `date = d`.
+   per-day preference is defeated across the midnight boundary. It is
+   symmetric here: a UTC+5:30 developer working 00:00 to 05:30 lands under D
+   for the agent and D-1 for the org.
+
+   **Measured 2026-11-10, no longer inferred.** `ccusage daily --help` does
+   carry `-z, --timezone <timezone>` (IANA), and `ccusage.ts:133` does not
+   pass it, so the agent writes whatever ccusage's default bucketing calls a
+   day. Running the same range twice on one real machine, default against
+   `-z UTC`, rebuckets real money between adjacent days:
+
+   ```
+   date          local$    utc$      delta
+   2026-11-04    62.70     128.08    +65.38
+   2026-11-05    341.85    389.33    +47.48
+   2026-11-06    585.00    486.06    -98.94
+   2026-11-07    19.23     5.30      -13.93
+   ```
+
+   Totals reconcile, so nothing is lost, only moved. What is still unmeasured
+   is a Copilot double-count end to end, which needs a Copilot Business org
+   this account cannot reach. The mechanism is confirmed; the magnitude on
+   copilot rows specifically is not.
+
+   **The `date between d-1 and d+1` fix is rejected.** It converts a bounded
+   overcount into an unbounded undercount: a developer who uses Copilot on a
+   machine the agent is not installed on would have that org-only day erased
+   by an adjacent agent row, and a disappearance surfaces as nothing. It also
+   makes day `d`'s snapshot depend on `d±1` while nothing rebuilds `d` when
+   `d±1` is written, which is the same family of defect as BW-41. Two bugs of
+   one shape is reason enough on its own.
+
+   The real fault is upstream. The agent knows its own timezone and ccusage
+   takes `-z UTC`. Bucket both sources by UTC and the existing per-day SQL is
+   correct as written. The cost is that a developer's "today" shifts by their
+   offset and historical rows stay local-bucketed unless backfilled, which
+   makes it a data-semantics decision for the operator rather than a patch.
+   Deliberately not taken on this branch.
 3. `githubStatusFrom` recovers a status by regex over an error message, so a
    transport failure (DNS, blocked egress, timeout) reads to the operator as
    "GitHub rejected this token" and invites them to rotate a working
@@ -2457,10 +2491,42 @@ Folding the aggregate into the upsert as one `INSERT ... SELECT` is correct
 too and is the better long-term shape, but it is a rewrite rather than a
 guard.
 
+**Fixed 2026-11-10**, commits `775854b` (repro), `52ff9e8` (fix), `b8d2285`
+(comment correction). The suggested one-line guard is what shipped.
+
+The repro lives at `apps/api/src/scripts/bw41-snapshot-race.ts` and is run by
+hand against a branch, not by `npm test`. The suite's fake Drizzle resolves
+every query inline, so two overlapping reads have nowhere to overlap. A
+barrier holds both writers at the point their snapshots diverge, because two
+transactions racing one row otherwise serialise by luck and the script passes
+against unfixed code.
+
+Against Neon Postgres 18, before and after:
+
+```
+daily_snapshots.total_tokens: 1000   (usage_events hold 2000)
+daily_snapshots.total_tokens: 2000   PASS
+```
+
+Two things learned that are not visible in the diff. The guard works only
+under READ COMMITTED, since the waiter takes a fresh snapshot per statement;
+raising the isolation level would break it silently. And it has to be the
+`_xact_` variant, because production connects through Neon's pooler in
+pgbouncer transaction mode, where a session-scoped advisory lock leaks across
+clients. The live repro passes either way, so a suite test covers that one.
+
+Adding a statement to the rebuild shifted the positional result queue the
+route tests use to fake Postgres. One test went red; two more kept passing
+because the rebuild then returned early before the assertion's subject ran.
+All three were found by grepping the `// rebuild:` sequence comments rather
+than by trusting the runner. Deleting the new slot again makes the rollback
+test answer 200 instead of 500, which is the check that it is load-bearing.
+
 **Acceptance**
-- [ ] Two concurrent rebuilds of one `(user_id, date)` leave a snapshot that
+- [x] Two concurrent rebuilds of one `(user_id, date)` leave a snapshot that
       matches a fresh aggregate over `usage_events`
-- [ ] Proven against a real Postgres with two overlapping transactions, not
+- [x] Proven against a real Postgres with two overlapping transactions, not
       asserted from the rendered SQL
-- [ ] The order-independence claim in `snapshot.service.ts` either holds or
-      is corrected to say what it actually covers
+- [x] The order-independence claim in `snapshot.service.ts` either holds or
+      is corrected to say what it actually covers. It was corrected. The
+      preference does not follow deletes, and the comment now says so
