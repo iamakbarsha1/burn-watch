@@ -174,13 +174,18 @@ const userDayLine = (login: string, day: string, input = 100, output = 50, credi
     ai_credits_used: credits,
   })
 
-const seat = (login: string) => ({
-  assignee: { login },
+/**
+ * One raw seat as GitHub sends it. `over` takes the response's own snake_case
+ * field names so a test reads against the upstream shape rather than ours.
+ */
+const seat = (login: string, over: Record<string, unknown> = {}) => ({
+  assignee: { login } as { login: string } | null,
   plan_type: 'business',
   created_at: '2026-01-01T00:00:00Z',
-  last_activity_at: null,
-  last_activity_editor: null,
-  pending_cancellation_date: null,
+  last_activity_at: null as string | null,
+  last_activity_editor: null as string | null,
+  pending_cancellation_date: null as string | null,
+  ...over,
 })
 
 let app: FastifyInstance
@@ -194,6 +199,10 @@ const admin = () => auth(token())
 const STATUS_URL = '/v1/integrations/copilot/status'
 const CONNECTION_URL = '/v1/integrations/copilot/connection'
 const SYNC_URL = '/v1/integrations/copilot/sync'
+const SEATS_URL = '/v1/integrations/copilot/seats'
+
+/** The stored connection, as the sync and seats routes both read it back. */
+const connectedRow = () => [{ encryptedToken: sealWith(KEY, TOKEN), githubOrg: ORG }]
 
 beforeEach(async () => {
   dbState.results = []
@@ -400,8 +409,6 @@ describe('DELETE /v1/integrations/copilot/connection', () => {
 })
 
 describe('POST /v1/integrations/copilot/sync', () => {
-  const connectedRow = () => [{ encryptedToken: sealWith(KEY, TOKEN), githubOrg: ORG }]
-
   /** The rebuild and the alert pass, for one user, in the order they run. */
   const pushRebuildAndAlerts = () => {
     dbState.results.push([]) // rebuild: advisory lock on the user-day
@@ -764,12 +771,290 @@ describe('POST /v1/integrations/copilot/sync', () => {
   })
 })
 
+describe('GET /v1/integrations/copilot/seats', () => {
+  /**
+   * The idle rule is a comparison against the clock, so a real one makes the
+   * boundary cases flaky by milliseconds. Only `Date` is faked: Fastify's own
+   * timers stay real, and the app is built by the outer hook before this runs.
+   */
+  const NOW = '2026-11-10T12:00:00.000Z'
+  /** Exactly 30 days before NOW, the default window's edge. */
+  const EDGE = '2026-10-11T12:00:00.000Z'
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(NOW))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const get = (query = '', headers = admin()) =>
+    app.inject({ method: 'GET', url: `${SEATS_URL}${query}`, headers })
+
+  const statusByLogin = (body: { seats: { login: string; status: string }[] }) =>
+    Object.fromEntries(body.seats.map((s) => [s.login, s.status]))
+
+  it('calls a seat used exactly at the window active, and one second older idle', async () => {
+    // "Older than 30 days" is an age greater than 30 days, and an age of
+    // exactly 30 days is not. All three points of the boundary in one test,
+    // because they are one rule.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 3,
+      seats: [
+        seat('edge', { last_activity_at: EDGE }),
+        seat('older', { last_activity_at: '2026-10-11T11:59:59.000Z' }),
+        seat('newer', { last_activity_at: '2026-10-11T12:00:01.000Z' }),
+      ],
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const res = await get()
+
+    expect(res.statusCode).toBe(200)
+    expect(statusByLogin(res.json())).toEqual({
+      edge: 'active',
+      older: 'idle',
+      newer: 'active',
+    })
+  })
+
+  it('calls a seat that has never been used idle', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = { total_seats: 1, seats: [seat('never', { last_activity_at: null })] }
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const res = await get()
+
+    expect(statusByLogin(res.json())).toEqual({ never: 'idle' })
+    expect(res.json().summary).toMatchObject({ idle: 1, active: 0 })
+  })
+
+  it('narrowing the window moves a seat from active to idle', async () => {
+    // Proves the parameter reaches the comparison rather than only the echo.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 1,
+      seats: [seat('alice', { last_activity_at: '2026-10-31T12:00:00.000Z' })], // 10 days ago
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const wide = await get()
+    expect(statusByLogin(wide.json())).toEqual({ alice: 'active' })
+
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const narrow = await get('?idleAfterDays=7')
+    expect(statusByLogin(narrow.json())).toEqual({ alice: 'idle' })
+    expect(narrow.json().idleAfterDays).toBe(7)
+  })
+
+  it('defaults the window to 30 days when none is given', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = { total_seats: 0, seats: [] }
+    dbState.results.push(connectedRow())
+
+    const res = await get()
+
+    expect(res.json().idleAfterDays).toBe(30)
+  })
+
+  it.each(['?idleAfterDays=0', '?idleAfterDays=366', '?idleAfterDays=1.5', '?idleAfterDays=x'])(
+    'rejects %s rather than computing a window from it',
+    async (query) => {
+      process.env.COPILOT_ENCRYPTION_KEY = KEY
+      dbState.results.push(connectedRow())
+
+      const res = await get(query)
+
+      expect(res.statusCode).toBe(400)
+    },
+  )
+
+  it('leaves a plan it has no price for unpriced, and says how many it left out', async () => {
+    // A wrong dollar figure on a spend dashboard is worse than an absent one,
+    // so an unrecognised plan must never be coerced into the price table.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 2,
+      seats: [
+        seat('priced', { plan_type: 'business', last_activity_at: null }),
+        seat('unpriced', { plan_type: 'copilot_pro_plus', last_activity_at: null }),
+      ],
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const res = await get()
+
+    const byLogin = Object.fromEntries(
+      res.json().seats.map((s: { login: string }) => [s.login, s]),
+    )
+    expect(byLogin.priced.monthlyCostUsd).toBe(19)
+    expect(byLogin.unpriced.monthlyCostUsd).toBeNull()
+    expect(res.json().summary).toMatchObject({
+      idle: 2,
+      idleMonthlyCostUsd: 19,
+      unpricedIdleSeats: 1,
+    })
+  })
+
+  it('links a seat whose login differs in case from github_username', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = { total_seats: 1, seats: [seat('Alice')] }
+    dbState.results.push(connectedRow())
+    dbState.results.push([{ id: USER_A, name: 'Alice Smith', login: 'alice' }])
+
+    const res = await get()
+
+    expect(res.json().seats[0]).toMatchObject({
+      // GitHub's casing comes back, not the lowercased match key.
+      login: 'Alice',
+      userId: USER_A,
+      userName: 'Alice Smith',
+    })
+    expect(res.json().summary.unlinked).toBe(0)
+  })
+
+  it('counts the seats no BurnWatch user claims', async () => {
+    // A paid licence whose spend cannot be attributed to anyone.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 3,
+      seats: [seat('Alice'), seat('Bob'), seat('Carol')],
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([{ id: USER_A, name: 'Alice Smith', login: 'alice' }])
+
+    const res = await get()
+
+    expect(res.json().summary.unlinked).toBe(2)
+    expect(
+      res
+        .json()
+        .seats.filter((s: { userId: string | null }) => s.userId === null)
+        .map((s: { login: string }) => s.login)
+        .sort(),
+    ).toEqual(['Bob', 'Carol'])
+  })
+
+  it('orders idle before active, nulls before timestamps, then by login', async () => {
+    // Two reads of the same roster have to read identically, and the longest
+    // idle seat is the one an admin is here to find. Fed in an order that is
+    // not the answer, so a dropped sort cannot pass by accident.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    const recent = '2026-11-10T00:00:00.000Z'
+    github.seatsBody = {
+      total_seats: 6,
+      seats: [
+        seat('zeta', { last_activity_at: recent }),
+        seat('mike', { last_activity_at: '2026-01-01T00:00:00.000Z' }),
+        seat('alpha', { last_activity_at: recent }),
+        seat('bravo', { last_activity_at: null }),
+        seat('kilo', { last_activity_at: '2025-06-01T00:00:00.000Z' }),
+        seat('alfa', { last_activity_at: null }),
+      ],
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const res = await get()
+
+    expect(res.json().seats.map((s: { login: string }) => s.login)).toEqual([
+      'alfa',
+      'bravo',
+      'kilo',
+      'mike',
+      'alpha',
+      'zeta',
+    ])
+  })
+
+  it('reports GitHub own total_seats, not the number of rows it could read', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 9,
+      seats: [seat('alice'), seat('ghost', { assignee: null })],
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const res = await get()
+
+    expect(res.json().totalSeats).toBe(9)
+    expect(res.json().skippedNullAssignee).toBe(1)
+    expect(res.json().seats).toHaveLength(1)
+  })
+
+  it('names the connected org', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = { total_seats: 0, seats: [] }
+    dbState.results.push(connectedRow())
+
+    const res = await get()
+
+    expect(res.json()).toMatchObject({ org: ORG, seats: [], totalSeats: 0 })
+  })
+
+  it('returns 503, and never reaches GitHub, when no key is configured', async () => {
+    const res = await get()
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json().encryption).toBe('missing-key')
+    expect(fetchStub).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 when the org has no Copilot connection', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    dbState.results.push([])
+
+    const res = await get()
+
+    expect(res.statusCode).toBe(404)
+    expect(fetchStub).not.toHaveBeenCalled()
+  })
+
+  it('reports a stored credential that no longer decrypts, without leaking crypto internals', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    const otherKey = Buffer.alloc(32, 9).toString('base64')
+    dbState.results.push([{ encryptedToken: sealWith(otherKey, TOKEN), githubOrg: ORG }])
+
+    const res = await get()
+
+    expect(res.statusCode).toBe(500)
+    expect(res.json().error).toContain('Reconnect')
+    expect(fetchStub).not.toHaveBeenCalled()
+  })
+
+  it('answers 502 with the GitHub status, and none of its response body', async () => {
+    // `apiError` carries GitHub's whole body in the message and the global
+    // handler sends `error.message`, so an unwrapped call echoes raw upstream
+    // text to the caller.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsStatus = 401
+    dbState.results.push(connectedRow())
+
+    const res = await get()
+
+    expect(res.statusCode).toBe(502)
+    expect(res.json().githubStatus).toBe(401)
+    expect(res.payload).not.toContain('github says no')
+  })
+})
+
 describe('copilot integration routes — authorization', () => {
   const ROUTES = [
     ['GET', STATUS_URL],
     ['PUT', CONNECTION_URL],
     ['DELETE', CONNECTION_URL],
     ['POST', SYNC_URL],
+    ['GET', SEATS_URL],
   ] as const
 
   it.each(ROUTES)('%s %s returns 401 without a token', async (method, url) => {

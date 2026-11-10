@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
-import type { UsageEvent } from '@burn-watch/shared'
+import type { CopilotSeatRow, CopilotSeatsResponse, UsageEvent } from '@burn-watch/shared'
 import { orgIntegrations, organizations, users } from '../../../drizzle/schema.js'
 import { requireAdmin } from '../../plugins/jwt.js'
 import { credentialCrypto } from '../../credential-crypto.js'
@@ -32,6 +32,15 @@ const ConnectionSchema = z.object({
 })
 
 const SyncSchema = z.object({ day: z.string().regex(DAY).optional() })
+
+const SeatsQuerySchema = z.object({
+  idleAfterDays: z.coerce.number().int().min(1).max(365).default(30),
+})
+
+// GitHub's list prices per seat per month. A plan this does not name yields a
+// null cost and is counted separately, never priced by guess: a wrong dollar
+// figure on a spend dashboard is worse than an absent one.
+const SEAT_MONTHLY_USD: Record<string, number | undefined> = { business: 19, enterprise: 39 }
 
 /**
  * Yesterday, in UTC.
@@ -381,5 +390,131 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         .map((l) => byLogin.get(l)![0].login)
         .sort(),
     }
+  })
+
+  // GET /copilot/seats. Who holds a licence, and which of those seats is idle.
+  //
+  // Read live and stored nowhere. A roster is current state rather than a time
+  // series, so a table here would hold a copy that disagrees with GitHub
+  // between syncs while GitHub remains the thing that actually issues seats.
+  // The cost of that choice is a full seat walk per request, which is why
+  // nothing calls this on page load.
+  fastify.get('/copilot/seats', { preHandler: requireAdmin(fastify) }, async (request, reply) => {
+    const { idleAfterDays } = SeatsQuerySchema.parse(request.query)
+    const orgId = request.user.orgId
+
+    const crypto = credentialCrypto()
+    if (!crypto.available) {
+      return reply
+        .status(503)
+        .send({ error: 'Credential encryption is not configured', encryption: crypto.reason })
+    }
+
+    const [row] = await fastify.db
+      .select({
+        encryptedToken: orgIntegrations.encryptedToken,
+        githubOrg: organizations.githubOrg,
+      })
+      .from(orgIntegrations)
+      .innerJoin(organizations, eq(organizations.id, orgIntegrations.orgId))
+      .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
+      .limit(1)
+
+    if (!row?.githubOrg) {
+      return reply.status(404).send({ error: 'Copilot is not connected for this organization' })
+    }
+
+    let token: string
+    try {
+      token = crypto.open(row.encryptedToken, credentialContext(orgId))
+    } catch {
+      return reply.status(500).send({
+        error: 'The stored Copilot credential could not be decrypted. Reconnect the integration.',
+      })
+    }
+
+    // Wrapped for the reason the sync route wraps its own call, written out
+    // above: `apiError` carries GitHub's response body in the message and the
+    // global handler sends `error.message`. The status travels; the body does
+    // not.
+    let seatPage: Awaited<ReturnType<typeof listCopilotSeats>>
+    try {
+      seatPage = await listCopilotSeats(token, row.githubOrg)
+    } catch (error) {
+      return reply.status(502).send({
+        error: 'GitHub rejected the seat request. The token may have expired or been revoked.',
+        githubStatus: githubStatusFrom(error),
+      })
+    }
+
+    // Matched the way POST /copilot/sync matches, down to the lowercasing on
+    // both sides. GitHub logins are case-insensitive and `github_username` is
+    // typed in by hand here, so a second matcher that disagreed would link a
+    // developer on one route and call them unknown on the other.
+    const logins = [...new Set(seatPage.seats.map((s) => s.login.toLowerCase()))]
+    const linked = logins.length
+      ? await fastify.db
+          .select({
+            id: users.id,
+            name: users.name,
+            login: sql<string>`lower(${users.githubUsername})`,
+          })
+          .from(users)
+          .where(and(eq(users.orgId, orgId), inArray(sql`lower(${users.githubUsername})`, logins)))
+      : []
+    const userByLogin = new Map(linked.map((u) => [u.login, u]))
+
+    const cutoff = Date.now() - idleAfterDays * 86_400_000
+
+    const seats: CopilotSeatRow[] = seatPage.seats.map((seat) => {
+      const user = userByLogin.get(seat.login.toLowerCase())
+      // Strict, so a seat used exactly `idleAfterDays` ago is still active.
+      // An unreadable timestamp parses to NaN and `NaN < cutoff` is false, so
+      // it lands as active too. That is wanted rather than overlooked: garbage
+      // must not inflate the idle dollar figure an admin acts on.
+      const idle = seat.lastActivityAt === null || Date.parse(seat.lastActivityAt) < cutoff
+
+      return {
+        login: seat.login,
+        userId: user?.id ?? null,
+        userName: user?.name ?? null,
+        status: idle ? 'idle' : 'active',
+        lastActivityAt: seat.lastActivityAt,
+        lastActivityEditor: seat.lastActivityEditor,
+        planType: seat.planType,
+        monthlyCostUsd: SEAT_MONTHLY_USD[seat.planType] ?? null,
+        pendingCancellationDate: seat.pendingCancellationDate,
+      }
+    })
+
+    // Idle first, then longest idle first, then login. Compared as plain
+    // strings because ISO-8601 sorts lexicographically and does so the same
+    // way in every locale, with a null collapsing to '' and sorting ahead of
+    // any real timestamp. Two reads of the same roster have to read the same.
+    seats.sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'idle' ? -1 : 1
+      const at = a.lastActivityAt ?? ''
+      const bt = b.lastActivityAt ?? ''
+      if (at !== bt) return at < bt ? -1 : 1
+      return a.login.localeCompare(b.login)
+    })
+
+    const idleSeats = seats.filter((s) => s.status === 'idle')
+
+    const response: CopilotSeatsResponse = {
+      org: row.githubOrg,
+      idleAfterDays,
+      totalSeats: seatPage.totalSeats,
+      skippedNullAssignee: seatPage.skippedNullAssignee,
+      seats,
+      summary: {
+        active: seats.length - idleSeats.length,
+        idle: idleSeats.length,
+        unlinked: seats.filter((s) => s.userId === null).length,
+        idleMonthlyCostUsd: idleSeats.reduce((sum, s) => sum + (s.monthlyCostUsd ?? 0), 0),
+        unpricedIdleSeats: idleSeats.filter((s) => s.monthlyCostUsd === null).length,
+      },
+    }
+    return response
   })
 }
