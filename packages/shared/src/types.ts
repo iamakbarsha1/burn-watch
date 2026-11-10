@@ -289,6 +289,17 @@ export interface CopilotStatus {
 // so the list travels to whatever renders the result.
 export interface CopilotSyncResult {
   day: string
+  /**
+   * Whether GitHub had a report for that day at all.
+   *
+   * False and "nobody used Copilot" both produce no rows, and only the first
+   * is worth retrying. It also covers a third case: GitHub answers 404 rather
+   * than 403 for a resource a token cannot see, so a credential that can read
+   * seat billing but lacks Copilot metrics looks exactly like a day that has
+   * not been generated. Collapsing them would leave such a token looking
+   * healthy forever while pulling nothing.
+   */
+  reportPublished: boolean
   seats: {
     total: number
     skippedNullAssignee: number

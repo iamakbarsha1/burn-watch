@@ -72,9 +72,18 @@ export const ENCRYPTION_FAULTS = {
  */
 export function describeSync(result: {
   day: string
+  reportPublished?: boolean
   seats: { total: number; skippedNullAssignee: number }
   usage: { written: number }
 }): string {
+  // An unpublished report is not a quiet day, and saying "0 rows written"
+  // for one tells an operator nothing is wrong when retrying is the entire
+  // remedy. It is also what a token without Copilot metrics permission looks
+  // like, because GitHub answers 404 rather than 403 there, so the wording
+  // points at both causes rather than only the innocent one.
+  if (result.reportPublished === false) {
+    return `${result.day}: GitHub has not published a report for this day. Try again later, or check that the token carries Copilot metrics access.`
+  }
   const rows = result.usage.written
   return `${result.day}: ${result.seats.total} ${plural(result.seats.total, 'seat')}, ${rows} ${plural(rows, 'row')} written.`
 }

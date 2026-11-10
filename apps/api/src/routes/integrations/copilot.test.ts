@@ -662,6 +662,64 @@ describe('POST /v1/integrations/copilot/sync', () => {
     expect(writeOps()).toEqual([])
   })
 
+  /**
+   * An unpublished report and an idle organization both write nothing, and
+   * only the first is worth retrying. GitHub also answers 404, not 403, for
+   * a resource a token cannot see, so this is equally what a PAT lacking
+   * Copilot metrics looks like. Stamping `last_sync_at` for it would leave
+   * such a token reading as healthy forever while pulling nothing, which is
+   * why the write is gated rather than the response merely annotated.
+   */
+  it('reports an unpublished day instead of calling it a quiet one', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.reportStatus = 404
+    dbState.results.push(connectedRow())
+
+    const res = await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json().reportPublished).toBe(false)
+    expect(res.json().usage).toEqual({ matched: 0, written: 0, skipped: 0 })
+  })
+
+  it('does not advance last_sync_at for a day GitHub never published', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.reportStatus = 404
+    dbState.results.push(connectedRow())
+
+    await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(writeOps()).toEqual([])
+  })
+
+  it('marks a genuinely empty but published report as published', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.downloadLinks = [DOWNLOAD]
+    github.ndjson = ''
+    dbState.results.push(connectedRow())
+    dbState.results.push([])
+
+    const res = await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(res.json().reportPublished).toBe(true)
+    expect(res.json().usage.written).toBe(0)
+  })
+
   it('returns 503, and never reaches GitHub, when no key is configured', async () => {
     const res = await app.inject({ method: 'POST', url: SYNC_URL, headers: admin() })
 

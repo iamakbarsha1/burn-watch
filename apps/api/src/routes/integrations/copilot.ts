@@ -6,7 +6,7 @@ import { orgIntegrations, organizations, users } from '../../../drizzle/schema.j
 import { requireAdmin } from '../../plugins/jwt.js'
 import { credentialCrypto } from '../../credential-crypto.js'
 import { listCopilotSeats, fetchCopilotUserDays } from '../../services/copilot.service.js'
-import type { CopilotUserDay } from '../../services/copilot.service.js'
+import type { CopilotReport, CopilotUserDay } from '../../services/copilot.service.js'
 import { upsertUsageEvents } from '../../services/usage.service.js'
 import { rebuildDailySnapshot } from '../../services/snapshot.service.js'
 import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
@@ -38,8 +38,8 @@ const SyncSchema = z.object({ day: z.string().regex(DAY).optional() })
  *
  * Today is never the default. GitHub publishes no lag for when a day's report
  * becomes available, and `fetchCopilotUserDays` reads a 404 as "not generated
- * yet" and returns no rows — so defaulting to today would make the ordinary
- * sync a silent no-op rather than an error anyone notices.
+ * yet", so defaulting to today would make the ordinary sync report an
+ * unpublished day every time and train an operator to ignore it.
  */
 function yesterdayUtc(): string {
   const d = new Date()
@@ -230,9 +230,9 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     // from a module that takes care elsewhere to keep a signed URL out of a
     // log. The status travels; the body does not.
     let seatPage: Awaited<ReturnType<typeof listCopilotSeats>>
-    let userDays: CopilotUserDay[]
+    let report: CopilotReport
     try {
-      ;[seatPage, userDays] = await Promise.all([
+      ;[seatPage, report] = await Promise.all([
         listCopilotSeats(token, row.githubOrg),
         fetchCopilotUserDays(token, row.githubOrg, day),
       ])
@@ -249,7 +249,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     // `unmatchedLogins` exists to make visible, so it should not be one this
     // route creates for itself.
     const byLogin = new Map<string, CopilotUserDay[]>()
-    for (const d of userDays) {
+    for (const d of report.rows) {
       const key = d.login.toLowerCase()
       const bucket = byLogin.get(key)
       if (bucket) bucket.push(d)
@@ -333,10 +333,12 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       // one bad row cannot discard everyone else's sync.
       const counts = await fastify.db.transaction(async (tx) => {
         const c = await upsertUsageEvents(tx, user.id, null, day, events, 'copilot-org')
-        // Safe to repeat. The unique constraint is NULLS NOT DISTINCT, so a
-        // re-run inserts nothing; the rebuild recomputes the day from scratch
-        // rather than adding to it; and a budget alert latches per calendar
-        // month instead of firing again.
+        // Safe to repeat, though not by inserting nothing: an org row now
+        // overwrites on conflict, so a re-sync replaces the day's figures
+        // with whatever GitHub currently reports. The rebuild recomputes the
+        // day from scratch rather than adding to it, and a budget alert
+        // latches per calendar month instead of firing again, so repeating a
+        // sync converges rather than accumulating.
         await rebuildDailySnapshot(tx, user.id, day)
         await evaluateBudgetAlerts(tx, orgId, user.id, day)
         return c
@@ -346,13 +348,26 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       skipped += counts.skipped
     }
 
-    await fastify.db
-      .update(orgIntegrations)
-      .set({ lastSyncAt: new Date() })
-      .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
+    // Only a sync that actually read a report counts as a sync. Stamping this
+    // unconditionally made an unpublished day indistinguishable from a quiet
+    // one on the panel, which would then show a last-synced date for a run
+    // that fetched nothing. A stalled `lastSyncAt` is the signal an operator
+    // needs when a token silently lacks the metrics permission.
+    if (report.published) {
+      await fastify.db
+        .update(orgIntegrations)
+        .set({ lastSyncAt: new Date() })
+        .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
+    }
 
     return {
       day,
+      // False means GitHub has no report for this day yet, which is the
+      // expected answer near the day boundary and is also what a token
+      // without Copilot metrics permission looks like, since GitHub answers
+      // 404 rather than 403 for a resource a token cannot see. Either way the
+      // remedy is the caller's to choose, so the distinction travels.
+      reportPublished: report.published,
       seats: { total: seatPage.totalSeats, skippedNullAssignee: seatPage.skippedNullAssignee },
       usage: { matched, written, skipped },
       // Never optional, and never empty by omission. A developer whose

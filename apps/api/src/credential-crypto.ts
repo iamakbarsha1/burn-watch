@@ -82,10 +82,22 @@ export function credentialCrypto(env: NodeJS.ProcessEnv = process.env): Credenti
      *
      * Without it the tag proves only that the ciphertext was not altered, not
      * that it belongs to the row it was read from. A credential copied
-     * between `org_integrations` rows by a careless migration, a restore from
-     * another environment, or manual surgery would then decrypt without
-     * complaint and hand one organization another organization's token. With
-     * it, the same mistake throws.
+     * between `org_integrations` rows, by a careless migration or by hand,
+     * would then decrypt without complaint and hand one organization another
+     * organization's token. With it, the same mistake throws.
+     *
+     * It does NOT protect a restore from another environment, which is worth
+     * stating because it is the case people assume it covers. A restore
+     * copies whole rows, `org_id` included, so the context still matches and
+     * the envelope opens. What protects that is a different
+     * `COPILOT_ENCRYPTION_KEY` per environment, which already fails loudly on
+     * the "could not be decrypted" path.
+     *
+     * One more gap it cannot close: `organizations.github_org` names the org
+     * the token is pointed at, lives in a different table, and is plaintext.
+     * Editing it redirects a valid credential without touching this envelope.
+     * The backstop there is GitHub, which will only answer for an org the
+     * token already had access to.
      */
     seal(plaintext: string, context: string): SealedCredential {
       // A fresh IV per call. Repeating one under GCM is not a weakening, it is

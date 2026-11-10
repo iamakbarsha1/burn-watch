@@ -247,12 +247,13 @@ describe('fetchCopilotUserDays', () => {
 
   it('follows the download links and maps every usable line', async () => {
     const { impl, calls } = stubFetch(reportThenFile)
-    const rows = await fetchCopilotUserDays(TOKEN, ORG, DAY, impl)
+    const report = await fetchCopilotUserDays(TOKEN, ORG, DAY, impl)
 
     expect(calls.map((c) => c.url)).toEqual([REPORT_URL, DOWNLOAD_URL])
+    expect(report.published).toBe(true)
     // login3 did nothing that day, and the file carries a blank line.
-    expect(rows.map((r) => r.login)).toEqual(['login1', 'login2', 'login4'])
-    expect(rows.map((r) => r.totalTokens)).toEqual([12700, 40, 30])
+    expect(report.rows.map((r) => r.login)).toEqual(['login1', 'login2', 'login4'])
+    expect(report.rows.map((r) => r.totalTokens)).toEqual([12700, 40, 30])
   })
 
   it('sends no Authorization header to the pre-authenticated download link', async () => {
@@ -262,9 +263,31 @@ describe('fetchCopilotUserDays', () => {
     expect(calls[1].headers).toBeUndefined()
   })
 
-  it('reads a 404 as a report that is not published yet', async () => {
+  /**
+   * Not published and nobody used Copilot both produce no rows, and only one
+   * of them is worth retrying. GitHub also answers 404 rather than 403 for a
+   * resource a token cannot see, so this is what a PAT lacking the metrics
+   * permission looks like too. The flag is the only thing that separates the
+   * three, so it has to survive out of the service.
+   */
+  it('reads a 404 as a report that is not published, and says so', async () => {
     const { impl } = stubFetch(() => ({ status: 404, text: '{"message":"Not Found"}' }))
-    await expect(fetchCopilotUserDays(TOKEN, ORG, DAY, impl)).resolves.toEqual([])
+    await expect(fetchCopilotUserDays(TOKEN, ORG, DAY, impl)).resolves.toEqual({
+      published: false,
+      rows: [],
+    })
+  })
+
+  it('separates an empty published report from an unpublished one', async () => {
+    const { impl } = stubFetch((url) =>
+      url.startsWith(REPORT_URL)
+        ? { body: { download_links: [DOWNLOAD_URL] } }
+        : { text: '' },
+    )
+    await expect(fetchCopilotUserDays(TOKEN, ORG, DAY, impl)).resolves.toEqual({
+      published: true,
+      rows: [],
+    })
   })
 
   it('throws with the status and body on any other non-2xx', async () => {
@@ -287,6 +310,9 @@ describe('fetchCopilotUserDays', () => {
 
   it('returns nothing when the report carries no download_links key', async () => {
     const { impl } = stubFetch(() => ({ body: { report_day: DAY } }))
-    await expect(fetchCopilotUserDays(TOKEN, ORG, DAY, impl)).resolves.toEqual([])
+    await expect(fetchCopilotUserDays(TOKEN, ORG, DAY, impl)).resolves.toEqual({
+      published: true,
+      rows: [],
+    })
   })
 })
