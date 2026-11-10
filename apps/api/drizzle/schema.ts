@@ -118,9 +118,18 @@ export const usageEvents = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    deviceId: uuid('device_id')
-      .notNull()
-      .references(() => devices.id),
+    // Nullable because a row pulled from a GitHub org has no developer machine
+    // behind it. The FK stays so an agent-submitted row still has to name a
+    // device that exists.
+    deviceId: uuid('device_id').references(() => devices.id),
+    // Who reported the row, not what it is about. ccusage on a developer's
+    // machine already reports Copilot usage per developer, so an org-level pull
+    // would otherwise land a second row for the same person, agent and day and
+    // double their spend. Plain text rather than an enum so a third source does
+    // not need a type migration. Defaulted so every existing row reads 'agent',
+    // which is what they are. See `rebuildDailySnapshot` for how a day with both
+    // sources is resolved.
+    source: text('source').notNull().default('agent'), // 'agent' | 'copilot-org'
     agent: text('agent').notNull(),         // 'claude' | 'qwen' | 'gemini' | 'codex' | 'copilot'
     date: pgDate('date').notNull(),
     modelName: text('model_name').notNull(),
@@ -135,9 +144,14 @@ export const usageEvents = pgTable(
     submittedAt: timestamp('submitted_at').defaultNow().notNull(),
   },
   (t) => [
-    unique('usage_events_unique_user_agent_date_model_device').on(
-      t.userId, t.agent, t.date, t.modelName, t.deviceId,
-    ),
+    // NULLS NOT DISTINCT is the whole point of this constraint. `device_id` is
+    // null on every org-sourced row, and under postgres' default NULLS
+    // DISTINCT two such rows never collide, so `onConflictDoNothing` would
+    // insert a duplicate on every re-pull instead of ignoring it. Needs
+    // postgres 15 or newer; the database is 18.
+    unique('usage_events_unique_user_agent_date_model_device_source')
+      .on(t.userId, t.agent, t.date, t.modelName, t.deviceId, t.source)
+      .nullsNotDistinct(),
     index('usage_events_user_date_idx').on(t.userId, t.date),
     index('usage_events_date_total_tokens_idx').on(t.date, t.totalTokens),
     index('usage_events_agent_date_idx').on(t.agent, t.date),

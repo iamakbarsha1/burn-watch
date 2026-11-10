@@ -3,18 +3,27 @@ import { usageEvents, claudeEnrichment } from '../../drizzle/schema.js'
 import type { UsageEvent, ClaudeEnrichment } from '@burn-watch/shared'
 import type { DbOrTx } from '../plugins/db.js'
 
+/**
+ * Who reported these rows. The device path is the only writer today, so it is
+ * the default and `deviceId` stays required for it. A source with no device
+ * behind it gets its own entry point rather than loosening this signature.
+ */
+export type UsageSource = 'agent' | 'copilot-org'
+
 export async function upsertUsageEvents(
   db: DbOrTx,
   userId: string,
   deviceId: string,
   date: string,
   events: UsageEvent[],
+  source: UsageSource = 'agent',
 ): Promise<{ accepted: number; skipped: number }> {
   if (events.length === 0) return { accepted: 0, skipped: 0 }
 
   const rows = events.map((e) => ({
     userId,
     deviceId,
+    source,
     agent: e.agent,
     date,
     modelName: e.modelName,
@@ -30,6 +39,10 @@ export async function upsertUsageEvents(
   const result = await db
     .insert(usageEvents)
     .values(rows)
+    // Must list every column of
+    // `usage_events_unique_user_agent_date_model_device_source` or postgres
+    // cannot infer an arbiter index and the insert errors instead of skipping
+    // the duplicate.
     .onConflictDoNothing({
       target: [
         usageEvents.userId,
@@ -37,6 +50,7 @@ export async function upsertUsageEvents(
         usageEvents.date,
         usageEvents.modelName,
         usageEvents.deviceId,
+        usageEvents.source,
       ],
     })
     .returning({ id: usageEvents.id })
