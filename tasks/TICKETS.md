@@ -388,14 +388,19 @@ set by hand — the binding in `vercel.json` injects it. `CORS_ORIGIN` and
 - [x] `.npmrc` kept
 - [x] CORS decision applied — plugin, guard and dependency all removed, and the
       justifying comment no longer rests on a shared origin
-- [ ] `apps/api/.env.example` still ships dead keys — drop them by hand, that
-      path is behind a deny rule for the tooling. The Quickstart walk found
-      three, not one: `CORS_ORIGIN` (CORS removed in this ticket), `REDIS_URL`
-      (Redis dropped in BW-08, and the architecture doc already says "There is
+- [x] `apps/api/.env.example` no longer ships dead keys. All three went on
+      2026-11-10: `CORS_ORIGIN` (CORS removed in this ticket), `REDIS_URL`
+      (Redis dropped in BW-08, and the architecture doc already said "There is
       no REDIS_URL" two sections above the setup steps) and
       `COPILOT_ENCRYPTION_KEY` (nothing has read it since BW-07 deleted
-      `render.yaml`; BW-21 would provision it fresh). A reader copying the
-      file is told to configure three variables that no code reads.
+      `render.yaml`; BW-21 would provision it fresh). The file now lists only
+      what `build-server.ts`, `plugins/db.ts` and `server.ts` actually read:
+      `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `PORT`, `NODE_ENV`.
+
+      The path is behind a deny rule, so the agent could not do it and said so
+      in the neighbouring doc instead — which is how a ten-second edit stayed
+      open for four days across two sessions. Handing over the exact command
+      took one line and closed it.
 
 ### BW-08 · Deploy and smoke test
 **Size M** · unblocked 2026-11-05 — BW-05, BW-06 and BW-07 are all resolved
