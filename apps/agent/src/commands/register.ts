@@ -4,6 +4,7 @@ import { ApiClient } from '../lib/api.js'
 import { saveConfig, backupConfig, configuredApiUrl, DEFAULT_API_URL } from '../lib/config.js'
 import { installSchedule, isScheduleInstalled } from '../lib/cron.js'
 import { execSync } from 'child_process'
+import { AGENT_VERSION } from '../version.js'
 
 async function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
@@ -58,7 +59,7 @@ export async function registerCommand(options: { apiUrl?: string }) {
       email,
       hostname: hostname(),
       platform: process.platform,
-      agentVersion: '0.1.0',
+      agentVersion: AGENT_VERSION,
     })
     pendingId = pending.pendingId
     code = pending.code

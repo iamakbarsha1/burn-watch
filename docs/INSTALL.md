@@ -243,9 +243,20 @@ Then publish all five files, `checksums.txt` included — the installers refuse
 to run without it:
 
 ```bash
-gh release create v0.1.0 dist/burnwatch-* dist/checksums.txt \
-  --title 'burnwatch v0.1.0' --notes 'Agent binaries for macOS, Linux and Windows.'
+v=v$(node -p "require('./package.json').version")
+gh release create "$v" dist/burnwatch-* dist/checksums.txt \
+  --title "burnwatch $v" --notes 'Agent binaries for macOS, Linux and Windows.'
 ```
+
+The tag comes from `apps/agent/package.json`, which `src/version.ts` is tested
+against — the agent reports that same string as `agentVersion` when it
+registers, so a tag invented by hand puts a version in the `devices` table
+that matches no release. Bump the version, let the tag follow.
+
+A stale `v0.1.0` from 2026-06-24 is still published: three binaries, no
+`checksums.txt`, and older than every agent fix from BW-31 onward. It is left
+in place because its assets have been downloaded, but nothing should point at
+it.
 
 The asset names are the contract. `scripts/install.sh` maps `uname -s`/`uname
 -m` straight onto them, so renaming one breaks every install command in this
