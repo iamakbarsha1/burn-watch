@@ -53,6 +53,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
 | BW-40 | P4 | Every developer has to install Bun and build from source | **done** | M | BW-39 |
 | BW-41 | **P2** | Concurrent rebuilds overwrite a daily snapshot with stale totals | **fixed 2026-11-10** | S | — |
+| BW-42 | P3 | `npm ci` installs the agent from a stale lockfile entry | **open** | XS | — |
 
 ---
 
@@ -2530,3 +2531,36 @@ test answer 200 instead of 500, which is the check that it is load-bearing.
 - [x] The order-independence claim in `snapshot.service.ts` either holds or
       is corrected to say what it actually covers. It was corrected. The
       preference does not follow deletes, and the comment now says so
+
+---
+
+### BW-42 · `npm ci` installs the agent from a stale lockfile entry
+**Size XS** · no blockers · found independently by two delegates on 2026-11-10
+
+`apps/agent/package.json` says `0.2.1`. The `apps/agent` entry in the root
+`package-lock.json` says `0.1.0`. Verified by reading both:
+
+```
+package.json version: 0.2.1
+lockfile entry:       0.1.0
+```
+
+`npm install` corrects it, which is why nobody has noticed. `npm ci` does not,
+because `ci` installs the lockfile as written and treats it as authoritative.
+Anywhere that runs `ci` rather than `install`, which is the normal choice for
+CI and for a reproducible build, resolves the agent at the older version.
+
+It surfaced twice in one session because two agents in separate worktrees each
+ran `npm install` and each got an unrelated lockfile change in their diff. Both
+reverted it by hand to keep their change clean. That is the real daily cost: a
+spurious hunk that every contributor has to notice and discard, and that will
+eventually be committed by someone who does not.
+
+**Suggested fix.** Run `npm install` at the root and commit the resulting
+`package-lock.json` on its own, touching nothing else. Confirm with a clean
+`npm ci` that the installed agent version matches `package.json`.
+
+**Acceptance**
+- [ ] `package-lock.json` agrees with `apps/agent/package.json`
+- [ ] A fresh `npm ci` installs the agent at the version `package.json` names
+- [ ] `npm install` on a clean tree leaves `package-lock.json` unmodified
