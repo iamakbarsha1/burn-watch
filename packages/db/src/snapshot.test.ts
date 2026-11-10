@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { dayKey, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
-import { buildSnapshot, pickWinningSource, type AgentSourceTotals } from './snapshot.js'
+import type { Document } from 'mongodb'
+import { dayKey, type DeviceId, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
+import { buildSnapshot, pickWinningSource, rebuildDailySnapshot, type AgentSourceTotals } from './snapshot.js'
+import type { Txn } from './store.js'
+import { upsertUsageEvents } from './usage.js'
 
 const row = (
   agent: AgentSourceTotals['agent'],
@@ -8,6 +11,10 @@ const row = (
   tokens: number,
   models: string[] = [],
 ): AgentSourceTotals => ({ agent, source, tokens, costMicros: (tokens * 10) as Micros, models })
+
+const userId = 'u1' as UserId
+const orgId = 'o1' as OrgId
+const date = '2026-01-15' as IsoDate
 
 describe('pickWinningSource', () => {
   it('prefers the agent source per agent, not globally', () => {
@@ -37,12 +44,10 @@ describe('pickWinningSource', () => {
 
 describe('buildSnapshot', () => {
   it('sums the winning rows and keys the document by user-day', () => {
-    const userId = 'u1' as UserId
-    const date = '2026-01-15' as IsoDate
     const now = new Date('2026-01-16T00:00:00Z')
     const doc = buildSnapshot(
       userId,
-      'o1' as OrgId,
+      orgId,
       date,
       [
         { agent: 'claude', tokens: 100, costMicros: 1_000_000 as Micros, models: ['opus', 'sonnet'] },
@@ -59,5 +64,93 @@ describe('buildSnapshot', () => {
     })
     expect(doc.modelsUsed).toEqual(['opus', 'sonnet'])
     expect(doc.updatedAt).toBe(now)
+  })
+})
+
+/** A Txn that answers the three reads a rebuild makes and records its one write. */
+function fakeTxn(rows: AgentSourceTotals[]) {
+  const writes: Array<{ filter: Document; update: Document; opts: Document | undefined }> = []
+  const tx = {
+    usageEvents: { aggregate: async () => rows },
+    users: { findOne: async () => ({ _id: userId, orgId }) },
+    dailySnapshots: {
+      updateOne: async (filter: Document, update: Document, opts?: Document) => {
+        writes.push({ filter, update, opts })
+        return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0, upsertedId: null }
+      },
+    },
+  } as unknown as Txn
+  return { tx, writes }
+}
+
+describe('rebuildDailySnapshot', () => {
+  it('upserts the recomputed totals by user-day and never overwrites enrichment fields', async () => {
+    const { tx, writes } = fakeTxn([row('claude', 'agent', 100, ['opus'])])
+    await rebuildDailySnapshot(tx, userId, date)
+    expect(writes).toHaveLength(1)
+    const [{ filter, update, opts }] = writes
+    expect(filter).toEqual({ _id: dayKey(userId, date) })
+    expect(opts).toEqual({ upsert: true })
+    expect(update.$set).toMatchObject({ userId, orgId, date, totalTokens: 100, modelsUsed: ['opus'] })
+    // Zero is a real value for these, so a rebuild writing zeros would clobber
+    // an enrichment that landed earlier with no visible error.
+    for (const field of ['callCount', 'sessionCount', 'cacheHitRate']) {
+      expect(update.$set).not.toHaveProperty(field)
+    }
+    expect(update.$setOnInsert).toEqual({ callCount: 0, sessionCount: 0, cacheHitRate: null })
+  })
+})
+
+/** A Txn that records bulkWrite ops and reports a canned result. */
+function fakeBulkTxn(result: { upsertedCount: number; matchedCount: number }) {
+  let ops: Document[] = []
+  const tx = {
+    usageEvents: {
+      bulkWrite: async (given: Document[]) => {
+        ops = given
+        return result
+      },
+    },
+  } as unknown as Txn
+  return { tx, ops: () => ops }
+}
+
+const wireEvent = {
+  agent: 'claude' as const,
+  date,
+  modelName: 'opus',
+  inputTokens: 1,
+  outputTokens: 2,
+  cacheCreateTokens: 3,
+  cacheReadTokens: 4,
+  totalTokens: 10,
+  costUsd: 1.5,
+  isFreeTier: false,
+}
+
+describe('upsertUsageEvents', () => {
+  it('agent tier: first write wins, deviceId is always in the filter, only inserts count as accepted', async () => {
+    const { tx, ops } = fakeBulkTxn({ upsertedCount: 1, matchedCount: 1 })
+    const counts = await upsertUsageEvents(tx, userId, orgId, 'd1' as DeviceId, date, [wireEvent, wireEvent])
+    const op = ops()[0].updateOne
+    expect(op.filter).toEqual({ userId, date, agent: 'claude', modelName: 'opus', deviceId: 'd1', source: 'agent' })
+    expect(op.upsert).toBe(true)
+    expect(op.update.$setOnInsert).toMatchObject({ orgId, totalTokens: 10, costMicros: 1_500_000 })
+    // A match must change nothing, so there is no $set at all.
+    expect(op.update).not.toHaveProperty('$set')
+    expect(counts).toEqual({ accepted: 1, skipped: 1 })
+  })
+
+  it('copilot-org tier: latest write wins, a null device is named in the filter, matches count as accepted', async () => {
+    const { tx, ops } = fakeBulkTxn({ upsertedCount: 0, matchedCount: 1 })
+    const counts = await upsertUsageEvents(tx, userId, orgId, null, date, [wireEvent], 'copilot-org')
+    const op = ops()[0].updateOne
+    // Omitting deviceId here would let any device's row match and swallow the write.
+    expect(op.filter).toHaveProperty('deviceId', null)
+    expect(op.filter.source).toBe('copilot-org')
+    expect(op.update.$set).toMatchObject({ totalTokens: 10, costMicros: 1_500_000 })
+    expect(op.update.$setOnInsert).toEqual({ orgId })
+    // A no-op re-sync is still an acceptance (matchedCount, not modifiedCount).
+    expect(counts).toEqual({ accepted: 1, skipped: 0 })
   })
 })

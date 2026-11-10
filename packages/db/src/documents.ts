@@ -22,8 +22,10 @@ export interface UsageEventDoc {
   // orgId denormalised: a user never changes org (no route does it), and it lets
   // every org-scoped read $match without a $lookup through users.
   orgId: OrgId
-  // Explicit null, never absent. The unique index over the six-field key must
-  // see it so two org-sourced rows with no device still collide.
+  // Explicit null, never absent, and always named in an upsert filter. A filter
+  // that omits deviceId is unconstrained on it, so one device's row would match
+  // another device's upsert and suppress its write. The unique index itself
+  // already treats a missing field as null.
   deviceId: DeviceId | null
   source: UsageSource
   agent: AgentName

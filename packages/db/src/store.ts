@@ -1,6 +1,5 @@
 import {
   MongoClient,
-  MongoServerError,
   type AnyBulkWriteOperation,
   type BulkWriteResult,
   type ClientSession,
@@ -16,7 +15,7 @@ import {
 } from 'mongodb'
 import type { DailySnapshotDoc, UsageEventDoc, UserDoc } from './documents.js'
 
-/** The nine driver calls the apps use, with the session already applied. */
+/** The ten driver calls the apps use, with the session already applied. */
 export interface Bound<T extends Document> {
   findOne(filter: Filter<T>, opts?: { projection?: Document; sort?: Sort }): Promise<T | null>
   find(filter: Filter<T>, opts?: { projection?: Document; sort?: Sort; limit?: number }): Promise<T[]>
@@ -109,12 +108,6 @@ const TXN: TransactionOptions = {
   readPreference: 'primary',
 }
 
-const DUPLICATE_KEY = 11000
-const DUPLICATE_KEY_ATTEMPTS = 3
-
-export const isDuplicateKey = (err: unknown): boolean =>
-  err instanceof MongoServerError && err.code === DUPLICATE_KEY
-
 /**
  * Runs fn in one multi-document transaction, readConcern 'snapshot', writeConcern 'majority'.
  *
@@ -123,29 +116,22 @@ export const isDuplicateKey = (err: unknown): boolean =>
  * WriteConflict on a document another transaction touched raises. Every body we
  * pass is upserts plus a full recompute, so a re-run converges.
  *
- * A DuplicateKey (11000) is treated the same way, up to three attempts. An upsert
- * whose insert path lost to a commit newer than our snapshot is expected to
- * surface as WriteConflict; if a server reports it as 11000 instead, this keeps
- * the same guarantee. A genuine duplicate still fails, three times slower.
- * scripts/snapshot-race.ts records which of the two actually occurs.
+ * A DuplicateKey (11000) is not retried. src/scripts/snapshot-race.ts showed
+ * every concurrent collision, on the snapshot _id and on the usageEvents unique
+ * index, on one node and on three, surfaces as WriteConflict. Inside a
+ * transaction 11000 means the duplicate already existed at the snapshot, which a
+ * retry would only repeat.
  */
 export async function runInTxn<T>(store: Store, fn: (tx: Txn) => Promise<T>): Promise<T> {
   const b = backing.get(store)
   if (!b) throw new Error('runInTxn needs a Store from getStore() or storeFor(), not a Txn')
   const session = b.client.startSession()
   try {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        let out!: T
-        await session.withTransaction(async () => {
-          out = await fn(bindAll(b.db, session) as Txn)
-        }, TXN)
-        return out
-      } catch (err) {
-        if (isDuplicateKey(err) && attempt < DUPLICATE_KEY_ATTEMPTS) continue
-        throw err
-      }
-    }
+    let out!: T
+    await session.withTransaction(async () => {
+      out = await fn(bindAll(b.db, session) as Txn)
+    }, TXN)
+    return out
   } finally {
     await session.endSession()
   }
