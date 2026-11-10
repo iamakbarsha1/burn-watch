@@ -52,6 +52,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-38 | P4 | `register` overwrites an existing agent config silently | **done** | S | — |
 | BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
 | BW-40 | P4 | Every developer has to install Bun and build from source | **done** | M | BW-39 |
+| BW-41 | **P2** | Concurrent rebuilds overwrite a daily snapshot with stale totals | **open** | S | — |
 
 ---
 
@@ -63,7 +64,9 @@ them reads as done.
 
 | From | What is unproven | What would settle it |
 |------|------------------|----------------------|
-| — | Nothing outstanding. | |
+| BW-21 | Every call to GitHub. The seats walk, the report download, the NDJSON record shape, and whether a fine-grained PAT with "GitHub Copilot Business" read actually reaches these endpoints. All of it runs on fixtures built from the published schema. | A Copilot Business or Enterprise org to point `POST /v1/integrations/copilot/sync` at. Nothing smaller settles it; the endpoints do not exist on other plans. |
+| BW-21 | The admin panel in a browser. `CopilotPanel.tsx` has no render coverage, because the dashboard package carries no React renderer and adding one was out of scope. The logic underneath it is tested; the component is not. | Signing in as an admin and walking all five states: no key, malformed key, disconnected, connected, and a sync that returns unmatched logins. BW-18 found three defects this exact way. |
+| BW-21 | Report lag. The sync defaults to yesterday because GitHub publishes no cutoff for when a day's report appears, and a 404 is read as "not generated yet". Whether yesterday is reliably available is a guess. | One run against a real org, then a second the next morning, comparing which days returned rows. |
 
 **Cleared 2026-11-10.** BW-20's Windows and Linux debt, and with it BW-40's
 last box. Settled on GitHub's `ubuntu-latest` and `windows-latest` runners —
@@ -1331,6 +1334,66 @@ rather than the project.
 - [ ] Admin card reflects real connection state
 - [x] Interim: the admin card no longer ships a dead button
 
+**Adversarial review, 2026-11-10.** Four reviewers on four model families over
+the whole diff. Six findings fixed on the branch, each falsified individually.
+The two that justify the exercise on their own: a reviewer probed node and
+found `createDecipheriv` accepts a GCM tag of 4 to 16 bytes unless the length
+is pinned, and a 4-byte tag decrypts a real credential, which is forgery
+resistance of 2^-32 rather than 2^-128 for anyone able to write
+`encrypted_token`. And a reviewer caught that every record for one
+developer-day carries the same uniqueness key, so the `onConflictDoUpdate`
+added earlier that same session would have met two rows with one key in a
+single insert and raised SQLSTATE 21000 on any report sharded across several
+download links. Both reproduced here before being fixed.
+
+A reviewer also corrected a claim made in a commit message on this branch.
+AAD binding does **not** protect a cross-environment restore, because a
+restore copies `org_id` along with the ciphertext and the context still
+matches. A different `COPILOT_ENCRYPTION_KEY` per environment is what covers
+that. The code comment says so now.
+
+**Review findings carried, not fixed.** Recorded so none of them reads as
+settled:
+
+1. `users.github_username` has no uniqueness constraint and no `is_active`
+   filter in the match. Two user rows with one login both receive the day's
+   events, both get a snapshot, both feed budget alerts, and nothing in the
+   response says so. Raised by two reviewers. Wants a partial unique index on
+   `(org_id, lower(github_username))`, which is a migration.
+2. The two sources disagree about what a day is. ccusage reports a
+   developer's local day; the GitHub report is UTC. A US Pacific developer
+   working after 16:00 local lands under D for the agent and D+1 for the org,
+   where no agent copilot row exists, so the org row counts in full and the
+   per-day preference is defeated across the midnight boundary. The proposed
+   fix widens the agent-sourced test to `date between d-1 and d+1` while
+   still filtering output to `date = d`.
+3. `githubStatusFrom` recovers a status by regex over an error message, so a
+   transport failure (DNS, blocked egress, timeout) reads to the operator as
+   "GitHub rejected this token" and invites them to rotate a working
+   credential. Wants a typed error carrying the status.
+4. A client whose tokens appear only under `totals_by_model` counts as zero,
+   because the mapper deliberately reads the client-level sum and the fixture
+   happens to carry both. A fixture cannot catch this; the fixture is the
+   assumption.
+5. The record's own `day` is validated and then discarded in favour of the
+   requested day, so a report that ever carried records for another date
+   would file them silently under the wrong one.
+6. `MAX_SEAT_PAGES` returns partial data at the cap rather than throwing,
+   though the comment says reaching it means the pagination contract changed.
+7. `PUT /connection` and `POST /sync` are the only mutating routes in the API
+   with no `config.rateLimit`, against the convention every other writing
+   route follows.
+8. `GET /status` reports `connected` from row existence alone, so a
+   credential that no longer decrypts reads as healthy until someone syncs.
+
+**Scope gap, and it is in the brief rather than the code.** The seat roster is
+walked in full on every connect and every sync, and then everything except two
+counts is discarded. The agreed scope was seat coverage, meaning which
+developers hold a paid seat and which are idle, since an unused Copilot
+Business seat costs $19/month whether or not anyone opens an editor. The API
+fetches exactly the data that answers it, and nothing surfaces it. Half of
+what this ticket set out to deliver is therefore still open.
+
 **Verification debt this will carry.** Blocker 2 from 2026-11-06 still stands
 and is now the only one. Without a Copilot Business or Enterprise plan there
 is nothing to pull against, so every part of this runs on fixtures until an
@@ -2334,3 +2397,70 @@ recorded in the verification debt section.
       contract
 - [x] `install.ps1` run on a real Windows machine — `windows-latest`,
       v0.2.1, 2026-11-10
+
+---
+
+### BW-41 · Concurrent rebuilds overwrite a daily snapshot with stale totals
+**Size S** · no blockers · found by the BW-21 adversarial review
+
+`rebuildDailySnapshot` reads and then writes in two statements: an aggregate
+`SELECT` over `usage_events`, then an upsert into `daily_snapshots`. Nothing
+locks the `(user_id, date)` being rebuilt, and nothing raises the isolation
+level above READ COMMITTED.
+
+Two transactions that overlap therefore both read before either commits, and
+the second overwrites the first with figures computed from a view that did
+not include it:
+
+```
+T1  BEGIN; insert usage_events row
+T2  BEGIN; insert usage_events row
+T1  aggregate SELECT   -> cannot see T2's uncommitted row
+T2  aggregate SELECT   -> cannot see T1's uncommitted row
+T1  upsert daily_snapshots; COMMIT
+T2  upsert daily_snapshots  (waits on T1's row lock, then applies
+    values it computed before T1 committed); COMMIT
+```
+
+The row lock does not save it. Postgres serialises the write, not the
+arithmetic that preceded it.
+
+**This predates BW-21.** `git show main:apps/api/src/services/snapshot.service.ts`
+has the same read-then-write shape, so two devices belonging to one developer
+submitting on the same date already race it, and the snapshot ends up missing
+one device's rows. Recorded against its own ticket rather than BW-21 for that
+reason.
+
+BW-21 widens it rather than causing it. The org sync is a second kind of
+writer on the same `(user_id, date)`, both default to yesterday, and the
+failure gains a new mode: instead of merely losing rows, the wrong *source*
+can win, so a developer whose machine reported real Copilot usage can end up
+with the credit-derived approximation stored against them. Self-healing only
+if something rebuilds that date again, which nothing routinely does, because
+tomorrow's sync targets tomorrow.
+
+The same gap explains a second claim in `snapshot.service.ts` that does not
+hold: deleting a `usage_events` row changes what the aggregate would return
+but triggers no rebuild, so the snapshot keeps the old total.
+
+**Suggested fix**, one line, covering both callers at once. As the first
+statement of `rebuildDailySnapshot`:
+
+```sql
+select pg_advisory_xact_lock(hashtext($1 || $2))
+```
+
+keyed on user and date, released at transaction end. `SELECT ... FOR UPDATE`
+on the snapshot row was considered and rejected: it locks nothing when the
+row does not yet exist, which is exactly the first-write-of-the-day case.
+Folding the aggregate into the upsert as one `INSERT ... SELECT` is correct
+too and is the better long-term shape, but it is a rewrite rather than a
+guard.
+
+**Acceptance**
+- [ ] Two concurrent rebuilds of one `(user_id, date)` leave a snapshot that
+      matches a fresh aggregate over `usage_events`
+- [ ] Proven against a real Postgres with two overlapping transactions, not
+      asserted from the rendered SQL
+- [ ] The order-independence claim in `snapshot.service.ts` either holds or
+      is corrected to say what it actually covers
