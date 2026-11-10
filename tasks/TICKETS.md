@@ -32,7 +32,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-18 | P4 | Budget alerts API + UI | **done** | L | BW-14 |
 | BW-19 | P4 | Invite flow on `invites` table | **done** | L | BW-14 |
 | BW-20 | P4 | Cross-platform agent scheduling | **done** | M | BW-14 |
-| BW-21 | P4 | GitHub Copilot integration | **blocked** | L | operator |
+| BW-21 | P4 | GitHub Copilot integration | **in progress** | L | operator (plan only) |
 | BW-22 | P5 | Dashboard inline styles to Tailwind | **done** | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | **done** | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
@@ -52,6 +52,8 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-38 | P4 | `register` overwrites an existing agent config silently | **done** | S | — |
 | BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
 | BW-40 | P4 | Every developer has to install Bun and build from source | **done** | M | BW-39 |
+| BW-41 | **P2** | Concurrent rebuilds overwrite a daily snapshot with stale totals | **fixed 2026-11-10** | S | — |
+| BW-42 | P3 | `npm ci` installs the agent from a stale lockfile entry | **open** | XS | — |
 
 ---
 
@@ -63,7 +65,39 @@ them reads as done.
 
 | From | What is unproven | What would settle it |
 |------|------------------|----------------------|
-| — | Nothing outstanding. | |
+| BW-21 | Every call to GitHub. The seats walk, the report download, the NDJSON record shape, and whether a fine-grained PAT with "GitHub Copilot Business" read actually reaches these endpoints. All of it runs on fixtures built from the published schema. | A Copilot Business or Enterprise org to point `POST /v1/integrations/copilot/sync` at. Nothing smaller settles it; the endpoints do not exist on other plans. |
+| BW-21 | The admin panel's **connected** states. Three of five were walked in a browser on 2026-11-10 (see below); connected, and a sync returning unmatched logins, were not, because reaching them needs a real org. The seat section, the idle dollar figure, the unlinked and ambiguous callouts have never rendered with data. | The same Copilot Business org the row above needs. Everything short of that stops at the connect form. |
+| BW-21 | Report lag. The sync defaults to yesterday because GitHub publishes no cutoff for when a day's report appears, and a 404 is read as "not generated yet". Whether yesterday is reliably available is a guess. | One run against a real org, then a second the next morning, comparing which days returned rows. |
+
+**Partly cleared 2026-11-10, BW-21's panel.** Signed in as `akbar@test.com`
+against a Neon branch copied from production, with the API and dashboard run
+locally and pointed at it. Three of the five states rendered, zero console
+errors:
+
+- API unreachable. "Could not read the Copilot integration status", and it says
+  the rest of the page is still accurate rather than leaving the reader to
+  guess.
+- Key present but unusable. "Cannot be configured",
+  `COPILOT_ENCRYPTION_KEY is set but unusable`, and the remedy named down to
+  `openssl rand -base64 32`. This is the state the three-way encryption split
+  was built for, and it is the one a collapsed "unavailable" would have ruined.
+- Encryption ready, not connected. "Not connected" with the connect form, and
+  the seat section correctly absent, which is the gating claim checked rather
+  than taken on trust.
+
+The route was also exercised over real HTTP against that branch, not through
+the test harness: 503 carrying the encryption reason, 404 when not connected,
+200 from `/status` reporting `encryption: ready`, and 400 from Zod for
+`idleAfterDays=9999`.
+
+**Noted while there, not changed.** `CopilotPanel.tsx:144` tells the admin to
+use a token with the `manage_billing:copilot` scope. That is a classic-PAT
+scope, while this ticket's unblocking note settled on a fine-grained PAT with
+"GitHub Copilot Business" read. Both may reach the endpoint; the point is that
+the panel and the ticket give different instructions, and operator-facing setup
+copy should not be rewritten from memory. It predates the seat roster, arriving
+in `0e3b376`. Settle it against GitHub's current docs when the org above
+exists, since that is the run that proves which token actually works.
 
 **Cleared 2026-11-10.** BW-20's Windows and Linux debt, and with it BW-40's
 last box. Settled on GitHub's `ubuntu-latest` and `windows-latest` runners —
@@ -1226,12 +1260,300 @@ Deliberately NOT built: encrypted credential storage and a connection-state
 UI. Both are scaffolding for a flow that cannot be tested, and would have to
 be rewritten once the real OAuth shape is known.
 
-**Acceptance** — none of these are met, and none can be without the two inputs above
-- [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY`
-- [ ] Key absent means the feature degrades, not crashes
-- [ ] Copilot usage lands in `usage_events` and flows to snapshots
+**Unblocked 2026-11-10, and two of the premises above are wrong.**
+
+The OAuth app is not required. These endpoints accept a fine-grained PAT with
+"GitHub Copilot Business" read or "Administration" read on the org. An org
+admin creates one in the GitHub UI and pastes it into the admin page, so
+blocker 1 dissolves without registering anything. OAuth exists to let many
+orgs self-serve a connection, and BurnWatch serves one company.
+
+Premise correction 1: "Copilot columns are always zero" is false. BW-33 fixed
+the collector, and `apps/agent/src/collectors/ccusage.ts:14` maps `copilot`
+like any other agent. Production holds 22 copilot rows, 36,006,868 tokens and
+$32.12 spanning 2026-05-19 to 2026-07-10. The per-developer Copilot spend this
+ticket set out to obtain already arrives through the normal device path.
+
+Premise correction 2: "a pull from the Copilot usage API" names an API that no
+longer exists. `GET /orgs/{org}/copilot/usage` was sunset in February 2025 and
+`GET /orgs/{org}/copilot/metrics` on 2026-04-02. The replacement is a reports
+API whose endpoints return signed `download_links` to NDJSON files rather than
+inline JSON.
+
+What the replacement does carry, per user per day, is documented at
+`docs.github.com/en/copilot/reference/copilot-usage-metrics/example-schema`.
+Real token counts, under `totals_by_client[].token_usage` as
+`prompt_tokens_sum` and `output_tokens_sum`, repeated per model inside
+`totals_by_client[].totals_by_model[]`. Identity as top-level `user_id` and
+`user_login`. The day as top-level `day`. One NDJSON record per user per day,
+with every model, client and feature split nested inside it rather than
+emitted as separate lines.
+
+What it does not carry is a dollar figure. There is no per-user cost an org
+admin can read; the per-user billing endpoint needs that user's own token, not
+an admin credential. The only cost signal is top-level `ai_credits_used`, a
+float, which GitHub documents as "a metrics signal for analyzing consumption,
+not a billed total". One credit is $0.01.
+
+So the org pull can supply real Copilot tokens, and only an approximation of
+Copilot cost. It also supplies something ccusage cannot at any accuracy, which
+is who holds a seat. An assigned Copilot Business seat costs $19/month whether
+or not anyone opens an editor, and an unused seat is waste a spend dashboard
+should be the thing that catches.
+
+**Scope set 2026-11-10: both halves.** Seat coverage from
+`/orgs/{org}/copilot/billing/seats`, and credit-derived usage from the
+`users-1-day` reports written into `usage_events` behind a source
+discriminator.
+
+**Double counting is the hazard, and it resolves at read time.**
+`rebuildDailySnapshot` sums `total_tokens` and `cost_usd` grouped by agent,
+filtered on `(user_id, date)` alone. Two sources writing copilot rows for one
+developer on one day would be summed, doubling their Copilot spend. The fix is
+a `source` column plus a per-agent preference in the aggregation: where a
+developer has ccusage rows for an agent on a date, the org-sourced rows for
+that agent are ignored. Resolution sits at read time rather than at write
+time on purpose, because write-time skipping gives a different answer
+depending on which source synced first, and backfills reorder that routinely.
+
+`device_id` also goes nullable, since an org pull has no device. That forces
+the unique constraint to be recreated rather than altered: it is currently a
+plain `UNIQUE`, Postgres treats NULLs as distinct, and `onConflictDoNothing`
+would therefore never fire for org rows. The new constraint carries `source`
+and is `NULLS NOT DISTINCT`, which the database supports (Neon, Postgres 18).
+
+Rejected: a synthetic per-developer "integration device" to satisfy the
+existing `NOT NULL`. It needs no migration, but `/devices` renders
+`Registered devices (N)` to admins, so it would put a phantom row per
+developer into a real screen. A column that admits the truth beats a fake row
+that hides it.
+
+**Progress 2026-11-10.** Three slices built and merged on `bw-21-copilot`.
+`credential-crypto.ts` seals a credential with AES-256-GCM behind a union a
+caller has to narrow before `seal` exists. Migration `0005` adds `source`,
+makes `device_id` nullable and rebuilds the unique constraint. `rebuildDailySnapshot`
+resolves two sources per agent at read time. `copilot.service.ts` walks the
+seats pages and parses the usage NDJSON. None of it has a caller yet; the
+route and the admin card are the remaining slices.
+
+The double count is not a theory and neither is the fix. Both were executed
+against a Neon branch copied from production, running Postgres 18, after
+applying `0005` to it. The `ADD CONSTRAINT` took on real rows. Two identical
+org-sourced inserts with a null `device_id` produced one row, the second
+returning nothing, which is what proves `NULLS NOT DISTINCT` holds and that
+`ON CONFLICT` infers it. With an agent row and an org row on one
+developer-day the old aggregation returned 150 tokens and $2.00 for copilot
+while the new one returned 50 and $0.50, and claude was identical under both,
+which is what proves the preference is per-agent rather than global.
+
+Worth recording because the slice that wrote the constraint could not test
+it: local `psql` is 14.19, which predates `NULLS NOT DISTINCT`, and no
+container runtime was up. Neon was Postgres 18 the whole time. This is the
+same shape as BW-20, where "no Linux or Windows hardware" described the shell
+rather than the project.
+
+**Seat coverage delivered 2026-11-10.** The scope gap is closed.
+`listCopilotSeats` had been walking the whole roster on every connect and every
+sync and keeping two counts from it. `GET /copilot/seats` now returns the
+roster itself: who holds a seat, which seats are idle, and what the idle ones
+cost per month.
+
+Read live and stored nowhere. A roster is current state rather than a time
+series, so a table would hold a copy that disagrees with GitHub between syncs
+while GitHub remains the thing that issues seats. No table, no migration, no
+column. The cost is a seat walk per request, which is why nothing calls it on
+page load.
+
+A seat's relation to BurnWatch is one tagged `status` plus one nullable
+`userId`, not a cross product of booleans. Idle is `lastActivityAt` null or
+older than `?idleAfterDays=` (1 to 365, default 30). An unknown `planType`
+yields a null price and counts into `unpricedIdleSeats` rather than being
+guessed, because a wrong dollar figure on a spend dashboard is worse than an
+absent one.
+
+Four defects were found reviewing it, and all four are fixed here:
+
+- An unhandled 500 echoed its exception message to the browser. Reads used to
+  drop the body, so this only became reachable once a failed read started
+  surfacing the API's own words, which it needed to do for the four Copilot
+  failures that each have a different remedy. The handler now passes a message
+  through below 500 and sends a fixed sentence at or above it. Same class as
+  the GitHub-body leak this ticket already fixed once.
+- A login two users share was attributed to whichever row the driver returned
+  last, silently. It now goes to the lowest `users.id` so two reads agree, and
+  the login is reported in `ambiguousLogins` so the pick reads as a tie-break
+  rather than a fact. The missing unique index stays its own ticket.
+- A seat walk that filled every page returned a truncated roster with no
+  signal. It now throws. The cap is 5000 seats and this org has about 50, so
+  this guards a changed pagination contract rather than growth.
+- Every failure of that walk told the operator their token had expired, which
+  after the guard above included a case where GitHub never refused anything.
+  The message now splits on whether an HTTP status was recovered, and all
+  three call sites log the cause, which none of them did before.
+- [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY` — the
+      envelope is built and tested, but nothing calls it until the route lands
+- [ ] Key absent means the feature degrades, not crashes — holds at the module
+      boundary; the admin card still has to show which of the two reasons it is
+- [ ] ~~Copilot usage lands in `usage_events` and flows to snapshots~~ amended:
+      real tokens and credit-derived cost land in `usage_events` behind
+      `source`, one row per developer-day, and ccusage wins wherever both
+      sources cover one developer-day
+- [ ] Seat coverage pulled and reconciled against BurnWatch users
 - [ ] Admin card reflects real connection state
 - [x] Interim: the admin card no longer ships a dead button
+
+**Adversarial review, 2026-11-10.** Four reviewers on four model families over
+the whole diff. Six findings fixed on the branch, each falsified individually.
+The two that justify the exercise on their own: a reviewer probed node and
+found `createDecipheriv` accepts a GCM tag of 4 to 16 bytes unless the length
+is pinned, and a 4-byte tag decrypts a real credential, which is forgery
+resistance of 2^-32 rather than 2^-128 for anyone able to write
+`encrypted_token`. And a reviewer caught that every record for one
+developer-day carries the same uniqueness key, so the `onConflictDoUpdate`
+added earlier that same session would have met two rows with one key in a
+single insert and raised SQLSTATE 21000 on any report sharded across several
+download links. Both reproduced here before being fixed.
+
+A reviewer also corrected a claim made in a commit message on this branch.
+AAD binding does **not** protect a cross-environment restore, because a
+restore copies `org_id` along with the ciphertext and the context still
+matches. A different `COPILOT_ENCRYPTION_KEY` per environment is what covers
+that. The code comment says so now.
+
+**Review findings carried, not fixed.** Recorded so none of them reads as
+settled:
+
+1. `users.github_username` has no uniqueness constraint and no `is_active`
+   filter in the match. Two user rows with one login both receive the day's
+   events, both get a snapshot, both feed budget alerts, and nothing in the
+   response says so. Raised by two reviewers. Wants a partial unique index on
+   `(org_id, lower(github_username))`, which is a migration.
+2. The two sources disagree about what a day is. ccusage reports a
+   developer's local day; the GitHub report is UTC. A US Pacific developer
+   working after 16:00 local lands under D for the agent and D+1 for the org,
+   where no agent copilot row exists, so the org row counts in full and the
+   per-day preference is defeated across the midnight boundary. It is
+   symmetric here: a UTC+5:30 developer working 00:00 to 05:30 lands under D
+   for the agent and D-1 for the org.
+
+   **Measured 2026-11-10, no longer inferred.** `ccusage daily --help` does
+   carry `-z, --timezone <timezone>` (IANA), and `ccusage.ts:133` does not
+   pass it, so the agent writes whatever ccusage's default bucketing calls a
+   day. Running the same range twice on one real machine, default against
+   `-z UTC`, rebuckets real money between adjacent days:
+
+   ```
+   date          local$    utc$      delta
+   2026-11-04    62.70     128.08    +65.38
+   2026-11-05    341.85    389.33    +47.48
+   2026-11-06    585.00    486.06    -98.94
+   2026-11-07    19.23     5.30      -13.93
+   ```
+
+   Totals reconcile, so nothing is lost, only moved. What is still unmeasured
+   is a Copilot double-count end to end, which needs a Copilot Business org
+   this account cannot reach. The mechanism is confirmed; the magnitude on
+   copilot rows specifically is not.
+
+   **The `date between d-1 and d+1` fix is rejected.** It converts a bounded
+   overcount into an unbounded undercount: a developer who uses Copilot on a
+   machine the agent is not installed on would have that org-only day erased
+   by an adjacent agent row, and a disappearance surfaces as nothing. It also
+   makes day `d`'s snapshot depend on `d±1` while nothing rebuilds `d` when
+   `d±1` is written, which is the same family of defect as BW-41. Two bugs of
+   one shape is reason enough on its own.
+
+   The real fault is upstream. The agent knows its own timezone and ccusage
+   takes `-z UTC`. Bucket both sources by UTC and the existing per-day SQL is
+   correct as written. The cost is that a developer's "today" shifts by their
+   offset and historical rows stay local-bucketed unless backfilled, which
+   makes it a data-semantics decision for the operator rather than a patch.
+
+   **Decided 2026-11-10: leave local bucketing.** `-z UTC` is not passed and
+   no backfill runs. Three reasons, in order of weight.
+
+   *The flip is not scoped to the defect.* ccusage buckets every agent at
+   once, so `-z UTC` rebuckets Claude as well, and Claude is where the money
+   is — $2,983.53 of $3,038.53 all-time on the one machine with real history,
+   measured 2026-11-05. The table above is that rebucketing: up to $98.94
+   moving between adjacent days. It would rewrite the day attribution of
+   everything to correct a Copilot row.
+
+   *The defect's size is unknown and cannot be measured from here.* The
+   mechanism is confirmed, the magnitude on Copilot rows is not, and
+   measuring it needs the Copilot Business org that blocker 2 says this
+   account cannot reach. That is the same gap that leaves the whole feature
+   fixture-only. Rewriting history to correct an unmeasured error in a path
+   that has never run against a real org is the wrong order to do it in.
+
+   *The backfill cannot be finished centrally.* `usage_events` stores a daily
+   total, not session timestamps, so rebucketing means re-running ccusage
+   against the JSONL on each developer's machine — fifty of them, some since
+   rotated or pruned. A partial backfill leaves one table holding two
+   definitions of a day with no column saying which row has which. That is
+   worse than one definition that is known to be wrong, because the first is
+   invisible and the second is written down here.
+
+   What is accepted in exchange: the Copilot org row double-counts work the
+   agent filed on the adjacent day. It inflates a total rather than moving
+   one, which is worse in kind, but it is bounded by boundary-crossing
+   Copilot usage, and Copilot is roughly 1% of measured spend. Month totals,
+   which is what per-developer visibility actually asks for, are unaffected
+   either way.
+
+   **Revisit when** an operator connects a real Copilot Business org and the
+   overcount becomes measurable. If it is material then, the fix is `-z UTC`
+   plus a `day_tz` column on `usage_events` so a partial backfill is legible,
+   not `-z UTC` on its own.
+3. `githubStatusFrom` recovers a status by regex over an error message, so a
+   transport failure (DNS, blocked egress, timeout) reads to the operator as
+   "GitHub rejected this token" and invites them to rotate a working
+   credential. Wants a typed error carrying the status.
+4. A client whose tokens appear only under `totals_by_model` counts as zero,
+   because the mapper deliberately reads the client-level sum and the fixture
+   happens to carry both. A fixture cannot catch this; the fixture is the
+   assumption.
+5. The record's own `day` is validated and then discarded in favour of the
+   requested day, so a report that ever carried records for another date
+   would file them silently under the wrong one.
+6. `MAX_SEAT_PAGES` returns partial data at the cap rather than throwing,
+   though the comment says reaching it means the pagination contract changed.
+7. `PUT /connection` and `POST /sync` are the only mutating routes in the API
+   with no `config.rateLimit`, against the convention every other writing
+   route follows.
+8. `GET /status` reports `connected` from row existence alone, so a
+   credential that no longer decrypts reads as healthy until someone syncs.
+
+**Scope gap, and it is in the brief rather than the code.** The seat roster is
+walked in full on every connect and every sync, and then everything except two
+counts is discarded. The agreed scope was seat coverage, meaning which
+developers hold a paid seat and which are idle, since an unused Copilot
+Business seat costs $19/month whether or not anyone opens an editor. The API
+fetches exactly the data that answers it, and nothing surfaces it. Half of
+what this ticket set out to deliver is therefore still open.
+
+**Verification debt this will carry.** Blocker 2 from 2026-11-06 still stands
+and is now the only one. Without a Copilot Business or Enterprise plan there
+is nothing to pull against, so every part of this runs on fixtures until an
+operator points it at a real org.
+
+The record schema itself is no longer the unknown; GitHub publishes it. Three
+smaller things are genuinely undocumented rather than merely unfound, and the
+code should be defensive about each rather than encoding a guess:
+
+1. The signed `download_links` are stated to have "a limited expiration time"
+   with no duration given, and nothing says whether to resend the
+   `Authorization` header when fetching one. Fetch without it first.
+2. No lag or cutoff is published for when a day's report becomes available.
+   Request yesterday rather than today, and treat a 404 on a recent day as
+   expected rather than as a failure.
+3. `assignee` is schema-nullable on the seats endpoint, but no prose says when
+   or why. Skip those records and log them; do not assume they are pending
+   invites.
+
+Also worth guarding: the customization arrays are capped at 25 named entries
+per user per day with the overflow collapsed into an `other` entry, and the
+docs warn that absence from a capped array does not mean zero usage.
 
 ---
 
@@ -2213,3 +2535,135 @@ recorded in the verification debt section.
       contract
 - [x] `install.ps1` run on a real Windows machine — `windows-latest`,
       v0.2.1, 2026-11-10
+
+---
+
+### BW-41 · Concurrent rebuilds overwrite a daily snapshot with stale totals
+**Size S** · no blockers · found by the BW-21 adversarial review
+
+`rebuildDailySnapshot` reads and then writes in two statements: an aggregate
+`SELECT` over `usage_events`, then an upsert into `daily_snapshots`. Nothing
+locks the `(user_id, date)` being rebuilt, and nothing raises the isolation
+level above READ COMMITTED.
+
+Two transactions that overlap therefore both read before either commits, and
+the second overwrites the first with figures computed from a view that did
+not include it:
+
+```
+T1  BEGIN; insert usage_events row
+T2  BEGIN; insert usage_events row
+T1  aggregate SELECT   -> cannot see T2's uncommitted row
+T2  aggregate SELECT   -> cannot see T1's uncommitted row
+T1  upsert daily_snapshots; COMMIT
+T2  upsert daily_snapshots  (waits on T1's row lock, then applies
+    values it computed before T1 committed); COMMIT
+```
+
+The row lock does not save it. Postgres serialises the write, not the
+arithmetic that preceded it.
+
+**This predates BW-21.** `git show main:apps/api/src/services/snapshot.service.ts`
+has the same read-then-write shape, so two devices belonging to one developer
+submitting on the same date already race it, and the snapshot ends up missing
+one device's rows. Recorded against its own ticket rather than BW-21 for that
+reason.
+
+BW-21 widens it rather than causing it. The org sync is a second kind of
+writer on the same `(user_id, date)`, both default to yesterday, and the
+failure gains a new mode: instead of merely losing rows, the wrong *source*
+can win, so a developer whose machine reported real Copilot usage can end up
+with the credit-derived approximation stored against them. Self-healing only
+if something rebuilds that date again, which nothing routinely does, because
+tomorrow's sync targets tomorrow.
+
+The same gap explains a second claim in `snapshot.service.ts` that does not
+hold: deleting a `usage_events` row changes what the aggregate would return
+but triggers no rebuild, so the snapshot keeps the old total.
+
+**Suggested fix**, one line, covering both callers at once. As the first
+statement of `rebuildDailySnapshot`:
+
+```sql
+select pg_advisory_xact_lock(hashtext($1 || $2))
+```
+
+keyed on user and date, released at transaction end. `SELECT ... FOR UPDATE`
+on the snapshot row was considered and rejected: it locks nothing when the
+row does not yet exist, which is exactly the first-write-of-the-day case.
+Folding the aggregate into the upsert as one `INSERT ... SELECT` is correct
+too and is the better long-term shape, but it is a rewrite rather than a
+guard.
+
+**Fixed 2026-11-10**, commits `775854b` (repro), `52ff9e8` (fix), `b8d2285`
+(comment correction). The suggested one-line guard is what shipped.
+
+The repro lives at `apps/api/src/scripts/bw41-snapshot-race.ts` and is run by
+hand against a branch, not by `npm test`. The suite's fake Drizzle resolves
+every query inline, so two overlapping reads have nowhere to overlap. A
+barrier holds both writers at the point their snapshots diverge, because two
+transactions racing one row otherwise serialise by luck and the script passes
+against unfixed code.
+
+Against Neon Postgres 18, before and after:
+
+```
+daily_snapshots.total_tokens: 1000   (usage_events hold 2000)
+daily_snapshots.total_tokens: 2000   PASS
+```
+
+Two things learned that are not visible in the diff. The guard works only
+under READ COMMITTED, since the waiter takes a fresh snapshot per statement;
+raising the isolation level would break it silently. And it has to be the
+`_xact_` variant, because production connects through Neon's pooler in
+pgbouncer transaction mode, where a session-scoped advisory lock leaks across
+clients. The live repro passes either way, so a suite test covers that one.
+
+Adding a statement to the rebuild shifted the positional result queue the
+route tests use to fake Postgres. One test went red; two more kept passing
+because the rebuild then returned early before the assertion's subject ran.
+All three were found by grepping the `// rebuild:` sequence comments rather
+than by trusting the runner. Deleting the new slot again makes the rollback
+test answer 200 instead of 500, which is the check that it is load-bearing.
+
+**Acceptance**
+- [x] Two concurrent rebuilds of one `(user_id, date)` leave a snapshot that
+      matches a fresh aggregate over `usage_events`
+- [x] Proven against a real Postgres with two overlapping transactions, not
+      asserted from the rendered SQL
+- [x] The order-independence claim in `snapshot.service.ts` either holds or
+      is corrected to say what it actually covers. It was corrected. The
+      preference does not follow deletes, and the comment now says so
+
+---
+
+### BW-42 · `npm ci` installs the agent from a stale lockfile entry
+**Size XS** · no blockers · found independently by two delegates on 2026-11-10
+
+`apps/agent/package.json` says `0.2.1`. The `apps/agent` entry in the root
+`package-lock.json` says `0.1.0`. Verified by reading both:
+
+```
+package.json version: 0.2.1
+lockfile entry:       0.1.0
+```
+
+`npm install` corrects it, which is why nobody has noticed. `npm ci` does not,
+because `ci` installs the lockfile as written and treats it as authoritative.
+Anywhere that runs `ci` rather than `install`, which is the normal choice for
+CI and for a reproducible build, resolves the agent at the older version.
+
+It surfaced twice in one session because two agents in separate worktrees each
+ran `npm install` and each got an unrelated lockfile change in their diff. Both
+reverted it by hand to keep their change clean. That is the real daily cost: a
+spurious hunk that every contributor has to notice and discard, and that will
+eventually be committed by someone who does not.
+
+**Suggested fix.** Run `npm install` at the root and commit the resulting
+`package-lock.json` on its own, touching nothing else. Confirm with a clean
+`npm ci` that the installed agent version matches `package.json`.
+
+**Acceptance**
+- [ ] `package-lock.json` agrees with `apps/agent/package.json`
+- [ ] A fresh `npm ci` installs the agent at the version `package.json` names
+- [ ] `npm install` on a clean tree leaves `package-lock.json` unmodified

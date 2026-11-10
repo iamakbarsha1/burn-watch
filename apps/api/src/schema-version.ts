@@ -10,7 +10,7 @@ import type { DbOrTx } from './plugins/db.js'
  * a JSON file resolved at runtime is one more thing that has to survive the
  * bundle. A number cannot fail to deploy.
  */
-export const EXPECTED_SCHEMA_VERSION = 1793962065345
+export const EXPECTED_SCHEMA_VERSION = 1794298439254
 
 /**
  * Rejects when the database is running behind the code talking to it.

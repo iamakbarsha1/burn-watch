@@ -777,11 +777,13 @@ describe('POST /v1/usage', () => {
     // stale, and nothing retried it. Now the whole submission is undone, so the
     // agent's next run re-sends it.
     // The transaction's query sequence, in order: the event insert, the device
-    // touch, then the rebuild's three selects. The user row has to be present
-    // or the rebuild returns early and never reaches the write that fails.
+    // touch, then the rebuild's lock and three selects. The user row has to be
+    // present or the rebuild returns early and never reaches the write that
+    // fails.
     liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }]) // insert ... returning
     dbState.results.push([]) // update devices
+    dbState.results.push([]) // rebuild: advisory lock on the user-day
     dbState.results.push([]) // rebuild: usage aggregated by agent
     dbState.results.push([]) // rebuild: enrichment
     dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
@@ -802,6 +804,7 @@ describe('POST /v1/usage', () => {
     liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }]) // insert ... returning
     dbState.results.push([]) // update devices
+    dbState.results.push([]) // rebuild: advisory lock on the user-day
     dbState.results.push([]) // rebuild: usage aggregated by agent
     dbState.results.push([]) // rebuild: enrichment
     dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
@@ -1708,5 +1711,46 @@ describe('GET /health', () => {
     dbState.failExecute = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.payload).not.toContain('db.example')
+  })
+})
+
+describe('unhandled errors', () => {
+  // The dashboard's `apiFetch` surfaces `{ error }` from every failed read, so
+  // whatever this handler writes into the body is rendered in an admin's
+  // browser. Built per test: a route cannot be added to `app` once it is ready.
+  const serve = async (thrown: Error) => {
+    const server = buildServer()
+    server.get('/throws', async () => {
+      throw thrown
+    })
+    await server.ready()
+    const logged = vi.spyOn(server.log, 'error')
+    const res = await server.inject({ method: 'GET', url: '/throws' })
+    await server.close()
+    return { res, logged }
+  }
+
+  it('answers 500 with a fixed sentence and keeps the thrown message for the log', async () => {
+    // What a Drizzle or Postgres failure looks like: table names at least,
+    // and sometimes row values.
+    const thrown = new Error('relation "usage_events" does not exist')
+
+    const { res, logged } = await serve(thrown)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.json()).toEqual({ error: 'Internal server error' })
+    expect(res.payload).not.toContain('usage_events')
+    expect(logged).toHaveBeenCalledWith(thrown)
+  })
+
+  it('still carries the message of an error that chose a status under 500', async () => {
+    // Fastify's auth and rate-limit errors arrive this way, and tests
+    // elsewhere pin some of their sentences.
+    const thrown = Object.assign(new Error('that handle is taken'), { statusCode: 409 })
+
+    const { res } = await serve(thrown)
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toEqual({ error: 'that handle is taken' })
   })
 })
