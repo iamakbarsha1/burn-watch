@@ -217,6 +217,19 @@ export function parseUserDayRecord(line: string): CopilotUserDay | null {
     )
   }
 
+  // `day` gets the same loudness as `user_login` because it is the same kind
+  // of field. Both are identity, and together with the agent they form the
+  // key a usage row is stored under. Falling back to an empty string here
+  // would insert cleanly and be wrong, which is worse than not inserting: the
+  // day would read as spend against a date nobody can find. The format check
+  // is here rather than at the database because the error names the record.
+  const day = record.day
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    throw new Error(
+      `copilot: NDJSON record for ${login} has no usable day. Observed: ${JSON.stringify(record.day)}`,
+    )
+  }
+
   let inputTokens = 0
   let outputTokens = 0
   const add = (usage: RawTokenUsage | undefined) => {
@@ -242,7 +255,7 @@ export function parseUserDayRecord(line: string): CopilotUserDay | null {
 
   return {
     login,
-    date: typeof record.day === 'string' ? record.day : '',
+    date: day,
     inputTokens,
     outputTokens,
     totalTokens,
