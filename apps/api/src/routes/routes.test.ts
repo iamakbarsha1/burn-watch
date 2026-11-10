@@ -1713,3 +1713,44 @@ describe('GET /health', () => {
     expect(res.payload).not.toContain('db.example')
   })
 })
+
+describe('unhandled errors', () => {
+  // The dashboard's `apiFetch` surfaces `{ error }` from every failed read, so
+  // whatever this handler writes into the body is rendered in an admin's
+  // browser. Built per test: a route cannot be added to `app` once it is ready.
+  const serve = async (thrown: Error) => {
+    const server = buildServer()
+    server.get('/throws', async () => {
+      throw thrown
+    })
+    await server.ready()
+    const logged = vi.spyOn(server.log, 'error')
+    const res = await server.inject({ method: 'GET', url: '/throws' })
+    await server.close()
+    return { res, logged }
+  }
+
+  it('answers 500 with a fixed sentence and keeps the thrown message for the log', async () => {
+    // What a Drizzle or Postgres failure looks like: table names at least,
+    // and sometimes row values.
+    const thrown = new Error('relation "usage_events" does not exist')
+
+    const { res, logged } = await serve(thrown)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.json()).toEqual({ error: 'Internal server error' })
+    expect(res.payload).not.toContain('usage_events')
+    expect(logged).toHaveBeenCalledWith(thrown)
+  })
+
+  it('still carries the message of an error that chose a status under 500', async () => {
+    // Fastify's auth and rate-limit errors arrive this way, and tests
+    // elsewhere pin some of their sentences.
+    const thrown = Object.assign(new Error('that handle is taken'), { statusCode: 409 })
+
+    const { res } = await serve(thrown)
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toEqual({ error: 'that handle is taken' })
+  })
+})

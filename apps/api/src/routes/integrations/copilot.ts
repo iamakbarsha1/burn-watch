@@ -234,10 +234,12 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     //
     // Letting it escape was not merely untidy. `apiError` puts GitHub's whole
     // response body in the message, and the global handler in `build-server`
-    // answers an unhandled error with `{ error: error.message }` — so an
-    // upstream failure echoed raw GitHub response text back to the caller,
-    // from a module that takes care elsewhere to keep a signed URL out of a
-    // log. The status travels; the body does not.
+    // used to answer every unhandled error with `{ error: error.message }`,
+    // so an upstream failure echoed raw GitHub response text back to the
+    // caller, from a module that takes care elsewhere to keep a signed URL
+    // out of a log. The handler now hides a 500's message, but a GitHub
+    // failure is a 502 with the GitHub status attached, not a 500, so the
+    // wrap stays. The status travels; the body does not.
     let seatPage: Awaited<ReturnType<typeof listCopilotSeats>>
     let report: CopilotReport
     try {
@@ -434,9 +436,8 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     }
 
     // Wrapped for the reason the sync route wraps its own call, written out
-    // above: `apiError` carries GitHub's response body in the message and the
-    // global handler sends `error.message`. The status travels; the body does
-    // not.
+    // above: the failure is GitHub's, so it answers 502 with the GitHub status
+    // rather than a generic 500. The status travels; the body does not.
     let seatPage: Awaited<ReturnType<typeof listCopilotSeats>>
     try {
       seatPage = await listCopilotSeats(token, row.githubOrg)
