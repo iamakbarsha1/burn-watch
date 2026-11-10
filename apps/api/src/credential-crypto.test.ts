@@ -65,6 +65,24 @@ describe('credentialCrypto', () => {
     })
   })
 
+  /**
+   * `openssl rand -base64 32` is what the docs tell an operator to run, and it
+   * prints a trailing newline. A key that survives generation but dies on
+   * paste would read as a broken feature rather than as a typo.
+   */
+  it('accepts a key carrying the newline openssl leaves on it', () => {
+    const result = credentialCrypto({ COPILOT_ENCRYPTION_KEY: `${VALID_KEY}\n` })
+    if (!result.available) throw new Error(`expected a usable key, got ${result.reason}`)
+    expect(result.open(result.seal('ghp_abc123'))).toBe('ghp_abc123')
+  })
+
+  it('treats a whitespace-only key as absent rather than malformed', () => {
+    expect(credentialCrypto({ COPILOT_ENCRYPTION_KEY: '   \n' })).toEqual({
+      available: false,
+      reason: 'missing-key',
+    })
+  })
+
   it('reads process.env when no environment is handed to it', async () => {
     const saved = process.env.COPILOT_ENCRYPTION_KEY
     delete process.env.COPILOT_ENCRYPTION_KEY
