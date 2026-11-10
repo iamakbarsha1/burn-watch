@@ -1080,6 +1080,26 @@ describe('GET /v1/integrations/copilot/seats', () => {
     expect(res.json().githubStatus).toBe(401)
     expect(res.payload).not.toContain('github says no')
   })
+
+  it('does not blame the token when GitHub never refused the request', async () => {
+    // Every page comes back full, so the walk exhausts its cap and throws an
+    // error carrying no HTTP status. The old wording told the operator their
+    // token had expired, which would send them to rotate a working credential
+    // while the real cause, a changed pagination contract, went unnamed.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 5000,
+      seats: Array.from({ length: 100 }, (_, i) => seat(`dev${i}`)),
+    }
+    dbState.results.push(connectedRow())
+
+    const res = await get()
+
+    expect(res.statusCode).toBe(502)
+    expect(res.json().githubStatus).toBeNull()
+    expect(res.json().error).not.toMatch(/token/i)
+    expect(res.json().error).toMatch(/did not complete/)
+  })
 })
 
 describe('copilot integration routes — authorization', () => {
