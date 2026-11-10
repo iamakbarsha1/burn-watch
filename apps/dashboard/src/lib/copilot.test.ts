@@ -107,6 +107,36 @@ describe('ENCRYPTION_FAULTS', () => {
 })
 
 describe('describeSync', () => {
+  /**
+   * "0 rows written" reads as nothing is wrong, and for an unpublished day
+   * retrying is the entire remedy. GitHub also answers 404 rather than 403
+   * for a resource a token cannot see, so the same response covers a token
+   * lacking Copilot metrics access; the wording has to point at both.
+   */
+  it('tells the operator to retry when the report was never published', () => {
+    const text = describeSync({
+      day: '2026-11-09',
+      reportPublished: false,
+      seats: { total: 12, skippedNullAssignee: 0 },
+      usage: { written: 0 },
+    })
+    expect(text).toContain('not published')
+    expect(text).toContain('Try again later')
+    expect(text).toContain('Copilot metrics access')
+    expect(text).not.toContain('0 rows written')
+  })
+
+  it('counts rows normally when the report was published and simply empty', () => {
+    expect(
+      describeSync({
+        day: '2026-11-09',
+        reportPublished: true,
+        seats: { total: 4, skippedNullAssignee: 0 },
+        usage: { written: 0 },
+      }),
+    ).toBe('2026-11-09: 4 seats, 0 rows written.')
+  })
+
   it('counts seats and written rows separately', () => {
     expect(
       describeSync({

@@ -44,6 +44,14 @@ export type CopilotSeatPage = {
   skippedNullAssignee: number
 }
 
+/**
+ * A day's report, and whether GitHub had one at all.
+ *
+ * The flag is not decoration. An unpublished report and an idle organization
+ * both yield no rows, and only one of them is worth retrying.
+ */
+export type CopilotReport = { published: boolean; rows: CopilotUserDay[] }
+
 /** One developer, one day. Tokens are real; cost is derived from credits. */
 export type CopilotUserDay = {
   login: string
@@ -159,7 +167,7 @@ export async function fetchCopilotUserDays(
   org: string,
   day: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<CopilotUserDay[]> {
+): Promise<CopilotReport> {
   const url = `${GITHUB_API}/orgs/${encodeURIComponent(org)}/copilot/metrics/reports/users-1-day?day=${encodeURIComponent(day)}`
   const res = await fetchImpl(url, { headers: githubHeaders(token) })
 
@@ -167,7 +175,19 @@ export async function fetchCopilotUserDays(
   // 404 on a recent day means "not generated yet" at least as often as it
   // means "never will be". Raising it would turn every sync of a day near
   // the boundary into a failure an operator has to learn to ignore.
-  if (res.status === 404) return []
+  //
+  // But it cannot be flattened to an empty report either, which is what this
+  // used to return. "Not published yet" and "nobody used Copilot" are
+  // opposite situations that wanted opposite responses, and the second was
+  // being shown for the first: retry is the entire remedy for one and
+  // pointless for the other.
+  //
+  // It carries a third meaning that matters more. GitHub answers 404, not
+  // 403, for a resource a token cannot see. A PAT that can read seat billing
+  // but lacks Copilot metrics therefore passes the connect check, 404s on
+  // every report, and leaves an integration that looks healthy forever and
+  // has never pulled a row. `published: false` is what lets a caller say so.
+  if (res.status === 404) return { published: false, rows: [] }
   if (!res.ok) throw await apiError(url, res)
 
   // The endpoint hands back pointers, not data: signed URLs to NDJSON files.
@@ -188,7 +208,7 @@ export async function fetchCopilotUserDays(
     }
   }
 
-  return rows
+  return { published: true, rows }
 }
 
 // ponytail: one row per user-day, never per model. The report does carry real
