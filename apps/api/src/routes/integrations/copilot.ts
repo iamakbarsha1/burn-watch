@@ -463,7 +463,23 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
           .from(users)
           .where(and(eq(users.orgId, orgId), inArray(sql`lower(${users.githubUsername})`, logins)))
       : []
-    const userByLogin = new Map(linked.map((u) => [u.login, u]))
+    // `github_username` carries no uniqueness constraint, so one login can
+    // match two users. The seat still goes to exactly one of them, the lowest
+    // id, so two reads of the same roster agree; and the login is reported
+    // so nobody reads that pick as a fact. Chosen here rather than by ORDER
+    // BY so the rule does not depend on which row the driver hands back
+    // first.
+    const userByLogin = new Map<string, (typeof linked)[number]>()
+    const ambiguous = new Set<string>()
+    for (const u of linked) {
+      const held = userByLogin.get(u.login)
+      if (!held) {
+        userByLogin.set(u.login, u)
+        continue
+      }
+      ambiguous.add(u.login)
+      if (u.id < held.id) userByLogin.set(u.login, u)
+    }
 
     const cutoff = Date.now() - idleAfterDays * 86_400_000
 
@@ -515,6 +531,12 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         idleMonthlyCostUsd: idleSeats.reduce((sum, s) => sum + (s.monthlyCostUsd ?? 0), 0),
         unpricedIdleSeats: idleSeats.filter((s) => s.monthlyCostUsd === null).length,
       },
+      // GitHub's casing, sorted, and never absent, on the same terms as
+      // `unmatchedLogins` above.
+      ambiguousLogins: seatPage.seats
+        .filter((s) => ambiguous.has(s.login.toLowerCase()))
+        .map((s) => s.login)
+        .sort(),
     }
     return response
   })

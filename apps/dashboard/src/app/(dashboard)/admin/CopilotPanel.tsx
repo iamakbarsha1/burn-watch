@@ -332,6 +332,7 @@ function SeatRosterResult({ roster }: { roster: CopilotSeatsResponse }) {
       {caveat && <p className="max-w-2xl text-sm text-ink-2">{caveat}</p>}
 
       {unlinked.length > 0 && <UnlinkedSeats logins={unlinked} />}
+      {roster.ambiguousLogins.length > 0 && <AmbiguousLogins logins={roster.ambiguousLogins} />}
 
       <TableFrame>
         <table className="w-full min-w-[760px] border-collapse">
@@ -419,17 +420,51 @@ function UnlinkedSeats({ logins }: { logins: string[] }) {
         carries them as a github_username. Nothing they spend can be attributed to a person on this
         dashboard. Set the field on each matching user.
       </p>
-      <ul className="mt-2 flex flex-wrap gap-1.5">
-        {logins.map((login) => (
-          <li
-            key={login}
-            className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-xs text-ink"
-          >
-            {login}
-          </li>
-        ))}
-      </ul>
+      <LoginChips logins={logins} />
     </div>
+  )
+}
+
+/**
+ * The seats whose developer the API had to pick.
+ *
+ * Two BurnWatch users carry the same github_username, so the row in the table
+ * names whichever has the lowest id. It reads like a fact and is a tie-break
+ * until the duplicate is cleared.
+ */
+function AmbiguousLogins({ logins }: { logins: string[] }) {
+  return (
+    <div className="rounded-lg border border-warn/35 bg-warn/10 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="warn">
+          {logins.length === 1
+            ? '1 login on more than one user'
+            : `${logins.length} logins on more than one user`}
+        </Badge>
+      </div>
+      <p className="mt-2 max-w-2xl text-sm text-ink-2">
+        More than one BurnWatch user carries each of these GitHub logins as a github_username. The
+        table shows the seat against the user with the lowest id, which may not be the right
+        person. Clear the field on every user but one.
+      </p>
+      <LoginChips logins={logins} />
+    </div>
+  )
+}
+
+/** The pasteable form of a login list, shared by every callout on this panel. */
+function LoginChips({ logins }: { logins: string[] }) {
+  return (
+    <ul className="mt-2 flex flex-wrap gap-1.5">
+      {logins.map((login) => (
+        <li
+          key={login}
+          className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-xs text-ink"
+        >
+          {login}
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -499,16 +534,7 @@ function UnmatchedLogins({ logins }: { logins: string[] }) {
         Their usage was not recorded and does not appear in any total on this dashboard. Set the
         field on each matching user and run the sync again for the same day to pick it up.
       </p>
-      <ul className="mt-2 flex flex-wrap gap-1.5">
-        {logins.map((login) => (
-          <li
-            key={login}
-            className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-xs text-ink"
-          >
-            {login}
-          </li>
-        ))}
-      </ul>
+      <LoginChips logins={logins} />
     </div>
   )
 }
