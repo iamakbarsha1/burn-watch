@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { Document } from 'mongodb'
 import { dayKey, type DeviceId, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
-import { buildSnapshot, pickWinningSource, rebuildDailySnapshot, type AgentSourceTotals } from './snapshot.js'
-import type { Txn } from './store.js'
+import type { DailySnapshotDoc } from './documents.js'
+import {
+  buildSnapshot,
+  costFieldFor,
+  monthToDateSpend,
+  pickWinningSource,
+  rebuildDailySnapshot,
+  type AgentSourceTotals,
+} from './snapshot.js'
+import type { Store, Txn } from './store.js'
 import { upsertUsageEvents } from './usage.js'
 
 const row = (
@@ -152,5 +160,163 @@ describe('upsertUsageEvents', () => {
     expect(op.update.$setOnInsert).toEqual({ orgId })
     // A no-op re-sync is still an acceptance (matchedCount, not modifiedCount).
     expect(counts).toEqual({ accepted: 1, skipped: 0 })
+  })
+})
+
+describe('costFieldFor', () => {
+  it('points at one agent slot of byAgent for a known agent', () => {
+    expect(costFieldFor('claude')).toBe('$byAgent.claude.costMicros')
+    expect(costFieldFor('qwen')).toBe('$byAgent.qwen.costMicros')
+  })
+
+  it('falls back to the all-agent total when no agent is named', () => {
+    expect(costFieldFor(null)).toBe('$totalCostMicros')
+  })
+
+  it('falls back to the all-agent total for a name it does not recognise', () => {
+    // `agent` is read off a stored document, so TypeScript has not vouched for
+    // it. A row written by an older build must still be priced against a real
+    // field, and no stored value may rewrite the path.
+    expect(costFieldFor('made-up-agent')).toBe('$totalCostMicros')
+    expect(costFieldFor('claude.costMicros')).toBe('$totalCostMicros')
+    expect(costFieldFor('$where')).toBe('$totalCostMicros')
+  })
+})
+
+const at = (path: string, doc: Document): unknown =>
+  path.split('.').reduce<unknown>((v, k) => (v as Document | undefined)?.[k], doc)
+
+/**
+ * Just enough of `$match` and `$group` to run the one pipeline
+ * `monthToDateSpend` builds, over documents held in an array.
+ *
+ * Strict on purpose: anything it was not written to understand throws instead
+ * of being skipped. A condition added to the match — `$exists` on the agent
+ * slot is the obvious one — would otherwise be silently ignored here while
+ * quietly dropping whole days in production, which is the defect these cases
+ * exist to catch.
+ */
+function evaluate(docs: Document[], pipeline: Document[]): Document[] {
+  const [first, second, ...rest] = pipeline
+  if (rest.length > 0 || !first?.$match || !second?.$group) {
+    throw new Error(`unsupported pipeline: ${JSON.stringify(pipeline)}`)
+  }
+
+  const kept = docs.filter((doc) =>
+    Object.entries(first.$match as Document).every(([field, want]) => {
+      const have = at(field, doc)
+      if (want === null || typeof want !== 'object') return have === want
+      return Object.entries(want as Document).every(([op, bound]) => {
+        if (op === '$gte') return (have as string) >= (bound as string)
+        if (op === '$lt') return (have as string) < (bound as string)
+        throw new Error(`unsupported $match operator: ${op}`)
+      })
+    }),
+  )
+
+  const { _id, ...accumulators } = second.$group as Document
+  const sum = (accumulators.spend as Document | undefined)?.$sum
+  if (_id !== null || Object.keys(accumulators).length !== 1 || typeof sum !== 'string') {
+    throw new Error(`unsupported $group: ${JSON.stringify(second.$group)}`)
+  }
+  if (kept.length === 0) return []
+  // $sum skips every value that is not a number, and an absent path is one.
+  const spend = kept.reduce((total, doc) => {
+    const value = at(sum.slice(1), doc)
+    return total + (typeof value === 'number' ? value : 0)
+  }, 0)
+  return [{ _id: null, spend }]
+}
+
+const fakeStore = (docs: Document[]) =>
+  ({ dailySnapshots: { aggregate: async (p: Document[]) => evaluate(docs, p) } }) as unknown as Store
+
+const snapshot = (day: string, over: Partial<DailySnapshotDoc> = {}): Document => ({
+  _id: dayKey(userId, day as IsoDate),
+  userId,
+  orgId,
+  date: day,
+  byAgent: {},
+  totalTokens: 0,
+  totalCostMicros: 0,
+  callCount: 0,
+  sessionCount: 0,
+  cacheHitRate: null,
+  modelsUsed: [],
+  updatedAt: new Date(),
+  ...over,
+})
+
+const NOV = '2026-11-20' as IsoDate
+
+describe('monthToDateSpend', () => {
+  it('sums the whole month to date for the org', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-01', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-11-20', { totalCostMicros: 2_500_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(3_500_000)
+  })
+
+  it('takes the month half-open, so the first of the next month is out', async () => {
+    const store = fakeStore([
+      snapshot('2026-10-31', { totalCostMicros: 9_000_000 as Micros }),
+      snapshot('2026-11-01', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-12-01', { totalCostMicros: 9_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(1_000_000)
+  })
+
+  it('rolls the year over at December without consulting a timezone', async () => {
+    const store = fakeStore([
+      snapshot('2026-12-31', { totalCostMicros: 4_000_000 as Micros }),
+      snapshot('2027-01-01', { totalCostMicros: 9_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, '2026-12-05' as IsoDate)).toBe(4_000_000)
+  })
+
+  it('narrows to one user when the alert is scoped to one', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-11-03', { userId: 'u2' as UserId, totalCostMicros: 8_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, userId, null, NOV)).toBe(1_000_000)
+  })
+
+  it('sums one agent slot rather than the total when the alert names an agent', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', {
+        byAgent: { claude: { tokens: 10, costMicros: 700_000 as Micros } },
+        totalCostMicros: 900_000 as Micros,
+      }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(700_000)
+  })
+
+  /**
+   * `byAgent` is a partial map, so a day on which the named agent did nothing
+   * carries no slot for it at all. That day has to read as zero and leave the
+   * rest of the month standing. A match that required the slot to exist, or an
+   * expression that treated a missing path as anything but zero, would drop
+   * every other day with it and under-report the month.
+   */
+  it('reads a day with no slot for that agent as zero, not as a day to exclude', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { byAgent: { claude: { tokens: 10, costMicros: 700_000 as Micros } } }),
+      snapshot('2026-11-03', { byAgent: { qwen: { tokens: 99, costMicros: 0 as Micros } } }),
+      snapshot('2026-11-04', { byAgent: { claude: { tokens: 1, costMicros: 300_000 as Micros } } }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(1_000_000)
+  })
+
+  it('answers zero for an agent that appears on no day in the scope', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { byAgent: { claude: { tokens: 1, costMicros: 5 as Micros } } }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'gemini', NOV)).toBe(0)
+  })
+
+  it('answers zero rather than undefined when the scope has no days at all', async () => {
+    expect(await monthToDateSpend(fakeStore([]), orgId, null, null, NOV)).toBe(0)
   })
 })
