@@ -1468,7 +1468,43 @@ settled:
    correct as written. The cost is that a developer's "today" shifts by their
    offset and historical rows stay local-bucketed unless backfilled, which
    makes it a data-semantics decision for the operator rather than a patch.
-   Deliberately not taken on this branch.
+
+   **Decided 2026-11-10: leave local bucketing.** `-z UTC` is not passed and
+   no backfill runs. Three reasons, in order of weight.
+
+   *The flip is not scoped to the defect.* ccusage buckets every agent at
+   once, so `-z UTC` rebuckets Claude as well, and Claude is where the money
+   is — $2,983.53 of $3,038.53 all-time on the one machine with real history,
+   measured 2026-11-05. The table above is that rebucketing: up to $98.94
+   moving between adjacent days. It would rewrite the day attribution of
+   everything to correct a Copilot row.
+
+   *The defect's size is unknown and cannot be measured from here.* The
+   mechanism is confirmed, the magnitude on Copilot rows is not, and
+   measuring it needs the Copilot Business org that blocker 2 says this
+   account cannot reach. That is the same gap that leaves the whole feature
+   fixture-only. Rewriting history to correct an unmeasured error in a path
+   that has never run against a real org is the wrong order to do it in.
+
+   *The backfill cannot be finished centrally.* `usage_events` stores a daily
+   total, not session timestamps, so rebucketing means re-running ccusage
+   against the JSONL on each developer's machine — fifty of them, some since
+   rotated or pruned. A partial backfill leaves one table holding two
+   definitions of a day with no column saying which row has which. That is
+   worse than one definition that is known to be wrong, because the first is
+   invisible and the second is written down here.
+
+   What is accepted in exchange: the Copilot org row double-counts work the
+   agent filed on the adjacent day. It inflates a total rather than moving
+   one, which is worse in kind, but it is bounded by boundary-crossing
+   Copilot usage, and Copilot is roughly 1% of measured spend. Month totals,
+   which is what per-developer visibility actually asks for, are unaffected
+   either way.
+
+   **Revisit when** an operator connects a real Copilot Business org and the
+   overcount becomes measurable. If it is material then, the fix is `-z UTC`
+   plus a `day_tz` column on `usage_events` so a partial backfill is legible,
+   not `-z UTC` on its own.
 3. `githubStatusFrom` recovers a status by regex over an error message, so a
    transport failure (DNS, blocked egress, timeout) reads to the operator as
    "GitHub rejected this token" and invites them to rotate a working
