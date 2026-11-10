@@ -10,8 +10,11 @@ Production:
 | Dashboard | https://burn-watch-delta.vercel.app |
 | API | https://burn-watch-api.vercel.app |
 
-The same page lives inside the dashboard at `/setup`, so an admin can send the
-link instead of this file.
+The same page lives inside the dashboard at `/setup`, where it picks your OS
+from the browser, so an admin can send the link instead of this file.
+
+The agent runs on macOS, Linux and Windows. Steps 1, 2 and 7 differ per OS;
+everything else is the same three commands everywhere.
 
 ---
 
@@ -33,11 +36,25 @@ email that is already in BurnWatch.
 
 Skip this if `bun --version` already answers.
 
+macOS and Linux:
+
 ```bash
 curl -fsSL https://bun.sh/install | bash
 ```
 
+Windows, from PowerShell — reopen the window afterwards so `bun` is on your
+PATH:
+
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
 ### 3. Build the agent
+
+`bun run build` compiles one binary. Nothing from `node_modules` is needed at
+runtime.
+
+macOS and Linux:
 
 ```bash
 git clone git@github.com:iamakbarsha1/burn-watch.git ~/burn-watch
@@ -47,8 +64,28 @@ cd apps/agent && bun run build
 sudo mv dist/burnwatch /usr/local/bin/burnwatch
 ```
 
-`bun run build` compiles one binary. Nothing from `node_modules` is needed at
-runtime.
+Windows, from PowerShell:
+
+```powershell
+git clone git@github.com:iamakbarsha1/burn-watch.git $HOME\burn-watch
+cd $HOME\burn-watch
+npm install
+cd apps\agent
+bun run build
+New-Item -ItemType Directory -Force $HOME\bin | Out-Null
+Move-Item -Force dist\burnwatch.exe $HOME\bin\burnwatch.exe
+```
+
+Nothing puts `$HOME\bin` on your PATH for you. Add it once, then reopen
+PowerShell:
+
+```powershell
+[Environment]::SetEnvironmentVariable('Path',
+  "$([Environment]::GetEnvironmentVariable('Path','User'));$HOME\bin", 'User')
+```
+
+If you would rather not install Bun at all, ask an admin for a prebuilt binary
+(see **Building for someone else's machine** below).
 
 ### 4. Register the machine
 
@@ -58,7 +95,12 @@ burnwatch register
 
 It asks for your work email, prints a six-character code, and waits. Open
 **Devices** in the dashboard and type the code in. The agent picks up the
-approval within ten seconds and writes `~/.burnwatch/config.json` (mode 600).
+approval within ten seconds and writes its config:
+
+| OS | Config |
+| --- | --- |
+| macOS, Linux | `~/.burnwatch/config.json`, mode 600 |
+| Windows | `%USERPROFILE%\.burnwatch\config.json` |
 
 The code lasts 15 minutes and works once. Only you can approve your own device, because
 the approval is matched against the email you signed in with.
@@ -83,21 +125,36 @@ Then open the dashboard's Overview page. Your numbers should be there.
 
 ### 7. Daily sync
 
-On macOS, `register` already scheduled a 6 PM launchd job. If you moved the
-binary after registering, repoint it:
+`register` already scheduled the 6 PM job, using whatever the OS provides.
+Confirm it exists:
+
+| OS | Scheduled as | Check it |
+| --- | --- | --- |
+| macOS | launchd agent `com.burnwatch.agent` | `launchctl list \| grep com.burnwatch.agent` |
+| Linux | systemd user timer `burnwatch-sync.timer` | `systemctl --user status burnwatch-sync.timer` |
+| Windows | Task Scheduler task `BurnWatchSync` | `schtasks /query /tn BurnWatchSync` |
+
+If you moved the binary after registering, repoint the schedule at its new path:
 
 ```bash
 burnwatch install-cron
 ```
 
-Linux has no launchd, so add a crontab line instead:
+On Linux a user timer needs a live user session. Over a bare SSH login there is
+none, so enable lingering once and reinstall:
 
 ```bash
-(crontab -l 2>/dev/null; echo "0 18 * * * /usr/local/bin/burnwatch sync") | crontab -
+loginctl enable-linger $USER
+burnwatch install-cron
 ```
 
 Bare `sync` uploads yesterday. Today's spend appears tomorrow evening; run
 `burnwatch sync --days 1` when you want it now.
+
+Linux and Windows scheduling is generated and unit-tested, but nobody has
+watched it fire on real hardware yet. If 6 PM comes and goes with nothing
+uploaded, say so — that is the open item in the verification debt table in
+[tasks/TICKETS.md](../tasks/TICKETS.md).
 
 ### Removing it
 
@@ -105,8 +162,8 @@ Bare `sync` uploads yesterday. Today's spend appears tomorrow evening; run
 burnwatch uninstall
 ```
 
-Drops the schedule. `~/.burnwatch/config.json` stays, so delete it too if you
-want nothing left behind.
+Drops the schedule and revokes the device token. The config file stays, so
+delete it too if you want nothing left behind.
 
 ### What gets uploaded
 
@@ -123,8 +180,11 @@ The agent never reads or sends prompts, responses or file contents.
 | --- | --- |
 | `User not found. Ask your admin to invite you first.` | Your email is not in BurnWatch, or you typed a different one. |
 | `Invalid or expired verification code` | Codes last 15 minutes and work once. Run `register` again. |
-| 6 PM job never fires | Run `burnwatch install-cron`. A plist written by an older agent points at the Bun runtime rather than the binary and dies with `Script not found "sync"`. |
-| Dashboard still empty after a sync | Check `~/.burnwatch/agent.log`, then `burnwatch status` for the last successful upload. |
+| `burnwatch: command not found` | The binary is not on your PATH. `which burnwatch` on macOS and Linux, `Get-Command burnwatch` in PowerShell. On Windows, PATH is read when the shell starts — reopen it after step 3. |
+| 6 PM job never fires, macOS | Run `burnwatch install-cron`. A plist written by an older agent points at the Bun runtime rather than the binary and dies with `Script not found "sync"`. |
+| 6 PM job never fires, Linux | `Failed to connect to bus` from `systemctl --user` means there is no user session holding the timer. `loginctl enable-linger $USER`, then `burnwatch install-cron`. |
+| 6 PM job never fires, Windows | `ERROR: The system cannot find the file specified` from `schtasks /query` means the task was never created. Re-run `burnwatch install-cron` from PowerShell; the task belongs to the user who created it. |
+| Dashboard still empty after a sync | Check `~/.burnwatch/agent.log` (`%USERPROFILE%\.burnwatch\agent.log` on Windows), then `burnwatch status` for the last successful upload. Run the sync by hand first — it shows the error the scheduler swallows. |
 
 ---
 
@@ -148,6 +208,22 @@ who have not installed anything yet:
 
 `Not set up` is the number that matters during rollout: those are the people who
 have an account but have never run the agent.
+
+### Building for someone else's machine
+
+Bun cross-compiles, so one machine can produce every binary. Run these from
+`apps/agent`:
+
+| Script | Output |
+| --- | --- |
+| `bun run build:darwin-arm64` | `dist/burnwatch-darwin-arm64` |
+| `bun run build:darwin-x64` | `dist/burnwatch-darwin-x64` |
+| `bun run build:linux-x64` | `dist/burnwatch-linux-x64` |
+| `bun run build:windows-x64` | `dist/burnwatch-windows-x64.exe` |
+
+Hand one over and the developer skips steps 2 and 3: drop it somewhere on PATH,
+rename it to `burnwatch` (`burnwatch.exe` on Windows), make it executable with
+`chmod +x` on macOS and Linux, and start at step 4.
 
 ### First-run bootstrap
 

@@ -30,7 +30,8 @@ read goes to Postgres on every request.
 
 ## Data Flow
 
-1. **Collection** — Agent runs on developer machine (daily via launchd)
+1. **Collection** — Agent runs on developer machine (daily, via launchd on
+   macOS, a systemd user timer on Linux, Task Scheduler on Windows)
    - **Tier 1 (ccusage):** Runs `npx ccusage@latest daily --json` to get token counts and costs for all agents
    - **Tier 2 (codeburn):** Parses `~/.claude/projects/*/` JSONL files for Claude-specific enrichment (activity breakdown, project breakdown, tool/shell/MCP usage)
 
