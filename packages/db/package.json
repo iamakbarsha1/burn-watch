@@ -1,0 +1,32 @@
+{
+  "name": "@burn-watch/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "snapshot-race": "tsx src/scripts/snapshot-race.ts"
+  },
+  "dependencies": {
+    "@burn-watch/shared": "*",
+    "mongodb": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
