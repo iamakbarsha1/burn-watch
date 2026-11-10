@@ -51,6 +51,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **done** | M | — |
 | BW-38 | P4 | `register` overwrites an existing agent config silently | **done** | S | — |
 | BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
+| BW-40 | P4 | Every developer has to install Bun and build from source | **done** | M | BW-39 |
 
 ---
 
@@ -2079,3 +2080,77 @@ setup page is exactly where a developer who could settle it will be standing.
       prebuilt-binary route for a machine without Bun
 - [x] `loginctl enable-linger` is documented where a Linux user will find it
 - [x] Browser pass at 1440px and 390px, all three tabs
+
+---
+
+### BW-40 · Every developer has to install Bun and build from source
+**Size M** · follows BW-39
+
+BW-39 made the setup instructions correct on three platforms. It did not make
+them short. Every developer was still asked to install Bun, clone the
+monorepo, run `npm install`, build a binary and move it onto their PATH —
+five steps and three of them can fail, times 50-plus people. The repo already
+cross-compiled all four targets; nothing published them, so the only way to
+get a binary was to make one.
+
+A `scripts/install.sh` already existed and had never run. It resolved the
+latest tag through the GitHub API and then downloaded an asset from a release
+that did not exist, so its real behaviour was
+`No releases found. Ask your admin to create a release first.` It also did no
+integrity check at all, and defaulted to `/usr/local/bin` with a `sudo`
+fallback — a password prompt in the middle of a piped-to-shell install.
+
+**Done 2026-11-10.**
+
+Release `v0.1.0` publishes four binaries and a `checksums.txt`. The asset
+names are the contract: `scripts/install.sh` maps `uname -s`/`uname -m`
+straight onto them, so renaming one silently breaks every install command in
+the docs and on `/setup`. `docs/INSTALL.md` says so next to the release
+recipe.
+
+The installer was rewritten rather than extended:
+
+- **It verifies.** `checksums.txt` is downloaded alongside the binary and
+  compared with `shasum` or `sha256sum`, whichever the machine has. No
+  checksum entry, no matching hash, or neither tool present — it refuses and
+  installs nothing. Piping a 100 MB binary from the internet into a shell
+  without checking it was the worst thing about the old script.
+- **It needs no sudo.** Default is `~/.local/bin`, overridable with
+  `BURNWATCH_INSTALL_DIR`. A `sudo` prompt inside `curl | sh` trains people to
+  type their password into a pipe.
+- **It skips the API.** `releases/latest/download/` resolves server-side, so
+  there is no unauthenticated `api.github.com` call to be rate-limited at 60
+  an hour during a fleet rollout. `BURNWATCH_VERSION` pins a tag.
+- **It warns about the copy it cannot replace.** Anyone who installed by hand
+  before releases existed has a binary in `/usr/local/bin` that wins the PATH
+  lookup. The script compares `command -v burnwatch` against where it just
+  wrote and says so, rather than reporting a successful upgrade that changes
+  nothing.
+- **It shows progress.** The binary is 61–115 MB depending on target, because
+  `bun build --compile` embeds the runtime. A silent `curl -s` reads as a hang.
+
+`scripts/install.ps1` is the Windows half, since `curl | sh` is not a thing
+there and leaving Windows on build-from-source would have undone BW-39. Same
+checksum gate via `Get-FileHash`, same install directory, and it appends to
+the user PATH because nothing else will.
+
+`/setup` drops from six steps to five: install, register, backfill, confirm,
+schedule. Build-from-source moves into a native `<details>` — still there for
+anyone who wants it, no longer page height everyone else scrolls past.
+
+**Unverified:** `install.ps1` has no PowerShell on this machine to parse it,
+let alone run it. It is reviewed, not executed. That joins BW-20's Windows
+debt rather than pretending to be settled.
+
+**Acceptance**
+- [x] Four binaries and `checksums.txt` published as a GitHub release
+- [x] One command installs on macOS and Linux, verified end to end on this
+      machine — fresh install, checksum pass, `--version` answers
+- [x] The installer refuses on a checksum mismatch instead of installing
+- [x] No sudo, and no `api.github.com` dependency
+- [x] `/setup` and `docs/INSTALL.md` lead with the one-liner, build-from-source
+      demoted to a disclosure
+- [x] Release recipe documented for admins, including that asset names are the
+      contract
+- [ ] `install.ps1` run on a real Windows machine — unparsed and unexecuted
+      here, same debt as BW-20

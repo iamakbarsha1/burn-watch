@@ -1,7 +1,7 @@
 # Installing BurnWatch
 
 Two audiences. Developers set up the agent on one laptop; admins onboard the
-team and read the numbers.
+team, cut releases and read the numbers.
 
 Production:
 
@@ -13,14 +13,14 @@ Production:
 The same page lives inside the dashboard at `/setup`, where it picks your OS
 from the browser, so an admin can send the link instead of this file.
 
-The agent runs on macOS, Linux and Windows. Steps 1, 2 and 7 differ per OS;
+The agent runs on macOS, Linux and Windows. Steps 2 and 6 differ per OS;
 everything else is the same three commands everywhere.
 
 ---
 
 ## For developers
 
-Takes about five minutes. After that the agent reports on its own every evening.
+Four commands. After that the agent reports on its own every evening.
 
 ### 1. Get your account
 
@@ -32,62 +32,61 @@ Once you are added, open the dashboard, click **Set your password**, and use the
 same work email. There is no open sign-up: the password form only accepts an
 email that is already in BurnWatch.
 
-### 2. Install Bun
-
-Skip this if `bun --version` already answers.
+### 2. Install the agent
 
 macOS and Linux:
 
 ```bash
-curl -fsSL https://bun.sh/install | bash
+curl -fsSL https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts/install.sh | sh
 ```
 
-Windows, from PowerShell — reopen the window afterwards so `bun` is on your
-PATH:
+Windows, from PowerShell:
 
 ```powershell
-powershell -c "irm bun.sh/install.ps1 | iex"
+powershell -c "irm https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts/install.ps1 | iex"
 ```
 
-### 3. Build the agent
+Either one downloads a single binary from the latest GitHub release, verifies
+it against that release's `checksums.txt`, and puts it in `~/.local/bin`
+(`%USERPROFILE%\.local\bin` on Windows). No Bun, no clone, no build. The file
+is around 100 MB because the runtime is baked into it.
 
-`bun run build` compiles one binary. Nothing from `node_modules` is needed at
-runtime.
+If `~/.local/bin` is not on your PATH, the script prints the line to add and
+stops short of pretending it worked. On Windows it adds the directory to your
+user PATH for you — reopen PowerShell before step 3. Set
+`BURNWATCH_INSTALL_DIR` to install somewhere else, or `BURNWATCH_VERSION` to
+pin a tag instead of taking the latest.
 
-macOS and Linux:
+A `checksum mismatch` means nothing was installed. Run it again; if it repeats,
+stop and tell an admin rather than working around it.
+
+<details>
+<summary>Build from source instead</summary>
+
+Needs Bun. `curl -fsSL https://bun.sh/install | bash` on macOS and Linux,
+`powershell -c "irm bun.sh/install.ps1 | iex"` on Windows.
 
 ```bash
 git clone git@github.com:iamakbarsha1/burn-watch.git ~/burn-watch
 cd ~/burn-watch
 npm install
 cd apps/agent && bun run build
-sudo mv dist/burnwatch /usr/local/bin/burnwatch
+mv dist/burnwatch ~/.local/bin/burnwatch
 ```
 
-Windows, from PowerShell:
+On Windows the build writes `dist\burnwatch.exe`, and nothing puts
+`$HOME\.local\bin` on your PATH for you:
 
 ```powershell
-git clone git@github.com:iamakbarsha1/burn-watch.git $HOME\burn-watch
-cd $HOME\burn-watch
-npm install
-cd apps\agent
-bun run build
-New-Item -ItemType Directory -Force $HOME\bin | Out-Null
-Move-Item -Force dist\burnwatch.exe $HOME\bin\burnwatch.exe
-```
-
-Nothing puts `$HOME\bin` on your PATH for you. Add it once, then reopen
-PowerShell:
-
-```powershell
+New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
+Move-Item -Force dist\burnwatch.exe $HOME\.local\bin\burnwatch.exe
 [Environment]::SetEnvironmentVariable('Path',
-  "$([Environment]::GetEnvironmentVariable('Path','User'));$HOME\bin", 'User')
+  "$([Environment]::GetEnvironmentVariable('Path','User'));$HOME\.local\bin", 'User')
 ```
 
-If you would rather not install Bun at all, ask an admin for a prebuilt binary
-(see **Building for someone else's machine** below).
+</details>
 
-### 4. Register the machine
+### 3. Register the machine
 
 ```bash
 burnwatch register
@@ -105,7 +104,7 @@ approval within ten seconds and writes its config:
 The code lasts 15 minutes and works once. Only you can approve your own device, because
 the approval is matched against the email you signed in with.
 
-### 5. Backfill
+### 4. Backfill
 
 ```bash
 burnwatch sync --days 30
@@ -115,7 +114,7 @@ This reads what ccusage already knows about Claude Code, Codex, Gemini, Qwen and
 Copilot on this machine and uploads the daily totals. `--days 240` gets your
 whole history.
 
-### 6. Confirm
+### 5. Confirm
 
 ```bash
 burnwatch status
@@ -123,7 +122,7 @@ burnwatch status
 
 Then open the dashboard's Overview page. Your numbers should be there.
 
-### 7. Daily sync
+### 6. Daily sync
 
 `register` already scheduled the 6 PM job, using whatever the OS provides.
 Confirm it exists:
@@ -156,6 +155,13 @@ watched it fire on real hardware yet. If 6 PM comes and goes with nothing
 uploaded, say so — that is the open item in the verification debt table in
 [tasks/TICKETS.md](../tasks/TICKETS.md).
 
+### Upgrading
+
+Re-run the install command from step 2. It overwrites the binary in place and
+leaves your config and schedule alone. If you installed by hand into
+`/usr/local/bin` before releases existed, the script warns that the old copy
+still wins the PATH lookup rather than letting you believe the upgrade took.
+
 ### Removing it
 
 ```bash
@@ -180,7 +186,9 @@ The agent never reads or sends prompts, responses or file contents.
 | --- | --- |
 | `User not found. Ask your admin to invite you first.` | Your email is not in BurnWatch, or you typed a different one. |
 | `Invalid or expired verification code` | Codes last 15 minutes and work once. Run `register` again. |
-| `burnwatch: command not found` | The binary is not on your PATH. `which burnwatch` on macOS and Linux, `Get-Command burnwatch` in PowerShell. On Windows, PATH is read when the shell starts — reopen it after step 3. |
+| `checksum mismatch` | The download did not match the release's `checksums.txt`. Nothing was installed. Retry; if it repeats, escalate. |
+| `no prebuilt binary for <os> <arch>` | Only darwin-arm64, darwin-x64, linux-x64 and windows-x64 are published. Build from source. |
+| `burnwatch: command not found` | `~/.local/bin` is not on your PATH. The installer prints the line to add; open a new shell after adding it. On Windows, PATH is read when the shell starts — reopen it after step 2. |
 | 6 PM job never fires, macOS | Run `burnwatch install-cron`. A plist written by an older agent points at the Bun runtime rather than the binary and dies with `Script not found "sync"`. |
 | 6 PM job never fires, Linux | `Failed to connect to bus` from `systemctl --user` means there is no user session holding the timer. `loginctl enable-linger $USER`, then `burnwatch install-cron`. |
 | 6 PM job never fires, Windows | `ERROR: The system cannot find the file specified` from `schtasks /query` means the task was never created. Re-run `burnwatch install-cron` from PowerShell; the task belongs to the user who created it. |
@@ -209,21 +217,42 @@ who have not installed anything yet:
 `Not set up` is the number that matters during rollout: those are the people who
 have an account but have never run the agent.
 
-### Building for someone else's machine
+### Cutting a release
 
-Bun cross-compiles, so one machine can produce every binary. Run these from
-`apps/agent`:
+The installers read the latest GitHub release, so a new agent build reaches the
+fleet only when one is published. Bun cross-compiles, so one machine produces
+every binary. From `apps/agent`:
 
-| Script | Output |
+```bash
+rm -rf dist
+bun run build:darwin-arm64
+bun run build:darwin-x64
+bun run build:linux-x64
+bun run build:windows-x64
+cd dist && shasum -a 256 burnwatch-* > checksums.txt
+```
+
+| Script | Asset |
 | --- | --- |
-| `bun run build:darwin-arm64` | `dist/burnwatch-darwin-arm64` |
-| `bun run build:darwin-x64` | `dist/burnwatch-darwin-x64` |
-| `bun run build:linux-x64` | `dist/burnwatch-linux-x64` |
-| `bun run build:windows-x64` | `dist/burnwatch-windows-x64.exe` |
+| `build:darwin-arm64` | `burnwatch-darwin-arm64` |
+| `build:darwin-x64` | `burnwatch-darwin-x64` |
+| `build:linux-x64` | `burnwatch-linux-x64` |
+| `build:windows-x64` | `burnwatch-windows-x64.exe` |
 
-Hand one over and the developer skips steps 2 and 3: drop it somewhere on PATH,
-rename it to `burnwatch` (`burnwatch.exe` on Windows), make it executable with
-`chmod +x` on macOS and Linux, and start at step 4.
+Then publish all five files, `checksums.txt` included — the installers refuse
+to run without it:
+
+```bash
+gh release create v0.1.0 dist/burnwatch-* dist/checksums.txt \
+  --title 'burnwatch v0.1.0' --notes 'Agent binaries for macOS, Linux and Windows.'
+```
+
+The asset names are the contract. `scripts/install.sh` maps `uname -s`/`uname
+-m` straight onto them, so renaming one breaks every install command in this
+document and on `/setup`.
+
+There is no `linux-arm64` build. The installer refuses rather than guessing, and
+points at the build-from-source path.
 
 ### First-run bootstrap
 
