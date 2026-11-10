@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Document, IndexDescriptionInfo } from 'mongodb'
 import { COLLECTIONS, type CollectionSpec, type IndexSpec } from './registry.js'
 import { MIGRATIONS } from './migrations.js'
-import { diffStructure, isClean, type Observed } from './schema.js'
+import { assertSchemaCurrent, diffStructure, isClean, pingDb, type Observed } from './schema.js'
 
 const SPECS: [string, CollectionSpec<Document>][] = Object.entries(COLLECTIONS)
 
@@ -51,6 +51,32 @@ function reshape(
 }
 
 const observed = (o: Mutable): Observed => o
+
+describe('the health checks with no MONGODB_URI', () => {
+  /**
+   * Both take `db = getDb()`, and getDb throws when the variable is unset.
+   * Because both are `async`, that throw becomes a rejected promise, which is
+   * what lets Promise.allSettled in /health record it and answer 503 naming
+   * the dependency. Declared as plain functions returning a promise, the throw
+   * would escape the array literal before allSettled was reached and /health
+   * would 500 naming nothing.
+   */
+  it('reject rather than throwing out of the call', async () => {
+    const saved = process.env.MONGODB_URI
+    delete process.env.MONGODB_URI
+    try {
+      // A synchronous throw fails the test on these two lines, before any
+      // assertion runs. That is the whole invariant.
+      const ping = pingDb()
+      const shape = assertSchemaCurrent()
+      await expect(ping).rejects.toThrow(/MONGODB_URI/)
+      await expect(shape).rejects.toThrow(/MONGODB_URI/)
+    } finally {
+      if (saved === undefined) delete process.env.MONGODB_URI
+      else process.env.MONGODB_URI = saved
+    }
+  })
+})
 
 describe('diffStructure', () => {
   // Without this the fixture could be wrong in a way that makes every "detects
