@@ -30,8 +30,11 @@ function toNumber(value: unknown): number {
  * ccusage syncing after the org pull, which is what a backfill does routinely,
  * would leave the org row already stored and the agent row discarded, or the
  * reverse, depending on which handler ran first. Preferring at read time gives
- * the same snapshot whatever order they landed in, and it stays correct when a
- * row is deleted later. The cost is one window function per rebuild.
+ * the same snapshot whatever order they landed in. It does not make the
+ * snapshot follow deletes. Removing a usage_events row changes what this
+ * aggregate returns but triggers no rebuild, so the stored day keeps its old
+ * total until something rebuilds it. The cost is one window function per
+ * rebuild.
  *
  * `bool_or(...) over (partition by agent)` is what makes the preference
  * per-agent. A developer can have agent-sourced claude and org-sourced copilot
