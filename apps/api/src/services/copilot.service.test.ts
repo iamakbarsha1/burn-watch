@@ -209,6 +209,23 @@ describe('parseUserDayRecord', () => {
     )
   })
 
+  /**
+   * `date` becomes part of the key a usage row is stored under, so a record
+   * that loses its day has to stop the sync rather than contribute a row
+   * filed against a date nobody can find.
+   */
+  it('throws when day is absent rather than filing the row under an empty date', () => {
+    expect(() =>
+      parseUserDayRecord('{"user_login":"login1","ai_credits_used":3}'),
+    ).toThrow(/login1 has no usable day/)
+  })
+
+  it('throws when day is present but not a calendar date', () => {
+    expect(() =>
+      parseUserDayRecord('{"user_login":"login1","day":"19 Oct 2026","ai_credits_used":3}'),
+    ).toThrow(/has no usable day. Observed: "19 Oct 2026"/)
+  })
+
   it('carries identity, date and every mapped figure through', () => {
     expect(parseUserDayRecord(fixtureLine('login1'))).toEqual({
       login: 'login1',
