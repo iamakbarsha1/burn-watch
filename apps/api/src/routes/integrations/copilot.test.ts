@@ -920,6 +920,40 @@ describe('GET /v1/integrations/copilot/seats', () => {
       userName: 'Alice Smith',
     })
     expect(res.json().summary.unlinked).toBe(0)
+    // Present and empty, never absent. A field that disappears when empty is
+    // a field nobody notices when it fills.
+    expect(res.json().ambiguousLogins).toEqual([])
+  })
+
+  it('attributes a login two users share to the lowest id, and names the login', async () => {
+    // `users.github_username` carries no uniqueness constraint and the lookup
+    // has no ORDER BY, so the same seat could land on a different developer
+    // each read. Rows arrive lowest id first so last-row-wins cannot pass, and
+    // the shared logins arrive out of order so a dropped sort cannot either.
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsBody = {
+      total_seats: 3,
+      seats: [seat('Zed'), seat('Alice'), seat('Bob')],
+    }
+    dbState.results.push(connectedRow())
+    dbState.results.push([
+      { id: USER_A, name: 'Alice Smith', login: 'alice' },
+      { id: '99999999-9999-4999-8999-999999999999', name: 'Alice Later', login: 'alice' },
+      { id: '77777777-7777-4777-8777-777777777777', name: 'Zed One', login: 'zed' },
+      { id: '88888888-8888-4888-8888-888888888888', name: 'Zed Two', login: 'zed' },
+      { id: '55555555-5555-4555-8555-555555555555', name: 'Bob', login: 'bob' },
+    ])
+
+    const res = await get()
+
+    const byLogin = Object.fromEntries(
+      res.json().seats.map((s: { login: string }) => [s.login, s]),
+    )
+    expect(res.json().seats).toHaveLength(3)
+    expect(byLogin.Alice).toMatchObject({ userId: USER_A, userName: 'Alice Smith' })
+    expect(byLogin.Zed).toMatchObject({ userName: 'Zed One' })
+    expect(res.json().ambiguousLogins).toEqual(['Alice', 'Zed'])
+    expect(res.json().summary.unlinked).toBe(0)
   })
 
   it('counts the seats no BurnWatch user claims', async () => {

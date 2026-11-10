@@ -376,4 +376,12 @@ export interface CopilotSeatsResponse {
      */
     unpricedIdleSeats: number
   }
+  /**
+   * GitHub logins that matched more than one user in the org. Nothing stops
+   * two users carrying the same `github_username`, and when they do the
+   * seat's row above is attributed to the lowest `users.id`, which is a
+   * tie-break and not a fact. Never optional and never empty by omission,
+   * for the reason `unmatchedLogins` gives on the sync result.
+   */
+  ambiguousLogins: string[]
 }
