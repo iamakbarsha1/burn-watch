@@ -1294,9 +1294,35 @@ existing `NOT NULL`. It needs no migration, but `/devices` renders
 developer into a real screen. A column that admits the truth beats a fake row
 that hides it.
 
+**Progress 2026-11-10.** Three slices built and merged on `bw-21-copilot`.
+`credential-crypto.ts` seals a credential with AES-256-GCM behind a union a
+caller has to narrow before `seal` exists. Migration `0005` adds `source`,
+makes `device_id` nullable and rebuilds the unique constraint. `rebuildDailySnapshot`
+resolves two sources per agent at read time. `copilot.service.ts` walks the
+seats pages and parses the usage NDJSON. None of it has a caller yet; the
+route and the admin card are the remaining slices.
+
+The double count is not a theory and neither is the fix. Both were executed
+against a Neon branch copied from production, running Postgres 18, after
+applying `0005` to it. The `ADD CONSTRAINT` took on real rows. Two identical
+org-sourced inserts with a null `device_id` produced one row, the second
+returning nothing, which is what proves `NULLS NOT DISTINCT` holds and that
+`ON CONFLICT` infers it. With an agent row and an org row on one
+developer-day the old aggregation returned 150 tokens and $2.00 for copilot
+while the new one returned 50 and $0.50, and claude was identical under both,
+which is what proves the preference is per-agent rather than global.
+
+Worth recording because the slice that wrote the constraint could not test
+it: local `psql` is 14.19, which predates `NULLS NOT DISTINCT`, and no
+container runtime was up. Neon was Postgres 18 the whole time. This is the
+same shape as BW-20, where "no Linux or Windows hardware" described the shell
+rather than the project.
+
 **Acceptance**
-- [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY`
-- [ ] Key absent means the feature degrades, not crashes
+- [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY` — the
+      envelope is built and tested, but nothing calls it until the route lands
+- [ ] Key absent means the feature degrades, not crashes — holds at the module
+      boundary; the admin card still has to show which of the two reasons it is
 - [ ] ~~Copilot usage lands in `usage_events` and flows to snapshots~~ amended:
       real tokens and credit-derived cost land in `usage_events` behind
       `source`, one row per developer-day, and ccusage wins wherever both
