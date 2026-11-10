@@ -84,19 +84,35 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
   // the usage upsert deduplicating, so nothing but a live shape check would
   // ever notice.
   server.get('/health', async (_request, reply) => {
-    const names = ['database', 'schema', 'mongo', 'mongoSchema'] as const
-    const checks = await Promise.allSettled([
-      server.db.execute(sql`select 1`),
-      assertSchemaCurrent(server.db),
-      pingDb(),
-      assertMongoSchemaCurrent(),
-    ])
-    const failed = names.filter((_name, i) => checks[i].status === 'rejected')
+    // Name and promise travel together. Two separate literals lined up by
+    // index meant a check added to one and not the other would report under
+    // its neighbour's name, which is the failure this endpoint exists to not
+    // have.
+    const checked: [string, Promise<unknown>][] = [
+      ['database', server.db.execute(sql`select 1`)],
+      ['schema', assertSchemaCurrent(server.db)],
+    ]
+    // Guarded until Phase 0 provisions Atlas. Nothing in a request path reads
+    // Mongo yet — getStore has no callers outside its own module — so an
+    // unset MONGODB_URI is an absent dependency rather than a broken one, and
+    // reporting it down would take the deploy gate red for a database no
+    // request touches. Set the variable and both checks apply in full: a
+    // reachable but drifted cluster still answers 503. Phase 8 makes the
+    // variable required and deletes this guard.
+    if (process.env.MONGODB_URI) {
+      checked.push(['mongo', pingDb()], ['mongoSchema', assertMongoSchemaCurrent()])
+    }
+
+    const checks = await Promise.allSettled(checked.map(([, promise]) => promise))
+    const failed = checked.filter((_pair, i) => checks[i].status === 'rejected').map(([name]) => name)
 
     if (failed.length > 0) {
       for (const [i, check] of checks.entries()) {
         if (check.status === 'rejected') {
-          server.log.error({ err: check.reason, dependency: names[i] }, 'Health check failed')
+          server.log.error(
+            { err: check.reason, dependency: checked[i][0] },
+            'Health check failed',
+          )
         }
       }
       return reply.status(503).send({ ok: false, failed })

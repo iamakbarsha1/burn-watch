@@ -1693,6 +1693,18 @@ describe('GET /health', () => {
     dbState.results.push([]) // select 1 — the value is never read
   }
 
+  // build-server skips both MongoDB checks when MONGODB_URI is unset, and
+  // vitest never sets it. Every case below except the last is about what
+  // happens once Mongo IS configured, so the variable is present for all of
+  // them. The value is never dialled — @burn-watch/db is mocked wholesale.
+  beforeEach(() => {
+    process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/burnwatch_test'
+  })
+
+  afterEach(() => {
+    delete process.env.MONGODB_URI
+  })
+
   it('needs no authentication and returns 200 when the database answers', async () => {
     schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
     const res = await app.inject({ method: 'GET', url: '/health' })
@@ -1768,6 +1780,30 @@ describe('GET /health', () => {
     mongoState.schemaFails = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.json()).toEqual({ ok: false, failed: ['schema', 'mongo', 'mongoSchema'] })
+  })
+
+  /**
+   * Phase 2 lands before Phase 0 provisions Atlas, and no request path reads
+   * Mongo yet — getStore has no callers outside its own module. An unset
+   * MONGODB_URI is therefore an absent dependency, not a broken one, and
+   * reporting it down would hold the documented deploy gate red over a
+   * database nothing touches. Verified against the preview deployment: with
+   * the variable unset the route answered 503 {"failed":["mongo","mongoSchema"]}
+   * while production on Postgres answered 200.
+   *
+   * Both mocks are armed to fail here, so deleting the guard in build-server
+   * turns this case red rather than leaving it quietly meaningless. Phase 8
+   * makes the variable required and deletes both the guard and this test.
+   */
+  it('skips both MongoDB checks when MONGODB_URI is unset', async () => {
+    delete process.env.MONGODB_URI
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
+    mongoState.pingFails = true
+    mongoState.schemaFails = true
+
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true })
   })
 })
 
