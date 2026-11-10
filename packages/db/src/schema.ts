@@ -136,9 +136,11 @@ export async function observe(db: Db): Promise<Observed> {
   ).map(([name]) => name)
   const lists = await Promise.all(present.map((name) => db.collection(name).listIndexes().toArray()))
 
-  const claimed = collections.has(MIGRATIONS_COLLECTION)
-    ? await db.collection<MigrationDoc>(MIGRATIONS_COLLECTION).find({}).toArray()
-    : []
+  // No guard on whether _migrations exists. find() against an absent
+  // collection resolves with no rows, verified against mongod 8.0, and no rows
+  // is exactly what "nothing has ever been claimed" means. That is what keeps
+  // the collection out of the registry: nobody has to remember to create it.
+  const claimed = await db.collection<MigrationDoc>(MIGRATIONS_COLLECTION).find({}).toArray()
 
   return {
     collections,
@@ -151,6 +153,14 @@ export async function observe(db: Db): Promise<Observed> {
 /**
  * Round-trips to the server. Separate from the schema check so a dead
  * connection and a stale schema page differently.
+ *
+ * `async` is load-bearing, not style. The `db = getDb()` default calls
+ * getClient(), which throws when MONGODB_URI is unset. In an async function a
+ * default initializer that throws rejects the returned promise, so
+ * Promise.allSettled in /health records it and the route answers 503 naming
+ * this dependency. Rewritten as a plain function returning a promise, the same
+ * throw escapes before allSettled is reached and /health 500s instead, naming
+ * nothing.
  */
 export async function pingDb(db: Db = getDb()): Promise<void> {
   await db.command({ ping: 1 })
@@ -170,6 +180,10 @@ export async function pingDb(db: Db = getDb()): Promise<void> {
  * fingerprint. A fingerprint says something once ran a sync. It cannot say an
  * index was dropped by hand, lost to a restored backup, or never finished
  * building, and those are the states worth catching.
+ *
+ * `async` is load-bearing for the same reason it is on pingDb. The default
+ * argument throws when MONGODB_URI is unset, and only an async function turns
+ * that into the rejection /health needs.
  */
 export async function assertSchemaCurrent(db: Db = getDb()): Promise<void> {
   const drift = diffStructure(await observe(db))
