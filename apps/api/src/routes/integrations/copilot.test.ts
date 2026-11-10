@@ -404,6 +404,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
 
   /** The rebuild and the alert pass, for one user, in the order they run. */
   const pushRebuildAndAlerts = () => {
+    dbState.results.push([]) // rebuild: advisory lock on the user-day
     dbState.results.push([]) // rebuild: usage aggregated by agent
     dbState.results.push([]) // rebuild: enrichment
     dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup

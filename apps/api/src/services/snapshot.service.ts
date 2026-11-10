@@ -73,6 +73,25 @@ export async function rebuildDailySnapshot(
   userId: string,
   date: string,
 ): Promise<void> {
+  // Two rebuilds of one user-day can overlap, since POST /v1/usage and the
+  // Copilot org sync both land here. Without this lock both read usage_events
+  // before either commits, and the later upsert overwrites the earlier one
+  // with a total that never saw its rows. The row lock on daily_snapshots
+  // serialises only the write, not the read that produced it.
+  //
+  // This works only under READ COMMITTED. The waiter takes a fresh snapshot
+  // per statement, so once it holds the lock its aggregate sees the row the
+  // previous holder committed. Under REPEATABLE READ the same lock would
+  // still serialise the writes and still compute a stale total.
+  //
+  // Transaction-scoped on purpose. Production connects through Neon's pooler,
+  // which is pgbouncer in transaction mode, and a session-scoped advisory lock
+  // leaks across pooled clients there. The _xact_ variant releases at commit.
+  //
+  // hashtext can collide. A collision makes two unrelated rebuilds wait on
+  // each other. It never changes what either of them writes.
+  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${userId} || ${date}))`)
+
   // 1. Aggregate usage_events by agent
   const agentRows = await agentTotalsQuery(db, userId, date)
 

@@ -777,11 +777,13 @@ describe('POST /v1/usage', () => {
     // stale, and nothing retried it. Now the whole submission is undone, so the
     // agent's next run re-sends it.
     // The transaction's query sequence, in order: the event insert, the device
-    // touch, then the rebuild's three selects. The user row has to be present
-    // or the rebuild returns early and never reaches the write that fails.
+    // touch, then the rebuild's lock and three selects. The user row has to be
+    // present or the rebuild returns early and never reaches the write that
+    // fails.
     liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }]) // insert ... returning
     dbState.results.push([]) // update devices
+    dbState.results.push([]) // rebuild: advisory lock on the user-day
     dbState.results.push([]) // rebuild: usage aggregated by agent
     dbState.results.push([]) // rebuild: enrichment
     dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
@@ -802,6 +804,7 @@ describe('POST /v1/usage', () => {
     liveDeviceToken()
     dbState.results.push([{ id: 'event-1' }]) // insert ... returning
     dbState.results.push([]) // update devices
+    dbState.results.push([]) // rebuild: advisory lock on the user-day
     dbState.results.push([]) // rebuild: usage aggregated by agent
     dbState.results.push([]) // rebuild: enrichment
     dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
