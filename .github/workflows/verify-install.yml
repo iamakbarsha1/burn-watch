@@ -1,0 +1,64 @@
+name: Verify install
+
+# Installs a published release the way the docs tell a developer to, then asks
+# the OS whether the daily sync is really scheduled. Run by hand: these runners
+# are the only Linux and Windows hosts the project has.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to install
+        default: v0.2.0
+  push:
+    branches: [bw-20-cross-platform-verify]
+
+env:
+  BURNWATCH_VERSION: ${{ inputs.version || 'v0.2.0' }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      # A runner job is not a login session, so there is no user D-Bus and
+      # `systemctl --user` has nothing to talk to. Lingering starts one.
+      - name: Open a user systemd session
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+          for _ in $(seq 30); do
+            [ -S "/run/user/$(id -u)/bus" ] && break
+            sleep 1
+          done
+          [ -S "/run/user/$(id -u)/bus" ] || { echo 'no user bus'; exit 1; }
+
+      - run: systemctl --user is-system-running || true
+
+      - name: Install from the release
+        run: curl -fsSL https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts/install.sh | sh
+
+      - run: ~/.local/bin/burnwatch --version
+
+      - run: ~/.local/bin/burnwatch install-cron
+
+      - run: systemctl --user status burnwatch-sync.timer
+
+      - run: systemctl --user list-timers burnwatch-sync.timer --all
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Install from the release
+        shell: pwsh
+        run: irm https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts/install.ps1 | iex
+
+      # install.ps1 edits the user PATH, which the next shell reads, not this
+      # one. Call the binary where it was written.
+      - shell: pwsh
+        run: & "$HOME\.local\bin\burnwatch.exe" --version
+
+      - shell: pwsh
+        run: & "$HOME\.local\bin\burnwatch.exe" install-cron
+
+      - shell: cmd
+        run: schtasks /query /tn BurnWatchSync /v /fo LIST
