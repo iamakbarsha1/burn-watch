@@ -57,7 +57,14 @@ export const isClean = (d: SchemaDrift): boolean =>
  */
 const describeIndex = (
   key: Readonly<Record<string, unknown>>,
-  opts: { unique?: boolean; expireAfterSeconds?: number },
+  opts: {
+    unique?: boolean
+    expireAfterSeconds?: number
+    sparse?: boolean
+    hidden?: boolean
+    partialFilterExpression?: Readonly<Record<string, unknown>>
+    collation?: { locale?: string; strength?: number }
+  },
 ): string => {
   // Field order is part of the index. {userId:1,date:1} and {date:1,userId:1}
   // serve different queries, and MongoDB refuses to hold both under one name,
@@ -65,9 +72,25 @@ const describeIndex = (
   const fields = Object.entries(key)
     .map(([field, direction]) => `${field}:${String(direction)}`)
     .join(',')
+  // unique and ttl are not the whole story. A partialFilterExpression, sparse,
+  // hidden or a collation each change which documents an index covers while
+  // leaving the key pattern untouched, so comparing keys and uniqueness alone
+  // renders two different indexes as the same string. The case that matters:
+  // usageEvents_key carrying partialFilterExpression {source:'agent'} is still
+  // unique over the same six fields, so this read clean while every
+  // copilot-org row fell outside the filter and re-synced as a duplicate —
+  // the exact silent failure the live check exists to catch.
+  //
+  // No false positives. listIndexes omits all four unless they were specified,
+  // and IndexSpec cannot express any of them, so the registry's intent is
+  // always "none of these" and any live value is real drift.
   const flags = [
     opts.unique ? 'unique' : '',
+    opts.sparse ? 'sparse' : '',
+    opts.hidden ? 'hidden' : '',
     opts.expireAfterSeconds === undefined ? '' : `ttl=${opts.expireAfterSeconds}`,
+    opts.partialFilterExpression ? `partial=${JSON.stringify(opts.partialFilterExpression)}` : '',
+    opts.collation ? `collation=${opts.collation.locale}/${opts.collation.strength}` : '',
   ].filter(Boolean)
   return flags.length > 0 ? `{${fields}} ${flags.join(' ')}` : `{${fields}}`
 }
@@ -111,7 +134,11 @@ export function diffStructure(observed: Observed): SchemaDrift {
     missingCollections,
     missingIndexes,
     conflictingIndexes,
-    pendingMigrations: MIGRATIONS.filter((m) => !observed.completedMigrations.has(m.id)).map(
+    // Never claimed, not merely not completed. A claim with no completedAt is
+    // reported as in-flight below, and the two headings call for opposite
+    // responses: run sync, versus investigate before touching anything.
+    // Filtering on completion alone printed one id under both at once.
+    pendingMigrations: MIGRATIONS.filter((m) => !observed.claimedMigrations.has(m.id)).map(
       (m) => m.id,
     ),
     // A claim with no completedAt is a run that died partway, which is a

@@ -29,6 +29,10 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error)
-  process.exit(1)
+  // The stack, not just the message. An IndexKeySpecsConflict out of the
+  // createIndexes loop names the conflict but not which iteration raised it.
+  console.error(error instanceof Error ? (error.stack ?? error.message) : error)
+  // exitCode rather than exit(1): process.exit drops queued writes to a pipe,
+  // and in CI stderr is a pipe. See check.ts for the longer note.
+  process.exitCode = 1
 })

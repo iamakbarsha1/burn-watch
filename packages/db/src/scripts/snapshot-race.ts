@@ -13,8 +13,15 @@
  *     BW41_ALLOW_WRITES=1 npx tsx src/scripts/snapshot-race.ts
  *
  * It creates its own user documents and deletes them on the way out, so it
- * never reads or writes a document it did not make. Point it at a throwaway
- * database anyway.
+ * never reads or writes a document another process made. It does leave schema
+ * behind: it now calls the real syncSchema, which ensures every collection and
+ * index in the registry and records 0001_noop_marker in _migrations. Point it
+ * at a throwaway database.
+ *
+ * That also gives it a startup failure the old hand-rolled loop did not have.
+ * Interrupting a run between the migration claim and its completion leaves an
+ * in-flight claim, and every later run stops there with "claimed at … and
+ * never completed". Delete that _migrations document to start again.
  *
  * Three regimes per run, BW41_ROUNDS each (default 5). "fresh day" and "seeded
  * day" contend on dailySnapshots._id only, with the snapshot absent and then
