@@ -6,23 +6,30 @@ import { Card } from '@/components/ui'
 import { detectOs, OS_LABELS, OS_ORDER, type Os } from '@/lib/os'
 
 const REPO = 'git@github.com:iamakbarsha1/burn-watch.git'
+const RAW = 'https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts'
 
 const linkClass =
   'rounded text-brand underline-offset-4 transition-colors outline-none hover:underline focus-visible:ring-2 focus-visible:ring-brand/50'
 
-const POSIX_BUN = 'curl -fsSL https://bun.sh/install | bash'
+const POSIX_INSTALL = `curl -fsSL ${RAW}/install.sh | sh`
 
-const INSTALL_BUN: Record<Os, string> = {
-  macos: POSIX_BUN,
-  linux: POSIX_BUN,
-  windows: 'powershell -c "irm bun.sh/install.ps1 | iex"',
+const INSTALL: Record<Os, string> = {
+  macos: POSIX_INSTALL,
+  linux: POSIX_INSTALL,
+  windows: `powershell -c "irm ${RAW}/install.ps1 | iex"`,
+}
+
+const INSTALL_DIR: Record<Os, string> = {
+  macos: '~/.local/bin',
+  linux: '~/.local/bin',
+  windows: String.raw`%USERPROFILE%\.local\bin`,
 }
 
 const POSIX_BUILD = `git clone ${REPO} ~/burn-watch
 cd ~/burn-watch
 npm install
 cd apps/agent && bun run build
-sudo mv dist/burnwatch /usr/local/bin/burnwatch`
+mv dist/burnwatch ~/.local/bin/burnwatch`
 
 const BUILD: Record<Os, string> = {
   macos: POSIX_BUILD,
@@ -32,8 +39,8 @@ cd $HOME\burn-watch
 npm install
 cd apps\agent
 bun run build
-New-Item -ItemType Directory -Force $HOME\bin | Out-Null
-Move-Item -Force dist\burnwatch.exe $HOME\bin\burnwatch.exe`,
+New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
+Move-Item -Force dist\burnwatch.exe $HOME\.local\bin\burnwatch.exe`,
 }
 
 const CONFIG_PATH: Record<Os, string> = {
@@ -87,9 +94,7 @@ export function SetupSteps({ email }: { email: string }) {
             aria-checked={os === key}
             onClick={() => setOs(key)}
             className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
-              os === key
-                ? 'bg-brand text-white'
-                : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+              os === key ? 'bg-brand text-white' : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
             }`}
           >
             {OS_LABELS[key]}
@@ -98,44 +103,39 @@ export function SetupSteps({ email }: { email: string }) {
       </div>
 
       <div className="space-y-3">
-        <Step n={1} title="Install Bun">
+        <Step n={1} title="Install the agent">
+          <Code>{INSTALL[os]}</Code>
           <P>
-            The agent is built with Bun. Skip this if <C>bun --version</C> already answers.
+            Downloads one binary into <C>{INSTALL_DIR[os]}</C> and checks it against the
+            release&apos;s <C>checksums.txt</C>. No Bun, no clone, no build. It is about 100 MB,
+            because the runtime is baked in.
           </P>
-          <Code>{INSTALL_BUN[os]}</Code>
-          {os === 'windows' && (
+          {posix ? (
             <P muted>
-              Run it from PowerShell, then reopen the window so <C>bun</C> is on your PATH.
+              If <C>{INSTALL_DIR[os]}</C> is not on your PATH the script says so and prints the
+              line to add. Set <C>BURNWATCH_INSTALL_DIR</C> to put it somewhere else.
+            </P>
+          ) : (
+            <P muted>
+              The script adds <C>{INSTALL_DIR[os]}</C> to your user PATH. Reopen PowerShell
+              before the next step.
             </P>
           )}
+          <Details summary="Build from source instead">
+            <P>
+              Needs Bun. Install it with{' '}
+              <C>
+                {posix
+                  ? 'curl -fsSL https://bun.sh/install | bash'
+                  : 'powershell -c "irm bun.sh/install.ps1 | iex"'}
+              </C>
+              , then:
+            </P>
+            <Code>{BUILD[os]}</Code>
+          </Details>
         </Step>
 
-        <Step n={2} title="Build the agent">
-          <Code>{BUILD[os]}</Code>
-          <P>
-            <C>bun run build</C> compiles a single binary. It runs without Node or a
-            node_modules tree.
-          </P>
-          {os === 'windows' && (
-            <>
-              <P>
-                Nothing puts <C>$HOME\bin</C> on your PATH for you. Add it once, then reopen
-                PowerShell:
-              </P>
-              <Code>
-                {String.raw`[Environment]::SetEnvironmentVariable('Path',
-  "$([Environment]::GetEnvironmentVariable('Path','User'));$HOME\bin", 'User')`}
-              </Code>
-              <P muted>
-                No Bun and no appetite for one? Ask an admin to run{' '}
-                <C>bun run build:windows-x64</C> on their machine and send you the{' '}
-                <C>.exe</C>.
-              </P>
-            </>
-          )}
-        </Step>
-
-        <Step n={3} title="Register this machine">
+        <Step n={2} title="Register this machine">
           <Code>burnwatch register</Code>
           <P>
             It asks for your work email. Use <strong className="text-ink">{email}</strong>, the
@@ -149,7 +149,7 @@ export function SetupSteps({ email }: { email: string }) {
           <P muted>The code expires after 15 minutes, and only you can approve your own device.</P>
         </Step>
 
-        <Step n={4} title="Backfill your history">
+        <Step n={3} title="Backfill your history">
           <Code>burnwatch sync --days 30</Code>
           <P>
             Reads what ccusage already knows about Claude Code, Codex, Gemini, Qwen and Copilot
@@ -158,7 +158,7 @@ export function SetupSteps({ email }: { email: string }) {
           </P>
         </Step>
 
-        <Step n={5} title="Check it landed">
+        <Step n={4} title="Check it landed">
           <Code>burnwatch status</Code>
           <P>
             Then open{' '}
@@ -169,7 +169,7 @@ export function SetupSteps({ email }: { email: string }) {
           </P>
         </Step>
 
-        <Step n={6} title="Daily sync">
+        <Step n={5} title="Daily sync">
           <P>
             <C>register</C> already scheduled {schedule.name} for 6 PM. Confirm it exists:
           </P>
@@ -224,15 +224,20 @@ export function SetupSteps({ email }: { email: string }) {
             Codes last 15 minutes and are single-use. Run <C>burnwatch register</C> again for a
             fresh one.
           </Trouble>
+          <Trouble problem="checksum mismatch">
+            The download did not match the release&apos;s <C>checksums.txt</C>, so nothing was
+            installed. Run it again; if it repeats, stop and tell an admin rather than working
+            around it.
+          </Trouble>
           <Trouble problem="burnwatch: command not found">
             {posix ? (
               <>
-                The binary is not on your PATH. Check <C>which burnwatch</C>, and move it to{' '}
-                <C>/usr/local/bin</C> if step 2&apos;s <C>sudo mv</C> was skipped.
+                <C>{INSTALL_DIR[os]}</C> is not on your PATH. The installer prints the line to
+                add; open a new shell after adding it. <C>which burnwatch</C> confirms.
               </>
             ) : (
               <>
-                PowerShell resolves PATH when it starts. Reopen the window after step 2, then
+                PowerShell resolves PATH when it starts. Reopen the window after step 1, then
                 check <C>Get-Command burnwatch</C>.
               </>
             )}
@@ -302,6 +307,19 @@ function Code({ children }: { children: string }) {
     <pre className="overflow-x-auto rounded-lg border border-line bg-surface-0 p-3.5 font-mono text-xs leading-relaxed text-ink">
       <code>{children}</code>
     </pre>
+  )
+}
+
+/** Native disclosure — the fallback path should cost a click, not page height. */
+function Details({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-lg border border-line bg-surface-0/50 px-3.5 py-2.5">
+      <summary className="cursor-pointer list-none text-sm font-medium text-ink-2 outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-brand/50">
+        <span className="mr-1.5 inline-block transition-transform group-open:rotate-90">›</span>
+        {summary}
+      </summary>
+      <div className="mt-3 space-y-3">{children}</div>
+    </details>
   )
 }
 
