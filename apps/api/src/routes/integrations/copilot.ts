@@ -13,6 +13,14 @@ import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
 
 const PROVIDER = 'copilot'
 
+/**
+ * What the sealed credential is bound to, as GCM additional authenticated
+ * data. It is the identity of the row the ciphertext lives in, so a token
+ * moved to another organization's row stops decrypting rather than quietly
+ * becoming that organization's token.
+ */
+const credentialContext = (orgId: string) => `${orgId}:${PROVIDER}`
+
 const DAY = /^\d{4}-\d{2}-\d{2}$/
 
 const ConnectionSchema = z.object({
@@ -120,7 +128,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         })
       }
 
-      const encryptedToken = crypto.seal(body.token)
+      const encryptedToken = crypto.seal(body.token, credentialContext(orgId))
 
       await fastify.db.transaction(async (tx) => {
         // The org name lives on `organizations.github_org`, which already
@@ -200,7 +208,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
 
     let token: string
     try {
-      token = crypto.open(row.encryptedToken)
+      token = crypto.open(row.encryptedToken, credentialContext(orgId))
     } catch {
       // A stored credential that no longer verifies is a real fault, and the
       // only repair is to store it again. Said in those words rather than
@@ -269,27 +277,55 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       claimed.add(user.login)
       matched += days.length
 
-      const events: UsageEvent[] = days.map((d) => ({
-        agent: 'copilot',
-        // The requested day, not the record's own. A single-day report only
-        // ever describes the day it was asked for, and using it keeps the
-        // rebuild below over the same date as the rows it just wrote.
-        date: day,
-        // One row per developer-day. See the `ponytail:` note in
-        // copilot.service.ts for why this is never split per model.
-        modelName: 'copilot',
-        inputTokens: d.inputTokens,
-        outputTokens: d.outputTokens,
-        // Copilot reports neither, so these are 0 rather than absent — the
-        // column is NOT NULL and a zero is the honest figure.
-        cacheCreateTokens: 0,
-        cacheReadTokens: 0,
-        totalTokens: d.totalTokens,
-        costUsd: d.costUsd,
-        // Copilot seats are paid for. A credit-derived cost is approximate,
-        // but it is not free.
-        isFreeTier: false,
-      }))
+      // Summed to exactly one event, never one per record.
+      //
+      // Every row a developer-day produces carries the identical key
+      // `(user, 'copilot', day, 'copilot', null, 'copilot-org')`, so more than
+      // one event for one developer is more than one row with one key in a
+      // single INSERT. Postgres refuses that outright under ON CONFLICT DO
+      // UPDATE, with "command cannot affect row a second time" (SQLSTATE
+      // 21000), and under DO NOTHING it silently keeps the first and drops
+      // the rest. Neither is acceptable, and the second is worse for being
+      // quiet. A report sharded across several `download_links` is the
+      // obvious way to get here, and nothing in GitHub's documentation
+      // promises it will not be.
+      //
+      // Summing is also the right answer on the merits: the figures are
+      // additive counts for one developer on one day, whatever file they
+      // arrived in.
+      const summed = days.reduce(
+        (a, d) => ({
+          inputTokens: a.inputTokens + d.inputTokens,
+          outputTokens: a.outputTokens + d.outputTokens,
+          totalTokens: a.totalTokens + d.totalTokens,
+          costUsd: a.costUsd + d.costUsd,
+        }),
+        { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+      )
+
+      const events: UsageEvent[] = [
+        {
+          agent: 'copilot',
+          // The requested day, not the record's own. A single-day report only
+          // ever describes the day it was asked for, and using it keeps the
+          // rebuild below over the same date as the rows it just wrote.
+          date: day,
+          // One row per developer-day. See the `ponytail:` note in
+          // copilot.service.ts for why this is never split per model.
+          modelName: 'copilot',
+          inputTokens: summed.inputTokens,
+          outputTokens: summed.outputTokens,
+          // Copilot reports neither, so these are 0 rather than absent — the
+          // column is NOT NULL and a zero is the honest figure.
+          cacheCreateTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: summed.totalTokens,
+          costUsd: summed.costUsd,
+          // Copilot seats are paid for. A credit-derived cost is approximate,
+          // but it is not free.
+          isFreeTier: false,
+        },
+      ]
 
       // One transaction per developer, the same shape POST /v1/usage uses and
       // for the same reason: a failed rebuild must not leave spend recorded

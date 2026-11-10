@@ -12,14 +12,27 @@ export type SealedCredential = string
 export type CredentialCrypto =
   | {
       available: true
-      seal(plaintext: string): SealedCredential
-      open(sealed: SealedCredential): string
+      seal(plaintext: string, context: string): SealedCredential
+      open(sealed: SealedCredential, context: string): string
     }
   | { available: false; reason: 'missing-key' | 'malformed-key' }
 
 const VERSION = 'v1'
 const KEY_BYTES = 32
 const IV_BYTES = 12
+
+/**
+ * Pinned, because node does not pin it for you.
+ *
+ * `createDecipheriv('aes-256-gcm', ...)` without this accepts any tag from 4
+ * to 16 bytes, and a 4-byte tag verifies a real ciphertext perfectly well.
+ * Measured on this project's node: tags truncated to 8 and to 4 bytes both
+ * decrypted a sealed credential and returned the plaintext. That turns a
+ * forger's odds from one in 2^128 into one in 2^32 for anyone who can write
+ * `encrypted_token`, which a restored backup or a future injection elsewhere
+ * could. Pinning the length makes a short tag a thrown error instead.
+ */
+const TAG_BYTES = 16
 
 /**
  * Seals and opens an org credential with AES-256-GCM, when a key is configured.
@@ -63,12 +76,24 @@ export function credentialCrypto(env: NodeJS.ProcessEnv = process.env): Credenti
   return {
     available: true,
 
-    seal(plaintext: string): SealedCredential {
+    /**
+     * `context` binds the envelope to where it is stored, as additional
+     * authenticated data. Callers pass `${orgId}:${provider}`.
+     *
+     * Without it the tag proves only that the ciphertext was not altered, not
+     * that it belongs to the row it was read from. A credential copied
+     * between `org_integrations` rows by a careless migration, a restore from
+     * another environment, or manual surgery would then decrypt without
+     * complaint and hand one organization another organization's token. With
+     * it, the same mistake throws.
+     */
+    seal(plaintext: string, context: string): SealedCredential {
       // A fresh IV per call. Repeating one under GCM is not a weakening, it is
       // a break. Two messages sharing a key and a nonce leak the keystream and
       // the authentication key with it.
       const iv = randomBytes(IV_BYTES)
-      const cipher = createCipheriv('aes-256-gcm', key, iv)
+      const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES })
+      cipher.setAAD(Buffer.from(context, 'utf8'))
       const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
       const tag = cipher.getAuthTag()
       return `${VERSION}.${iv.toString('base64url')}.${tag.toString('base64url')}.${ciphertext.toString('base64url')}`
@@ -85,16 +110,28 @@ export function credentialCrypto(env: NodeJS.ProcessEnv = process.env): Credenti
      * caller needs to hear about that rather than be handed a plausible wrong
      * answer.
      */
-    open(sealed: SealedCredential): string {
+    open(sealed: SealedCredential, context: string): string {
       const parts = sealed.split('.')
       if (parts.length !== 4 || parts[0] !== VERSION) {
         throw new Error('Not a v1 sealed credential')
       }
-      // No length checks on the IV or the tag. A wrong-sized one throws out of
-      // node's own constructor, and a flipped byte anywhere throws out of
-      // `final()`, so a check here would only restate those in a worse message.
-      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(parts[1], 'base64url'))
+      // No explicit length checks here, but only because the options below
+      // make node do them. `authTagLength` is what rejects a short tag;
+      // without it `setAuthTag` accepts anything from 4 bytes up and a
+      // truncated tag verifies a real ciphertext. A wrong-sized IV is caught
+      // too, though not always where you would expect: an empty one throws
+      // from the constructor while a 16-byte one survives it and fails at
+      // `final()`. Either way the caller gets a throw.
+      const decipher = createDecipheriv(
+        'aes-256-gcm',
+        key,
+        Buffer.from(parts[1], 'base64url'),
+        { authTagLength: TAG_BYTES },
+      )
       decipher.setAuthTag(Buffer.from(parts[2], 'base64url'))
+      // Must match the `seal` context exactly, and must be set before any
+      // `update`, or the tag will not verify.
+      decipher.setAAD(Buffer.from(context, 'utf8'))
       return Buffer.concat([
         decipher.update(Buffer.from(parts[3], 'base64url')),
         decipher.final(),

@@ -102,16 +102,22 @@ const TOKEN = 'ghp_averysecrettokenvalue000000000000'
 const ORG = 'acme'
 const DOWNLOAD = 'https://objects.githubusercontent.com/copilot-report.ndjson'
 
-function sealWith(key: string, plaintext: string): string {
+/**
+ * The envelope is bound to the row it lives in, so the tests have to use the
+ * same binding the route does. `ORG_A` is the org on the admin token.
+ */
+const CONTEXT = `${ORG_A}:copilot`
+
+function sealWith(key: string, plaintext: string, context = CONTEXT): string {
   const crypto = credentialCrypto({ COPILOT_ENCRYPTION_KEY: key } as NodeJS.ProcessEnv)
   if (!crypto.available) throw new Error(`test key unusable: ${crypto.reason}`)
-  return crypto.seal(plaintext)
+  return crypto.seal(plaintext, context)
 }
 
-function openWith(key: string, sealed: string): string {
+function openWith(key: string, sealed: string, context = CONTEXT): string {
   const crypto = credentialCrypto({ COPILOT_ENCRYPTION_KEY: key } as NodeJS.ProcessEnv)
   if (!crypto.available) throw new Error(`test key unusable: ${crypto.reason}`)
-  return crypto.open(sealed)
+  return crypto.open(sealed, context)
 }
 
 /** Yesterday in UTC, derived the same way the route derives its default. */
