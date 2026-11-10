@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildTaskXml } from './cron-windows.js'
+import { buildTaskXml, buildTaskXmlBuffer } from './cron-windows.js'
 
 describe('buildTaskXml', () => {
   it('fires daily at 18:00', () => {
@@ -27,5 +27,21 @@ describe('buildTaskXml', () => {
   it('escapes XML metacharacters in the command path', () => {
     const xml = buildTaskXml(['C:\\a&b\\burnwatch.exe', 'sync'])
     expect(xml).toContain('<Command>C:\\a&amp;b\\burnwatch.exe</Command>')
+  })
+})
+
+describe('buildTaskXmlBuffer', () => {
+  // Without these two bytes schtasks fails with "(1,2)::ERROR: one root
+  // element" on a real Windows host, and nothing gets scheduled.
+  it('starts with a UTF-16LE byte order mark', () => {
+    const buf = buildTaskXmlBuffer(['C:\\burnwatch\\burnwatch.exe', 'sync'])
+    expect([buf[0], buf[1]]).toEqual([0xff, 0xfe])
+  })
+
+  it('decodes back to the XML', () => {
+    const buf = buildTaskXmlBuffer(['C:\\burnwatch\\burnwatch.exe', 'sync'])
+    expect(buf.toString('utf16le').slice(1)).toBe(
+      buildTaskXml(['C:\\burnwatch\\burnwatch.exe', 'sync']),
+    )
   })
 })
