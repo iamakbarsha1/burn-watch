@@ -14,6 +14,7 @@ const {
   connectCopilot,
   disconnectCopilot,
   syncCopilot,
+  fetchCopilotSeats,
 } = await import('./api.js')
 
 function captureFetch(status = 200) {
@@ -121,6 +122,43 @@ describe('copilot client', () => {
     expect(calls[0].init?.method).toBe('PUT')
     expect(calls[0].url).toBe('http://localhost:3001/v1/integrations/copilot/connection')
     expect(body(calls[0].init)).toEqual({ org: 'acme-inc', token: 'ghp_secret' })
+  })
+
+  /**
+   * The regression this exists for: `apiFetch` threw the status and never
+   * read the body, so every read reported `API /path → 503` whatever the API
+   * had said. The seats route answers four failures with four different
+   * remedies, and an admin who reads a bare 503 learns none of them.
+   */
+  it('surfaces the API error text on a read, not only on a write', async () => {
+    stubFetch({
+      status: 503,
+      body: { error: 'Credential encryption is not configured', encryption: 'missing-key' },
+    })
+
+    await expect(fetchCopilotSeats()).rejects.toThrow(
+      'Credential encryption is not configured',
+    )
+  })
+
+  it('falls back to the status when a failed read carries no API error', async () => {
+    stubFetch({ status: 502, body: undefined })
+
+    await expect(fetchCopilotSeats()).rejects.toThrow(
+      'API /v1/integrations/copilot/seats → 502',
+    )
+  })
+
+  it('asks for the idle window only when one is given', async () => {
+    const bare = stubFetch({ body: { seats: [] } })
+    await fetchCopilotSeats()
+    expect(bare[0].url).toBe('http://localhost:3001/v1/integrations/copilot/seats')
+
+    const windowed = stubFetch({ body: { seats: [] } })
+    await fetchCopilotSeats(90)
+    expect(windowed[0].url).toBe(
+      'http://localhost:3001/v1/integrations/copilot/seats?idleAfterDays=90',
+    )
   })
 
   it('surfaces the API error text rather than the status code', async () => {

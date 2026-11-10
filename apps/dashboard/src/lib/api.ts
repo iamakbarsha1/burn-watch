@@ -26,10 +26,28 @@ async function authHeaders(): Promise<Record<string, string>> {
   return headers
 }
 
+/**
+ * The API's own words when it sent any, the bare status when it did not.
+ *
+ * Every route answers a failure with `{ error }`, and those sentences are
+ * written for the operator: "Credential encryption is not configured" sends
+ * them to their config, where "→ 503" sends them nowhere. Reads used to drop
+ * the body and report only the status, so the four distinct errors the Copilot
+ * routes take care to tell apart all arrived at the panel as the same number.
+ */
+async function errorMessage(res: Response, path: string): Promise<string> {
+  const fallback = `API ${path} → ${res.status}`
+  try {
+    return JSON.parse(await res.text()).error ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
 async function apiFetch<T>(path: string): Promise<T> {
   const headers = await authHeaders()
   const res = await fetch(`${API_URL}${path}`, { cache: 'no-store', headers })
-  if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
+  if (!res.ok) throw new Error(await errorMessage(res, path))
   return res.json() as Promise<T>
 }
 
@@ -45,12 +63,7 @@ async function apiMutate<T>(method: string, path: string, body?: unknown): Promi
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) {
-    const text = await res.text()
-    let msg = `API ${path} → ${res.status}`
-    try { msg = JSON.parse(text).error ?? msg } catch {}
-    throw new Error(msg)
-  }
+  if (!res.ok) throw new Error(await errorMessage(res, path))
   // A 204 carries no body, and `res.json()` on an empty one throws a
   // SyntaxError that reads like a network fault. DELETE /copilot/connection
   // answers 204; this keeps the next bodyless route from rediscovering it.
