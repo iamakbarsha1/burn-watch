@@ -1,102 +1,83 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+# Installs the burnwatch agent from the latest GitHub release.
+#
+#   curl -fsSL https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts/install.sh | sh
+#
+# Overrides: BURNWATCH_INSTALL_DIR (default ~/.local/bin), BURNWATCH_VERSION
+# (default latest).
+set -eu
 
-REPO="iamakbarsha1/burn-watch"
-INSTALL_DIR="/usr/local/bin"
-BINARY_NAME="burnwatch"
-TMP_DIR=""
+REPO=iamakbarsha1/burn-watch
+INSTALL_DIR="${BURNWATCH_INSTALL_DIR:-$HOME/.local/bin}"
+VERSION="${BURNWATCH_VERSION:-latest}"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-info()  { echo -e "${GREEN}[burnwatch]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[burnwatch]${NC} $1"; }
-error() { echo -e "${RED}[burnwatch]${NC} $1"; exit 1; }
-
-# Detect platform
-detect_platform() {
-  local os arch
-
-  os="$(uname -s)"
-  arch="$(uname -m)"
-
-  case "$os" in
-    Darwin) os="darwin" ;;
-    Linux)  os="linux" ;;
-    *)      error "Unsupported OS: $os (only macOS and Linux supported)" ;;
-  esac
-
-  case "$arch" in
-    arm64|aarch64) arch="arm64" ;;
-    x86_64|amd64)  arch="x64" ;;
-    *)             error "Unsupported architecture: $arch" ;;
-  esac
-
-  # No linux-arm64 build yet
-  if [ "$os" = "linux" ] && [ "$arch" = "arm64" ]; then
-    error "Linux ARM64 not supported yet. Use x64."
-  fi
-
-  echo "${os}-${arch}"
+die() {
+  echo "burnwatch: $1" >&2
+  exit 1
 }
 
-# Get latest release tag
-get_latest_version() {
-  local version
-  version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' \
-    | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || error "Failed to fetch latest release"
+os=$(uname -s)
+arch=$(uname -m)
+case "$os $arch" in
+  'Darwin arm64')  asset=burnwatch-darwin-arm64 ;;
+  'Darwin x86_64') asset=burnwatch-darwin-x64 ;;
+  'Linux x86_64')  asset=burnwatch-linux-x64 ;;
+  *) die "no prebuilt binary for $os $arch. Build from source: https://github.com/$REPO/blob/main/docs/INSTALL.md" ;;
+esac
 
-  [ -z "$version" ] && error "No releases found. Ask your admin to create a release first."
-  echo "$version"
-}
+command -v curl >/dev/null 2>&1 || die 'curl is required'
 
-main() {
-  info "Detecting platform..."
-  local platform version download_url
+# shasum ships with macOS, sha256sum with most Linux distributions. Refusing to
+# install beats installing a binary nobody checked.
+if command -v shasum >/dev/null 2>&1; then
+  checksum() { shasum -a 256 "$1" | cut -d' ' -f1; }
+elif command -v sha256sum >/dev/null 2>&1; then
+  checksum() { sha256sum "$1" | cut -d' ' -f1; }
+else
+  die 'neither shasum nor sha256sum found, cannot verify the download'
+fi
 
-  platform="$(detect_platform)"
-  info "Platform: $platform"
+if [ "$VERSION" = latest ]; then
+  base="https://github.com/$REPO/releases/latest/download"
+else
+  base="https://github.com/$REPO/releases/download/$VERSION"
+fi
 
-  info "Fetching latest release..."
-  version="$(get_latest_version)"
-  info "Version: $version"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
 
-  download_url="https://github.com/${REPO}/releases/download/${version}/burnwatch-${platform}"
+echo "burnwatch: downloading $asset ($VERSION)"
+# The binary embeds the Bun runtime and runs to ~100 MB, so a silent curl looks
+# like a hang for a minute. Progress bar, not -s.
+curl -fSL --progress-bar "$base/$asset" -o "$tmp/burnwatch" || die "could not download $base/$asset"
+curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt" || die 'could not download checksums.txt'
 
-  TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
+expected=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/checksums.txt")
+[ -n "$expected" ] || die "checksums.txt has no entry for $asset"
+actual=$(checksum "$tmp/burnwatch")
+[ "$expected" = "$actual" ] || die "checksum mismatch for $asset (expected $expected, got $actual)"
 
-  info "Downloading burnwatch-${platform}..."
-  curl -fSL --progress-bar -o "${TMP_DIR}/${BINARY_NAME}" "$download_url" \
-    || error "Download failed. Check that release ${version} has a binary for ${platform}."
+chmod +x "$tmp/burnwatch"
+mkdir -p "$INSTALL_DIR"
+mv "$tmp/burnwatch" "$INSTALL_DIR/burnwatch"
 
-  chmod +x "${TMP_DIR}/${BINARY_NAME}"
+echo "burnwatch: installed to $INSTALL_DIR/burnwatch"
 
-  info "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
-  if [ -w "$INSTALL_DIR" ]; then
-    mv "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-  else
-    warn "Need sudo to write to ${INSTALL_DIR}"
-    sudo mv "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-  fi
-
-  # Verify
-  if command -v burnwatch &> /dev/null; then
-    info "Installed successfully! $(burnwatch --version)"
-  else
-    warn "Installed to ${INSTALL_DIR}/${BINARY_NAME} but not in PATH."
-    warn "Add ${INSTALL_DIR} to your PATH, or move the binary."
-  fi
-
-  echo ""
-  info "Next steps:"
-  echo "  burnwatch register --api-url https://your-api-url.com"
-  echo "  burnwatch sync --last-7    # backfill last 7 days"
-  echo ""
-}
-
-main
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*)
+    # Earlier installs put the binary in /usr/local/bin by hand. If one is
+    # still there it wins the PATH lookup, and the user upgrades nothing while
+    # being told the upgrade worked.
+    found=$(command -v burnwatch || true)
+    if [ -n "$found" ] && [ "$found" != "$INSTALL_DIR/burnwatch" ]; then
+      echo "burnwatch: warning — $found comes first on your PATH and will run instead."
+      echo "  Remove it, or re-run with BURNWATCH_INSTALL_DIR=$(dirname "$found")"
+    else
+      echo 'burnwatch: next, run  burnwatch register'
+    fi
+    ;;
+  *)
+    echo "burnwatch: $INSTALL_DIR is not on your PATH. Add it, then reopen your shell:"
+    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
+    ;;
+esac
