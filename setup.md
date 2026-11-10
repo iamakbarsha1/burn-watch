@@ -28,10 +28,6 @@ cp apps/dashboard/.env.local.example apps/dashboard/.env.local
 
 `JWT_SECRET` and `DATABASE_URL` must be identical in both.
 
-`apps/api/.env.example` still lists `REDIS_URL`, `CORS_ORIGIN` and
-`COPILOT_ENCRYPTION_KEY`. Nothing reads them: Redis went in `57d9d0b`, the cors
-plugin went with it, and the Copilot key waits on BW-21. Leave them blank.
-
 ## 3. Create the schema
 
 ```bash
