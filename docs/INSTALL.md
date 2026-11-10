@@ -220,17 +220,17 @@ have an account but have never run the agent.
 ### Cutting a release
 
 The installers read the latest GitHub release, so a new agent build reaches the
-fleet only when one is published. Bun cross-compiles, so one machine produces
-every binary. From `apps/agent`:
+fleet only when one is published. Publishing is a tag push and nothing else:
 
 ```bash
-rm -rf dist
-bun run build:darwin-arm64
-bun run build:darwin-x64
-bun run build:linux-x64
-bun run build:windows-x64
-cd dist && shasum -a 256 burnwatch-* > checksums.txt
+# bump apps/agent/package.json and src/version.ts to the new version first
+v=v$(node -p "require('./apps/agent/package.json').version")
+git tag -a "$v" -m "$v" && git push origin "$v"
 ```
+
+`.github/workflows/release.yml` builds all four targets — `bun --compile`
+cross-compiles them from one runner — writes `checksums.txt` from the same
+files it is about to upload, and publishes all five assets.
 
 | Script | Asset |
 | --- | --- |
@@ -239,24 +239,34 @@ cd dist && shasum -a 256 burnwatch-* > checksums.txt
 | `build:linux-x64` | `burnwatch-linux-x64` |
 | `build:windows-x64` | `burnwatch-windows-x64.exe` |
 
-Then publish all five files, `checksums.txt` included — the installers refuse
-to run without it:
-
-```bash
-v=v$(node -p "require('./package.json').version")
-gh release create "$v" dist/burnwatch-* dist/checksums.txt \
-  --title "burnwatch $v" --notes 'Agent binaries for macOS, Linux and Windows.'
-```
+**Do not add or replace a release asset by hand.** v0.2.0 was published that
+way and shipped a `checksums.txt` whose Linux hash came from a different build
+than the binary beside it. `install.sh` verifies before installing, so it
+refused the release on every Linux machine, and the release looked perfectly
+healthy in the GitHub UI the whole time. If an asset is wrong, fix the
+workflow and cut a new tag.
 
 The tag comes from `apps/agent/package.json`, which `src/version.ts` is tested
 against — the agent reports that same string as `agentVersion` when it
 registers, so a tag invented by hand puts a version in the `devices` table
 that matches no release. Bump the version, let the tag follow.
 
-A stale `v0.1.0` from 2026-06-24 is still published: three binaries, no
-`checksums.txt`, and older than every agent fix from BW-31 onward. It is left
-in place because its assets have been downloaded, but nothing should point at
-it.
+After publishing, run the **Verify install** workflow against the new tag. It
+installs on `ubuntu-latest` and `windows-latest` through the documented
+one-liners and asks systemd and Task Scheduler whether the daily sync is
+really registered:
+
+```bash
+gh workflow run "Verify install" -f version="$v"
+```
+
+Two older releases are still published and nothing should point at either.
+`v0.1.0` from 2026-06-24 has three binaries and no `checksums.txt`, and
+predates every agent fix from BW-31 onward. `v0.2.0` cannot be installed at
+all: its `checksums.txt` disagrees with its own Linux binary, and its Windows
+binary writes a BOM-less task XML that `schtasks` rejects. Both are left in
+place because their assets have been downloaded. v0.2.1 is the first release
+built end to end by the workflow.
 
 The asset names are the contract. `scripts/install.sh` maps `uname -s`/`uname
 -m` straight onto them, so renaming one breaks every install command in this
