@@ -108,6 +108,28 @@ vi.mock('../plugins/db.js', async () => {
   }
 })
 
+/**
+ * The two MongoDB health checks, controllable per test.
+ *
+ * They are mocked rather than left real because the real ones resolve a client
+ * from MONGODB_URI, which is unset here. Both would then reject in every test
+ * that touches `/health`, turning the healthy case into a 503 and padding
+ * `failed` on the postgres cases, which is exactly the kind of coupling that
+ * makes a health assertion stop meaning anything.
+ */
+const mongoState = vi.hoisted(() => ({ pingFails: false, schemaFails: false }))
+
+vi.mock('@burn-watch/db', () => ({
+  pingDb: async () => {
+    if (mongoState.pingFails) throw new Error('connect ECONNREFUSED mongo.example:27017')
+  },
+  assertSchemaCurrent: async () => {
+    if (mongoState.schemaFails) {
+      throw new Error('MongoDB schema drift.\n  missing indexes: usageEvents.usageEvents_key')
+    }
+  },
+}))
+
 // Rate limiting is not what these tests cover. The plugin is a no-op here, so
 // `config.rateLimit` on a route is simply inert metadata.
 vi.mock('@fastify/rate-limit', () => ({ default: fp(async () => {}) }))
@@ -187,6 +209,8 @@ beforeEach(async () => {
   dbState.calls = []
   dbState.failOn = null
   dbState.failExecute = false
+  mongoState.pingFails = false
+  mongoState.schemaFails = false
   app = await buildServer()
   await app.ready()
 })
@@ -1669,6 +1693,18 @@ describe('GET /health', () => {
     dbState.results.push([]) // select 1 — the value is never read
   }
 
+  // build-server skips both MongoDB checks when MONGODB_URI is unset, and
+  // vitest never sets it. Every case below except the last is about what
+  // happens once Mongo IS configured, so the variable is present for all of
+  // them. The value is never dialled — @burn-watch/db is mocked wholesale.
+  beforeEach(() => {
+    process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/burnwatch_test'
+  })
+
+  afterEach(() => {
+    delete process.env.MONGODB_URI
+  })
+
   it('needs no authentication and returns 200 when the database answers', async () => {
     schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
     const res = await app.inject({ method: 'GET', url: '/health' })
@@ -1711,6 +1747,63 @@ describe('GET /health', () => {
     dbState.failExecute = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.payload).not.toContain('db.example')
+  })
+
+  it('returns 503 naming mongo when the MongoDB ping fails', async () => {
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
+    mongoState.pingFails = true
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, failed: ['mongo'] })
+    expect(res.payload).not.toContain('mongo.example')
+  })
+
+  /**
+   * BW-37's shape on a database that will not raise it for us. A missing
+   * usageEvents_key unique index fails no query at all, it only stops the
+   * two-tier upsert deduplicating, so a check that does not read the live
+   * index list would answer 200 while every re-sync inserted duplicates.
+   */
+  it('returns 503 naming mongoSchema when the MongoDB shape has drifted', async () => {
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
+    mongoState.schemaFails = true
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, failed: ['mongoSchema'] })
+    // The drift text names collections and indexes, and goes to the log only.
+    expect(res.payload).not.toContain('usageEvents_key')
+  })
+
+  it('names every failed dependency rather than the first', async () => {
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION - 1)
+    mongoState.pingFails = true
+    mongoState.schemaFails = true
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.json()).toEqual({ ok: false, failed: ['schema', 'mongo', 'mongoSchema'] })
+  })
+
+  /**
+   * Phase 2 lands before Phase 0 provisions Atlas, and no request path reads
+   * Mongo yet — getStore has no callers outside its own module. An unset
+   * MONGODB_URI is therefore an absent dependency, not a broken one, and
+   * reporting it down would hold the documented deploy gate red over a
+   * database nothing touches. Verified against the preview deployment: with
+   * the variable unset the route answered 503 {"failed":["mongo","mongoSchema"]}
+   * while production on Postgres answered 200.
+   *
+   * Both mocks are armed to fail here, so deleting the guard in build-server
+   * turns this case red rather than leaving it quietly meaningless. Phase 8
+   * makes the variable required and deletes both the guard and this test.
+   */
+  it('skips both MongoDB checks when MONGODB_URI is unset', async () => {
+    delete process.env.MONGODB_URI
+    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
+    mongoState.pingFails = true
+    mongoState.schemaFails = true
+
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true })
   })
 })
 

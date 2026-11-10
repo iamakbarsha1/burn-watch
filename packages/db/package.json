@@ -15,7 +15,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "snapshot-race": "tsx src/scripts/snapshot-race.ts"
+    "snapshot-race": "tsx src/scripts/snapshot-race.ts",
+    "sync": "tsx src/scripts/sync.ts",
+    "check": "tsx src/scripts/check.ts"
   },
   "dependencies": {
     "@burn-watch/shared": "*",
