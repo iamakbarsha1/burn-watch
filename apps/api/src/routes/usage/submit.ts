@@ -1,11 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import { eq } from 'drizzle-orm'
 import { UsagePayloadSchema } from '@burn-watch/shared'
-import { devices } from '../../../drizzle/schema.js'
+import {
+  getStore,
+  rebuildDailySnapshot,
+  runInTxn,
+  upsertEnrichment,
+  upsertUsageEvents,
+  type DeviceId,
+  type IsoDate,
+  type OrgId,
+  type UserId,
+} from '@burn-watch/db'
 import { requireAuth, type JwtPayload } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
-import { upsertUsageEvents, upsertEnrichment } from '../../services/usage.service.js'
-import { rebuildDailySnapshot } from '../../services/snapshot.service.js'
 import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
 
 export async function usageRoutes(fastify: FastifyInstance) {
@@ -56,37 +63,52 @@ export async function usageRoutes(fastify: FastifyInstance) {
         return reply.status(403).send({ error: 'Device ID mismatch' })
       }
 
+      // The token's claims and the payload's date become branded ids here and
+      // nowhere deeper. This is the boundary where a string that arrived over
+      // HTTP is accepted as one.
+      const device = deviceId as DeviceId
+      const userId = jwt.userId as UserId
+      const orgId = jwt.orgId as OrgId
+      const date = payload.date as IsoDate
+
       // One transaction. These four writes used to run independently, so a
       // failure partway through left the events stored and the snapshot stale,
-      // with nothing to retry it. Needs the WebSocket Neon driver, which cannot
-      // be swapped for neon-http without losing this.
-      const { accepted, skipped } = await fastify.db.transaction(async (tx) => {
+      // with nothing to retry it.
+      //
+      // runInTxn may run this body more than once: a write conflict against
+      // another rebuild of the same user-day aborts and retries from a fresh
+      // snapshot. Everything in here is an upsert or a full recompute, so a
+      // second run converges on the same documents and `counts` is derived
+      // again from whatever that run actually wrote.
+      const { accepted, skipped } = await runInTxn(getStore(), async (tx) => {
         const counts = await upsertUsageEvents(
           tx,
-          jwt.userId,
-          deviceId,
-          payload.date,
+          userId,
+          orgId,
+          device,
+          date,
           payload.events,
         )
 
+        // Order no longer matters against the rebuild below. Postgres kept the
+        // enrichment counters on their own table and had the rebuild read them
+        // back, so this had to land first; they now go straight onto the
+        // snapshot and neither write touches a field the other owns.
         if (payload.enrichment) {
-          await upsertEnrichment(tx, jwt.userId, payload.enrichment)
+          await upsertEnrichment(tx, userId, orgId, payload.enrichment)
         }
 
-        await tx
-          .update(devices)
-          .set({ lastSeenAt: new Date() })
-          .where(eq(devices.id, deviceId))
+        await tx.devices.updateOne({ _id: device }, { $set: { lastSeenAt: new Date() } })
 
         // Inside the transaction on purpose. A failed rebuild now rolls the
         // events back so the agent's retry re-submits them, instead of leaving
         // a user's spend recorded but absent from their daily snapshot.
-        await rebuildDailySnapshot(tx, jwt.userId, payload.date)
+        await rebuildDailySnapshot(tx, userId, date)
 
         // Same reasoning extends to the alert check: it reads the snapshot
         // this transaction just wrote, so it has to see the same commit or
         // none of it, never a version in between.
-        await evaluateBudgetAlerts(tx, jwt.orgId, jwt.userId, payload.date)
+        await evaluateBudgetAlerts(tx, orgId, userId, date)
 
         return counts
       })

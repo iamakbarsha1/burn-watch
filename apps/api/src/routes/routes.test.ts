@@ -109,26 +109,49 @@ vi.mock('../plugins/db.js', async () => {
 })
 
 /**
- * The two MongoDB health checks, controllable per test.
+ * The MongoDB side: documents a test seeds per collection, and the two health
+ * checks, controllable per test.
  *
- * They are mocked rather than left real because the real ones resolve a client
- * from MONGODB_URI, which is unset here. Both would then reject in every test
- * that touches `/health`, turning the healthy case into a 503 and padding
- * `failed` on the postgres cases, which is exactly the kind of coupling that
- * makes a health assertion stop meaning anything.
+ * `getStore` and `runInTxn` are replaced; everything else in the package is the
+ * real thing, so the usage upsert, the snapshot rebuild and the month-to-date
+ * aggregation under these routes are the code that ships rather than a second
+ * implementation written to agree with the assertions.
+ *
+ * The health checks are replaced because the real ones resolve a client from
+ * MONGODB_URI, which is unset here. Both would then reject in every test that
+ * touches `/health`, turning the healthy case into a 503 and padding `failed`
+ * on the postgres cases, which is exactly the kind of coupling that makes a
+ * health assertion stop meaning anything.
  */
-const mongoState = vi.hoisted(() => ({ pingFails: false, schemaFails: false }))
-
-vi.mock('@burn-watch/db', () => ({
-  pingDb: async () => {
-    if (mongoState.pingFails) throw new Error('connect ECONNREFUSED mongo.example:27017')
-  },
-  assertSchemaCurrent: async () => {
-    if (mongoState.schemaFails) {
-      throw new Error('MongoDB schema drift.\n  missing indexes: usageEvents.usageEvents_key')
-    }
-  },
+const mongoState = vi.hoisted(() => ({
+  pingFails: false,
+  schemaFails: false,
+  docs: {} as Record<string, Record<string, unknown>[]>,
+  aggregates: {} as Record<string, Record<string, unknown>[]>,
+  calls: [] as { op: string; collection: string; args: unknown[] }[],
+  failOn: null as string | null,
+  bulk: { upsertedCount: 1, matchedCount: 0 },
 }))
+
+vi.mock('@burn-watch/db', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@burn-watch/db')>()
+  const { fakeStore, fakeRunInTxn } = await import('../mongo-store.fake.js')
+  const store = fakeStore(mongoState, Object.keys(real.COLLECTIONS))
+
+  return {
+    ...real,
+    getStore: () => store,
+    runInTxn: fakeRunInTxn(mongoState, store),
+    pingDb: async () => {
+      if (mongoState.pingFails) throw new Error('connect ECONNREFUSED mongo.example:27017')
+    },
+    assertSchemaCurrent: async () => {
+      if (mongoState.schemaFails) {
+        throw new Error('MongoDB schema drift.\n  missing indexes: usageEvents.usageEvents_key')
+      }
+    },
+  }
+})
 
 // Rate limiting is not what these tests cover. The plugin is a no-op here, so
 // `config.rateLimit` on a route is simply inert metadata.
@@ -211,6 +234,11 @@ beforeEach(async () => {
   dbState.failExecute = false
   mongoState.pingFails = false
   mongoState.schemaFails = false
+  mongoState.docs = {}
+  mongoState.aggregates = {}
+  mongoState.calls = []
+  mongoState.failOn = null
+  mongoState.bulk = { upsertedCount: 1, matchedCount: 0 }
   app = await buildServer()
   await app.ready()
 })
@@ -482,18 +510,29 @@ describe('GET /v1/dashboard/projects — merge behaviour', () => {
     ])
   })
 })
+/** Whole micro-dollars in one dollar, for tests that read in dollars. */
+const USD = 1_000_000
 
-const alertRow = (over: Record<string, unknown> = {}) => ({
-  id: 'alert-1',
+const alertDoc = (over: Record<string, unknown> = {}) => ({
+  _id: 'alert-1',
+  orgId: ORG_A,
   userId: null,
-  userName: null,
   agent: null,
-  monthlyLimitUsd: '100',
-  threshold: '0.8',
-  createdAt: new Date('2026-01-01'),
+  monthlyLimitMicros: 100 * USD,
+  threshold: 0.8,
   trippedAt: null,
+  createdAt: new Date('2026-01-01'),
   ...over,
 })
+
+/** The arguments of every call to one collection's operation, in order. */
+const mongoCalls = (collection: string, op: string) =>
+  mongoState.calls.filter((c) => c.collection === collection && c.op === op).map((c) => c.args)
+
+/** What the month-to-date aggregation answers with, in micros. */
+const spend = (micros: number) => {
+  mongoState.aggregates.dailySnapshots = [{ _id: null, spend: micros }]
+}
 
 describe('GET /v1/dashboard/budget-alerts', () => {
   const url = '/v1/dashboard/budget-alerts'
@@ -510,7 +549,6 @@ describe('GET /v1/dashboard/budget-alerts', () => {
   })
 
   it('returns an empty array when the org has no alerts', async () => {
-    dbState.results.push([])
     const res = await get(auth(token()))
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([])
@@ -519,16 +557,14 @@ describe('GET /v1/dashboard/budget-alerts', () => {
   // The IDOR fix every other dashboard route already applies: the query
   // string is not trusted for anything that decides whose data comes back.
   it('ignores an orgId supplied in the query', async () => {
-    dbState.results.push([])
     const res = await app.inject({
       method: 'GET',
       url: `${url}?orgId=${ORG_B}`,
       headers: auth(token({ orgId: ORG_A })),
     })
     expect(res.statusCode).toBe(200)
-    const queried = inspect(dbState.calls, { depth: null })
-    expect(queried).toContain(ORG_A)
-    expect(queried).not.toContain(ORG_B)
+    expect(mongoCalls('budgetAlerts', 'find')[0][0]).toEqual({ orgId: ORG_A })
+    expect(inspect(mongoState.calls, { depth: null })).not.toContain(ORG_B)
   })
 
   it('reports tripped true only when trippedAt falls in the current calendar month', async () => {
@@ -536,24 +572,52 @@ describe('GET /v1/dashboard/budget-alerts', () => {
     const thisMonth = new Date(now.getFullYear(), now.getMonth(), 5)
     const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 5)
 
-    dbState.results.push([
-      alertRow({ id: 'alert-1', monthlyLimitUsd: '100', threshold: '0.8', trippedAt: thisMonth }),
-      alertRow({ id: 'alert-2', monthlyLimitUsd: '50', threshold: '0.8', trippedAt: lastMonth }),
-    ])
-    dbState.results.push([{ spend: '90' }]) // alert-1 month-to-date spend
-    dbState.results.push([{ spend: '10' }]) // alert-2 month-to-date spend
+    mongoState.docs.budgetAlerts = [
+      alertDoc({ _id: 'alert-1', trippedAt: thisMonth }),
+      alertDoc({ _id: 'alert-2', trippedAt: lastMonth }),
+    ]
+    spend(90 * USD)
 
     const res = await get(auth(token()))
     const body = res.json() as Array<Record<string, unknown>>
 
-    expect(body.find((a) => a.id === 'alert-1')).toMatchObject({
-      tripped: true,
-      monthToDateSpendUsd: 90,
-    })
-    expect(body.find((a) => a.id === 'alert-2')).toMatchObject({
-      tripped: false,
-      monthToDateSpendUsd: 10,
-    })
+    expect(body.find((a) => a.id === 'alert-1')).toMatchObject({ tripped: true })
+    expect(body.find((a) => a.id === 'alert-2')).toMatchObject({ tripped: false })
+  })
+
+  /**
+   * Micros stop here. Everything under a handler works in whole micro-dollars,
+   * and the two money fields on this response are the only place they turn
+   * back into dollars. Dropping either conversion leaves the dashboard
+   * rendering a limit of 100000000 next to a spend of 554220000.
+   */
+  it('renders the stored micros as dollars', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ monthlyLimitMicros: 100 * USD })]
+    spend(554_220_000)
+
+    const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
+    expect(row).toMatchObject({ monthlyLimitUsd: 100, monthToDateSpendUsd: 554.22, threshold: 0.8 })
+  })
+
+  it('names the user a scoped alert belongs to', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A })]
+    mongoState.docs.users = [{ _id: USER_A, name: 'Alice Smith' }]
+    spend(0)
+
+    const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
+    expect(row).toMatchObject({ userId: USER_A, userName: 'Alice Smith' })
+  })
+
+  // What the left join gave. A limit set against a user who has since been
+  // removed still has to render, or the alert disappears from the panel that
+  // is the only place it can be deleted.
+  it('still renders a scoped alert whose user no longer exists', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A })]
+    mongoState.docs.users = []
+    spend(0)
+
+    const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
+    expect(row).toMatchObject({ userId: USER_A, userName: null })
   })
 })
 
@@ -578,50 +642,52 @@ describe('POST /v1/dashboard/budget-alerts', () => {
   })
 
   it('creates an org-wide alert when userId is omitted', async () => {
-    dbState.results.push([{ id: 'new-alert-1' }]) // insert ... returning
     const res = await post(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(201)
-    expect(res.json()).toEqual({ id: 'new-alert-1' })
-    // The ownership lookup is what an org-wide alert skips. It is no longer
-    // the only select on this path — the post-write evaluation reads the
-    // alert back — so the assertion names the table instead of counting.
-    expect(
-      dbState.calls.some(
-        (c) => c.op === 'from' && is(c.arg, Table) && getTableName(c.arg) === 'users',
-      ),
-    ).toBe(false)
+
+    const [written] = mongoCalls('budgetAlerts', 'insertOne')[0] as [Record<string, unknown>]
+    expect(res.json()).toEqual({ id: written._id })
+    expect(written).toMatchObject({ orgId: ORG_A, userId: null, agent: null, trippedAt: null })
+    // The ownership lookup is what an org-wide alert skips.
+    expect(mongoCalls('users', 'findOne')).toHaveLength(0)
+  })
+
+  // The dollars the admin typed are stored as micros, and nothing below this
+  // line ever sees a float again.
+  it('stores the dollar limit as whole micros', async () => {
+    await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 123.45 })
+    const [written] = mongoCalls('budgetAlerts', 'insertOne')[0] as [Record<string, unknown>]
+    expect(written.monthlyLimitMicros).toBe(123_450_000)
   })
 
   // The create route used to write the row and stop. An admin who set a limit
   // already below this month's spend was told OK, beside the very figure that
   // contradicted it, until the next agent sync happened to run the evaluator.
   it('evaluates the alert it just created, so a limit under current spend trips at once', async () => {
-    dbState.results.push([{ id: 'new-alert-3' }]) // insert ... returning
-    dbState.results.push([
-      { id: 'new-alert-3', orgId: ORG_A, userId: null, agent: null, monthlyLimitUsd: '1', threshold: '0.8', trippedAt: null },
-    ]) // evaluation reads the alert back
-    dbState.results.push([{ spend: 554.22 }]) // month-to-date spend
+    mongoState.docs.budgetAlerts = [alertDoc({ monthlyLimitMicros: 1 * USD, threshold: 0.8 })]
+    spend(554_220_000)
 
     const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 1 })
 
     expect(res.statusCode).toBe(201)
-    const trip = dbState.calls.find((c) => c.op === 'set')
-    expect((trip?.arg as { trippedAt?: unknown })?.trippedAt).toBeInstanceOf(Date)
+    const [, update] = mongoCalls('budgetAlerts', 'updateOne')[0] as [unknown, { $set: Record<string, unknown> }]
+    expect(update.$set.trippedAt).toBeInstanceOf(Date)
   })
 
   it('refuses a userId belonging to another organization, and writes nothing', async () => {
-    dbState.results.push([]) // user lookup matches nothing in this org
+    mongoState.docs.users = [] // the ownership lookup matches nothing in this org
     const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_A })
     expect(res.statusCode).toBe(400)
-    expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+    expect(mongoCalls('budgetAlerts', 'insertOne')).toHaveLength(0)
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_A, orgId: ORG_A })
   })
 
   it('creates a per-user alert once the user is confirmed in the caller org', async () => {
-    dbState.results.push([{ id: USER_A }]) // user lookup
-    dbState.results.push([{ id: 'new-alert-2' }]) // insert ... returning
+    mongoState.docs.users = [{ _id: USER_A }]
     const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_A })
     expect(res.statusCode).toBe(201)
-    expect(res.json()).toEqual({ id: 'new-alert-2' })
+    const [written] = mongoCalls('budgetAlerts', 'insertOne')[0] as [Record<string, unknown>]
+    expect(written.userId).toBe(USER_A)
   })
 })
 
@@ -656,17 +722,20 @@ describe('PATCH /v1/dashboard/budget-alerts/:id', () => {
   })
 
   it('returns 404, and writes nothing, for an alert in another organization', async () => {
-    dbState.results.push([]) // update ... returning, nothing matched
+    mongoState.docs.budgetAlerts = [] // the org-scoped lookup matches nothing
     const res = await patch(auth(token({ role: 'admin', orgId: ORG_B })))
     expect(res.statusCode).toBe(404)
-    expect(lastWhere()).toContain(ORG_B)
+    expect(mongoCalls('budgetAlerts', 'findOneAndUpdate')[0][0]).toEqual({ _id: ALERT_A, orgId: ORG_B })
   })
 
-  it('updates the limit and returns the alert id', async () => {
-    dbState.results.push([{ id: ALERT_A }]) // update ... returning
+  it('updates the limit, in micros, and returns the alert id', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ _id: ALERT_A })]
+    spend(0)
     const res = await patch(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ id: ALERT_A })
+    const [, update] = mongoCalls('budgetAlerts', 'findOneAndUpdate')[0] as [unknown, { $set: Record<string, unknown> }]
+    expect(update.$set).toEqual({ monthlyLimitMicros: 250 * USD })
   })
 })
 
@@ -685,14 +754,14 @@ describe('DELETE /v1/dashboard/budget-alerts/:id', () => {
   })
 
   it('returns 404, and deletes nothing, for an alert in another organization', async () => {
-    dbState.results.push([]) // delete ... returning, nothing matched
+    mongoState.docs.budgetAlerts = [] // nothing matches the org-scoped filter
     const res = await del(auth(token({ role: 'admin', orgId: ORG_B })))
     expect(res.statusCode).toBe(404)
-    expect(lastWhere()).toContain(ORG_B)
+    expect(mongoCalls('budgetAlerts', 'deleteOne')[0][0]).toEqual({ _id: ALERT_A, orgId: ORG_B })
   })
 
   it('deletes and returns the alert id', async () => {
-    dbState.results.push([{ id: ALERT_A }]) // delete ... returning
+    mongoState.docs.budgetAlerts = [alertDoc({ _id: ALERT_A })]
     const res = await del(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ id: ALERT_A })
@@ -714,7 +783,29 @@ describe('POST /v1/usage', () => {
   }
   const payload = { deviceId: DEVICE_A, date: DATE, events: [event], enrichment: null }
 
+  const enrichment = {
+    date: DATE,
+    sessionCount: 4,
+    callCount: 31,
+    cacheHitRate: 92.1,
+    writtenTokens: 1234,
+    activityBreakdown: [],
+    projectBreakdown: [],
+    topSessions: [],
+    toolUsage: { bash: 5 },
+    shellUsage: {},
+    mcpUsage: {},
+  }
+
   const deviceToken = () => token({ role: 'device', deviceId: DEVICE_A })
+
+  /** The user row the snapshot rebuild reads to learn the org. */
+  const knownUser = () => {
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
+  }
+
+  const submit = (body: Record<string, unknown> = payload) =>
+    app.inject({ method: 'POST', url: '/v1/usage', headers: auth(deviceToken()), payload: body })
 
   it('returns 401 without a token', async () => {
     const res = await app.inject({ method: 'POST', url: '/v1/usage', payload })
@@ -723,149 +814,137 @@ describe('POST /v1/usage', () => {
 
   it('returns 403 when the payload deviceId does not match the token', async () => {
     liveDeviceToken()
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/usage',
-      headers: auth(deviceToken()),
-      payload: { ...payload, deviceId: '55555555-5555-4555-8555-555555555555' },
-    })
+    const res = await submit({ ...payload, deviceId: '55555555-5555-4555-8555-555555555555' })
     expect(res.statusCode).toBe(403)
     expect(res.json().error).toBe('Device ID mismatch')
   })
 
   it('returns 400 on a payload that fails schema validation', async () => {
     liveDeviceToken()
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/usage',
-      headers: auth(deviceToken()),
-      payload: { ...payload, events: [{ ...event, date: '20261105' }] },
-    })
+    const res = await submit({ ...payload, events: [{ ...event, date: '20261105' }] })
     expect(res.statusCode).toBe(400)
   })
 
   it('accepts a submission and reports what was written', async () => {
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }]) // insert ... returning
+    knownUser()
+    mongoState.bulk = { upsertedCount: 1, matchedCount: 0 }
 
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/usage',
-      headers: auth(deviceToken()),
-      payload,
-    })
+    const res = await submit()
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ accepted: 1, skipped: 0, date: DATE })
   })
 
   it('is idempotent: a replayed payload reports zero accepted, not an error', async () => {
-    // The unique index on (userId, agent, date, modelName, deviceId) makes the
-    // second insert a no-op, so `returning()` comes back empty.
+    // The unique index on (userId, date, agent, modelName, deviceId, source)
+    // makes the second write a match rather than an insert, and only an insert
+    // is an acceptance on the device path.
     liveDeviceToken()
-    dbState.results.push([]) // insert ... returning, nothing inserted
+    knownUser()
+    mongoState.bulk = { upsertedCount: 0, matchedCount: 1 }
 
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/usage',
-      headers: auth(deviceToken()),
-      payload,
-    })
+    const res = await submit()
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ accepted: 0, skipped: 1, date: DATE })
   })
 
-  it('relies on onConflictDoNothing rather than a pre-read for deduplication', async () => {
+  it('deduplicates with an upsert rather than a pre-read', async () => {
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }])
-    await app.inject({ method: 'POST', url: '/v1/usage', headers: auth(deviceToken()), payload })
-    expect(dbState.calls.some((c) => c.op === 'onConflictDoNothing')).toBe(true)
+    knownUser()
+    await submit()
+
+    const [ops] = mongoCalls('usageEvents', 'bulkWrite')[0] as [{ updateOne: Record<string, unknown> }[]]
+    expect(ops).toHaveLength(1)
+    expect(ops[0].updateOne.upsert).toBe(true)
+    // First write wins on the device path: a matched document is left alone.
+    expect(ops[0].updateOne.update).not.toHaveProperty('$set')
+    expect(mongoCalls('usageEvents', 'find')).toHaveLength(0)
+  })
+
+  it('touches the device so lastSeenAt tracks the sync', async () => {
+    liveDeviceToken()
+    knownUser()
+    await submit()
+
+    const [filter, update] = mongoCalls('devices', 'updateOne')[0] as [
+      Record<string, unknown>,
+      { $set: { lastSeenAt: unknown } },
+    ]
+    expect(filter).toEqual({ _id: DEVICE_A })
+    expect(update.$set.lastSeenAt).toBeInstanceOf(Date)
   })
 
   it('runs every write inside one transaction', async () => {
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }])
-    await app.inject({ method: 'POST', url: '/v1/usage', headers: auth(deviceToken()), payload })
+    knownUser()
+    await submit()
 
-    const ops = dbState.calls.map((c) => c.op)
-    // The event insert, the device touch and the snapshot rebuild all land
-    // after the transaction opens, so none of them can commit on their own.
-    expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('insert'))
-    expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('update'))
-    expect(ops).not.toContain('rollback')
+    const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+    // The event upsert, the device touch and the snapshot rebuild all land
+    // after the transaction opens, so none of them can commit on its own.
+    const opened = ops.indexOf('.transaction')
+    expect(opened).toBeGreaterThanOrEqual(0)
+    expect(opened).toBeLessThan(ops.indexOf('usageEvents.bulkWrite'))
+    expect(opened).toBeLessThan(ops.indexOf('devices.updateOne'))
+    expect(opened).toBeLessThan(ops.indexOf('dailySnapshots.updateOne'))
+    expect(ops).not.toContain('.rollback')
+  })
+
+  /**
+   * The counters live only on the snapshot now, and this write is the only
+   * thing that puts them there. A port that filled claudeEnrichment and
+   * stopped would leave the dashboard reading zero calls and zero sessions
+   * for every developer, with nothing raised, because zero is a real value.
+   */
+  it('lands the enrichment counters on the snapshot, not only the blobs', async () => {
+    liveDeviceToken()
+    knownUser()
+    await submit({ ...payload, enrichment })
+
+    expect(mongoCalls('claudeEnrichment', 'updateOne')).toHaveLength(1)
+    const counters = (mongoCalls('dailySnapshots', 'updateOne') as [unknown, { $set: Record<string, unknown> }][])
+      .map(([, update]) => update.$set)
+      .find((set) => 'callCount' in set)
+    expect(counters).toEqual({ callCount: 31, sessionCount: 4, cacheHitRate: 92.1 })
   })
 
   it('rolls back and fails the request when the snapshot rebuild throws', async () => {
     // Previously this returned 200 with the events written and the snapshot
     // stale, and nothing retried it. Now the whole submission is undone, so the
-    // agent's next run re-sends it.
-    // The transaction's query sequence, in order: the event insert, the device
-    // touch, then the rebuild's lock and three selects. The user row has to be
-    // present or the rebuild returns early and never reaches the write that
-    // fails.
+    // agent's next run re-sends it. The user row has to be present or the
+    // rebuild returns early and never reaches the write that fails.
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }]) // insert ... returning
-    dbState.results.push([]) // update devices
-    dbState.results.push([]) // rebuild: advisory lock on the user-day
-    dbState.results.push([]) // rebuild: usage aggregated by agent
-    dbState.results.push([]) // rebuild: enrichment
-    dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
-    dbState.failOn = 'onConflictDoUpdate' // rebuild: the snapshot upsert
+    knownUser()
+    mongoState.failOn = 'dailySnapshots.updateOne'
 
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/usage',
-      headers: auth(deviceToken()),
-      payload: { ...payload, enrichment: null },
-    })
+    const res = await submit({ ...payload, enrichment: null })
 
     expect(res.statusCode).toBe(500)
-    expect(dbState.calls.map((c) => c.op)).toContain('rollback')
+    expect(mongoState.calls.map((c) => c.op)).toContain('rollback')
   })
 
   it('evaluates budget alerts inside the same transaction, scoped to the caller org', async () => {
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }]) // insert ... returning
-    dbState.results.push([]) // update devices
-    dbState.results.push([]) // rebuild: advisory lock on the user-day
-    dbState.results.push([]) // rebuild: usage aggregated by agent
-    dbState.results.push([]) // rebuild: enrichment
-    dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
-    dbState.results.push([]) // rebuild: snapshot upsert
-    dbState.results.push([
-      {
-        id: 'alert-1',
-        orgId: ORG_A,
-        userId: null,
-        agent: null,
-        monthlyLimitUsd: '10',
-        threshold: '1',
-        trippedAt: null,
-        createdAt: new Date('2026-01-01'),
-      },
-    ]) // evaluate: alerts for this org/user
-    dbState.results.push([{ spend: '10' }]) // evaluate: month-to-date spend, exactly the trip point
+    knownUser()
+    mongoState.docs.budgetAlerts = [alertDoc({ monthlyLimitMicros: 10 * USD, threshold: 1 })]
+    spend(10 * USD) // exactly the trip point
 
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/usage',
-      headers: auth(deviceToken()),
-      payload: { ...payload, enrichment: null },
-    })
+    const res = await submit({ ...payload, enrichment: null })
 
     expect(res.statusCode).toBe(200)
-    const ops = dbState.calls.map((c) => c.op)
-    expect(ops).not.toContain('rollback')
+    const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+    expect(ops).not.toContain('.rollback')
     // The alert update lands after the rebuild's own upsert, inside the one
     // transaction the whole submission runs in.
-    expect(ops.indexOf('transaction')).toBeLessThan(ops.lastIndexOf('update'))
-    const tripWrite = dbState.calls.find((c) => c.op === 'set' && c.arg && 'trippedAt' in (c.arg as object))
-    expect((tripWrite?.arg as { trippedAt: unknown })?.trippedAt).toBeInstanceOf(Date)
+    expect(ops.indexOf('dailySnapshots.updateOne')).toBeLessThan(ops.indexOf('budgetAlerts.updateOne'))
+
+    const [, update] = mongoCalls('budgetAlerts', 'updateOne')[0] as [unknown, { $set: Record<string, unknown> }]
+    expect(update.$set.trippedAt).toBeInstanceOf(Date)
     // The alert lookup itself must be scoped to the caller's org, the same
     // posture every dashboard route takes.
-    const whereClauses = dbState.calls.filter((c) => c.op === 'where').map((c) => renderSql(c.arg))
-    expect(whereClauses.some((w) => w.includes(ORG_A))).toBe(true)
+    expect(mongoCalls('budgetAlerts', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
   })
 })
 

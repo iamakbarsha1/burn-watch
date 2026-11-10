@@ -85,6 +85,26 @@ vi.mock('../../plugins/db.js', async () => {
   }
 })
 
+/**
+ * The MongoDB side. `getStore` and `runInTxn` are replaced; everything else in
+ * the package is the real thing, so the usage upsert and the snapshot rebuild
+ * under this route are the code that ships.
+ */
+const mongoState = vi.hoisted(() => ({
+  docs: {} as Record<string, Record<string, unknown>[]>,
+  aggregates: {} as Record<string, Record<string, unknown>[]>,
+  calls: [] as { op: string; collection: string; args: unknown[] }[],
+  failOn: null as string | null,
+  bulk: { upsertedCount: 1, matchedCount: 0 },
+}))
+
+vi.mock('@burn-watch/db', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@burn-watch/db')>()
+  const { fakeStore, fakeRunInTxn } = await import('../../mongo-store.fake.js')
+  const store = fakeStore(mongoState, Object.keys(real.COLLECTIONS))
+  return { ...real, getStore: () => store, runInTxn: fakeRunInTxn(mongoState, store) }
+})
+
 vi.mock('@fastify/rate-limit', () => ({ default: fp(async () => {}) }))
 
 const { buildServer } = await import('../../build-server.js')
@@ -201,13 +221,55 @@ const CONNECTION_URL = '/v1/integrations/copilot/connection'
 const SYNC_URL = '/v1/integrations/copilot/sync'
 const SEATS_URL = '/v1/integrations/copilot/seats'
 
-/** The stored connection, as the sync and seats routes both read it back. */
-const connectedRow = () => [{ encryptedToken: sealWith(KEY, TOKEN), githubOrg: ORG }]
+/** The _id every org-and-provider lookup here keys on. */
+const INTEGRATION_ID = `${ORG_A}:copilot`
+
+/** A stored connection, as the status, sync and seats routes all read it back. */
+const connect = (over: Record<string, unknown> = {}) => {
+  mongoState.docs.orgIntegrations = [
+    {
+      _id: INTEGRATION_ID,
+      orgId: ORG_A,
+      provider: 'copilot',
+      encryptedToken: sealWith(KEY, TOKEN),
+      lastSyncAt: null,
+      createdAt: new Date('2026-01-01'),
+      ...over,
+    },
+  ]
+  mongoState.docs.organizations = [{ _id: ORG_A, githubOrg: ORG }]
+}
+
+/** No connection. The org may still remember the GitHub name a DELETE left. */
+const disconnect = (githubOrg: string | null = null) => {
+  mongoState.docs.orgIntegrations = []
+  mongoState.docs.organizations = [{ _id: ORG_A, githubOrg }]
+}
+
+/** Org members, as both the sync match and the seat link read them. */
+const members = (...rows: { id: string; name?: string; login: string }[]) => {
+  mongoState.docs.users = rows.map((r) => ({
+    _id: r.id,
+    orgId: ORG_A,
+    name: r.name ?? r.login,
+    githubUsername: r.login,
+  }))
+}
+
+/** The arguments of every call to one collection's operation, in order. */
+const mongoCalls = (collection: string, op: string) =>
+  mongoState.calls.filter((c) => c.collection === collection && c.op === op).map((c) => c.args)
 
 beforeEach(async () => {
   dbState.results = []
   dbState.calls = []
   dbState.failOn = null
+
+  mongoState.docs = {}
+  mongoState.aggregates = {}
+  mongoState.calls = []
+  mongoState.failOn = null
+  mongoState.bulk = { upsertedCount: 1, matchedCount: 0 }
 
   github.seatsStatus = 200
   github.seatsBody = { total_seats: 0, seats: [] }
@@ -230,14 +292,23 @@ afterEach(async () => {
   delete process.env.COPILOT_ENCRYPTION_KEY
 })
 
-const writeOps = () =>
-  dbState.calls.filter((c) => c.op === 'insert' || c.op === 'update' || c.op === 'delete')
+const WRITES = new Set([
+  'insertOne',
+  'updateOne',
+  'updateMany',
+  'findOneAndUpdate',
+  'bulkWrite',
+  'deleteOne',
+  'deleteMany',
+])
+
+const writeOps = () => mongoState.calls.filter((c) => WRITES.has(c.op))
 
 describe('GET /v1/integrations/copilot/status', () => {
   it('reports missing-key, and answers 200 rather than 500, with no key configured', async () => {
     // The degrade case. An unconfigured deployment still has to render the
     // integration panel, so this must never be an error.
-    dbState.results.push([{ integrationId: null, githubOrg: null, lastSyncAt: null }])
+    disconnect()
 
     const res = await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
 
@@ -254,7 +325,7 @@ describe('GET /v1/integrations/copilot/status', () => {
     // The distinction is the whole point: this is the only surface on which an
     // operator learns the key is mistyped rather than unset.
     process.env.COPILOT_ENCRYPTION_KEY = BAD_KEY
-    dbState.results.push([{ integrationId: null, githubOrg: null, lastSyncAt: null }])
+    disconnect()
 
     const res = await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
 
@@ -266,7 +337,7 @@ describe('GET /v1/integrations/copilot/status', () => {
     // DELETE leaves `organizations.github_org` alone so a reconnect does not
     // have to be retyped. The panel must not read that as a live connection.
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([{ integrationId: null, githubOrg: ORG, lastSyncAt: null }])
+    disconnect(ORG)
 
     const res = await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
 
@@ -275,13 +346,7 @@ describe('GET /v1/integrations/copilot/status', () => {
 
   it('reports ready, the org and the last sync once connected', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([
-      {
-        integrationId: 'integration-1',
-        githubOrg: ORG,
-        lastSyncAt: new Date('2026-11-09T10:00:00.000Z'),
-      },
-    ])
+    connect({ lastSyncAt: new Date('2026-11-09T10:00:00.000Z') })
 
     const res = await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
 
@@ -291,6 +356,24 @@ describe('GET /v1/integrations/copilot/status', () => {
       org: ORG,
       lastSyncAt: '2026-11-09T10:00:00.000Z',
     })
+  })
+
+  /**
+   * Both reads are by key, and the key for the credential carries the org and
+   * the provider together. That pair is the whole of the scoping here: a
+   * lookup by org alone would hand this org's panel whichever provider row
+   * came back first, and one by provider alone would cross orgs outright.
+   * Asserted on the filter because the fake answers every read from what the
+   * test seeded, so a widened filter is invisible in the response.
+   */
+  it('reads the credential by org and provider, and the org by its own id', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    connect()
+
+    await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
+
+    expect(mongoCalls('orgIntegrations', 'findOne')[0][0]).toEqual({ _id: INTEGRATION_ID })
+    expect(mongoCalls('organizations', 'findOne')[0][0]).toEqual({ _id: ORG_A })
   })
 })
 
@@ -342,21 +425,18 @@ describe('PUT /v1/integrations/copilot/connection', () => {
 
   it('stores a sealed token that opens back to exactly what was sent', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([]) // update organizations.github_org
-    dbState.results.push([]) // update org_integrations ... returning, no existing row
-    dbState.results.push([]) // insert org_integrations
 
     const res = await put(admin())
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ connected: true, org: ORG })
 
-    const written = dbState.calls
-      .filter((c) => c.op === 'values')
-      .map((c) => c.arg as Record<string, unknown>)
-      .find((v) => 'encryptedToken' in v)
+    const [, update] = mongoCalls('orgIntegrations', 'updateOne')[0] as [
+      unknown,
+      { $set: Record<string, unknown> },
+    ]
 
-    const stored = String(written?.encryptedToken)
+    const stored = String(update.$set.encryptedToken)
     expect(stored).not.toBe(TOKEN)
     expect(stored).not.toContain(TOKEN)
     expect(stored.startsWith('v1.')).toBe(true)
@@ -364,28 +444,25 @@ describe('PUT /v1/integrations/copilot/connection', () => {
   })
 
   /**
-   * Reconnecting must replace the credential, never add a second row beside
-   * it, because every reader here takes the first row it finds. Asserted
-   * through the conflict arbitration rather than by counting rows, since the
-   * fake database has no constraints of its own. Migration 0006 supplies the
-   * unique index this target names, and the pair was exercised against a real
-   * Postgres before being relied on.
+   * Reconnecting must replace the credential, never add a second document
+   * beside it, because every reader here takes the first one it finds.
+   * Postgres leaned on the unique index migration 0006 added over
+   * (org_id, provider); that key is the _id now, so one upsert on it is the
+   * whole of the constraint, with no index left to drop or forget to sync.
    */
   it('reconnecting replaces the credential rather than adding a second row', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([]) // update organizations.github_org
 
     const res = await put(admin())
 
     expect(res.statusCode).toBe(200)
 
-    const inserts = dbState.calls.filter((c) => c.op === 'insert')
-    expect(inserts).toHaveLength(1)
-
-    const conflict = dbState.calls.find((c) => c.op === 'onConflictDoUpdate')
-    expect(conflict).toBeDefined()
-    const target = (conflict!.arg as { target: { name: string }[] }).target
-    expect(target.map((c) => c.name)).toEqual(['org_id', 'provider'])
+    const writes = mongoCalls('orgIntegrations', 'updateOne')
+    expect(writes).toHaveLength(1)
+    const [filter, , opts] = writes[0] as [Record<string, unknown>, unknown, { upsert: boolean }]
+    expect(filter).toEqual({ _id: INTEGRATION_ID })
+    expect(opts.upsert).toBe(true)
+    expect(mongoCalls('orgIntegrations', 'insertOne')).toHaveLength(0)
   })
 
   it('rejects a body with no token', async () => {
@@ -398,33 +475,22 @@ describe('PUT /v1/integrations/copilot/connection', () => {
 describe('DELETE /v1/integrations/copilot/connection', () => {
   it('removes the row and answers 204 with no body', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([])
+    connect()
 
     const res = await app.inject({ method: 'DELETE', url: CONNECTION_URL, headers: admin() })
 
     expect(res.statusCode).toBe(204)
     expect(res.payload).toBe('')
-    expect(dbState.calls.some((c) => c.op === 'delete')).toBe(true)
+    expect(mongoCalls('orgIntegrations', 'deleteOne')[0][0]).toEqual({ _id: INTEGRATION_ID })
   })
 })
 
 describe('POST /v1/integrations/copilot/sync', () => {
-  /** The rebuild and the alert pass, for one user, in the order they run. */
-  const pushRebuildAndAlerts = () => {
-    dbState.results.push([]) // rebuild: advisory lock on the user-day
-    dbState.results.push([]) // rebuild: usage aggregated by agent
-    dbState.results.push([]) // rebuild: enrichment
-    dbState.results.push([{ orgId: ORG_A }]) // rebuild: user lookup
-    dbState.results.push([]) // rebuild: snapshot upsert
-    dbState.results.push([]) // evaluate: no budget alerts for this org
-  }
-
   it('defaults to yesterday in UTC, never today', async () => {
     // Today's report 404s, because GitHub publishes no lag for availability,
     // so defaulting to it would make the ordinary sync a silent no-op.
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push(connectedRow())
-    dbState.results.push([]) // update last_sync_at
+    connect() // update last_sync_at
 
     const res = await app.inject({ method: 'POST', url: SYNC_URL, headers: admin() })
 
@@ -439,8 +505,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
 
   it('honours an explicit day', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await app.inject({
       method: 'POST',
@@ -462,11 +527,10 @@ describe('POST /v1/integrations/copilot/sync', () => {
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = userDayLine('Alice', day)
 
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, login: 'alice' }]) // users matched on lower(github_username)
-    dbState.results.push([{ id: 'event-1' }]) // usage insert ... returning
-    pushRebuildAndAlerts()
-    dbState.results.push([]) // update last_sync_at
+    connect()
+    // Stored in a third casing again, so neither side can be the one that
+    // happens to already be lowercase.
+    members({ id: USER_A, login: 'ALICE' })
 
     const res = await app.inject({
       method: 'POST',
@@ -490,27 +554,28 @@ describe('POST /v1/integrations/copilot/sync', () => {
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = userDayLine('alice', day, 100, 50, 3)
 
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, login: 'alice' }])
-    dbState.results.push([{ id: 'event-1' }])
-    pushRebuildAndAlerts()
-    dbState.results.push([])
+    connect()
+    members({ id: USER_A, login: 'alice' })
 
     await app.inject({ method: 'POST', url: SYNC_URL, headers: admin(), payload: { day } })
 
-    const rows = dbState.calls
-      .filter((c) => c.op === 'values')
-      .map((c) => c.arg)
-      .find((arg): arg is Record<string, unknown>[] => Array.isArray(arg))
+    const [ops] = mongoCalls('usageEvents', 'bulkWrite')[0] as [
+      { updateOne: { filter: Record<string, unknown>; update: Record<string, unknown> } }[],
+    ]
 
-    expect(rows).toHaveLength(1)
-    expect(rows?.[0]).toMatchObject({
+    expect(ops).toHaveLength(1)
+    // The key is the filter, and a null deviceId is named in it rather than
+    // omitted: a filter without it would match some device's row and swallow
+    // the write as a repeat.
+    expect(ops[0].updateOne.filter).toEqual({
       userId: USER_A,
-      deviceId: null,
-      source: 'copilot-org',
+      date: day,
       agent: 'copilot',
       modelName: 'copilot',
-      date: day,
+      deviceId: null,
+      source: 'copilot-org',
+    })
+    expect(ops[0].updateOne.update.$set).toMatchObject({
       inputTokens: 100,
       outputTokens: 50,
       cacheCreateTokens: 0,
@@ -518,6 +583,9 @@ describe('POST /v1/integrations/copilot/sync', () => {
       totalTokens: 150,
       isFreeTier: false,
     })
+    // orgId is denormalised onto the row, so every org-scoped read reaches it
+    // without a lookup through users.
+    expect(ops[0].updateOne.update.$setOnInsert).toEqual({ orgId: ORG_A })
   })
 
   it('runs each developer write, rebuild and alert pass in one transaction', async () => {
@@ -526,20 +594,19 @@ describe('POST /v1/integrations/copilot/sync', () => {
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = userDayLine('alice', day)
 
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, login: 'alice' }])
-    dbState.results.push([{ id: 'event-1' }])
-    pushRebuildAndAlerts()
-    dbState.results.push([])
+    connect()
+    members({ id: USER_A, login: 'alice' })
 
     await app.inject({ method: 'POST', url: SYNC_URL, headers: admin(), payload: { day } })
 
-    const ops = dbState.calls.map((c) => c.op)
-    // The usage insert lands after the transaction opens, so a failing rebuild
+    const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+    // The usage write lands after the transaction opens, so a failing rebuild
     // cannot leave spend recorded but absent from the snapshot.
-    expect(ops.indexOf('transaction')).toBeGreaterThanOrEqual(0)
-    expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('insert'))
-    expect(ops).not.toContain('rollback')
+    const opened = ops.indexOf('.transaction')
+    expect(opened).toBeGreaterThanOrEqual(0)
+    expect(opened).toBeLessThan(ops.indexOf('usageEvents.bulkWrite'))
+    expect(opened).toBeLessThan(ops.indexOf('dailySnapshots.updateOne'))
+    expect(ops).not.toContain('.rollback')
   })
 
   it('reports an unmatched login instead of dropping it, in GitHub own casing', async () => {
@@ -551,11 +618,8 @@ describe('POST /v1/integrations/copilot/sync', () => {
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = [userDayLine('Alice', day), userDayLine('Bob', day)].join('\n')
 
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, login: 'alice' }]) // only Alice is known
-    dbState.results.push([{ id: 'event-1' }])
-    pushRebuildAndAlerts()
-    dbState.results.push([])
+    connect()
+    members({ id: USER_A, login: 'alice' }) // only Alice is known
 
     const res = await app.inject({
       method: 'POST',
@@ -571,8 +635,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
   it('counts a seat GitHub reports with no assignee', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsBody = { total_seats: 2, seats: [seat('alice'), { ...seat('x'), assignee: null }] }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await app.inject({
       method: 'POST',
@@ -599,11 +662,8 @@ describe('POST /v1/integrations/copilot/sync', () => {
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = userDayLine('alice', day)
 
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, login: 'alice' }])
-    dbState.results.push([{ id: 'event-1' }]) // the upsert returns the row it replaced
-    pushRebuildAndAlerts()
-    dbState.results.push([])
+    connect()
+    members({ id: USER_A, login: 'alice' })
 
     const res = await app.inject({
       method: 'POST',
@@ -613,8 +673,13 @@ describe('POST /v1/integrations/copilot/sync', () => {
     })
 
     expect(res.json().usage).toEqual({ matched: 1, written: 1, skipped: 0 })
-    expect(dbState.calls.some((c) => c.op === 'onConflictDoUpdate')).toBe(true)
-    expect(dbState.calls.some((c) => c.op === 'onConflictDoNothing')).toBe(false)
+    const [ops] = mongoCalls('usageEvents', 'bulkWrite')[0] as [
+      { updateOne: { update: Record<string, unknown>; upsert: boolean } }[],
+    ]
+    expect(ops[0].updateOne.upsert).toBe(true)
+    // A matched document takes the new figures. The device path is the one
+    // that leaves a match alone, and it would have no $set here at all.
+    expect(ops[0].updateOne.update).toHaveProperty('$set')
   })
 
   /**
@@ -627,7 +692,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
   it('answers 502 with the GitHub status when the token stopped working', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsStatus = 401
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await app.inject({
       method: 'POST',
@@ -643,7 +708,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
   it('keeps the GitHub response body out of the reply when a sync fails', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsStatus = 500
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await app.inject({
       method: 'POST',
@@ -658,7 +723,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
   it('writes nothing when the GitHub call fails', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsStatus = 403
-    dbState.results.push(connectedRow())
+    connect()
 
     await app.inject({
       method: 'POST',
@@ -681,7 +746,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
   it('reports an unpublished day instead of calling it a quiet one', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.reportStatus = 404
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await app.inject({
       method: 'POST',
@@ -698,7 +763,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
   it('does not advance last_sync_at for a day GitHub never published', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.reportStatus = 404
-    dbState.results.push(connectedRow())
+    connect()
 
     await app.inject({
       method: 'POST',
@@ -714,8 +779,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = ''
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await app.inject({
       method: 'POST',
@@ -726,6 +790,11 @@ describe('POST /v1/integrations/copilot/sync', () => {
 
     expect(res.json().reportPublished).toBe(true)
     expect(res.json().usage.written).toBe(0)
+    const [, update] = mongoCalls('orgIntegrations', 'updateOne')[0] as [
+      unknown,
+      { $set: { lastSyncAt: unknown } },
+    ]
+    expect(update.$set.lastSyncAt).toBeInstanceOf(Date)
   })
 
   it('returns 503, and never reaches GitHub, when no key is configured', async () => {
@@ -738,7 +807,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
 
   it('returns 404 when the org has no Copilot connection', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([])
+    disconnect()
 
     const res = await app.inject({ method: 'POST', url: SYNC_URL, headers: admin() })
 
@@ -750,7 +819,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     // Sealed under a different key, so opening it fails authentication.
     const otherKey = Buffer.alloc(32, 9).toString('base64')
-    dbState.results.push([{ encryptedToken: sealWith(otherKey, TOKEN), githubOrg: ORG }])
+    connect({ encryptedToken: sealWith(otherKey, TOKEN) })
 
     const res = await app.inject({ method: 'POST', url: SYNC_URL, headers: admin() })
 
@@ -809,8 +878,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
         seat('newer', { last_activity_at: '2026-10-11T12:00:01.000Z' }),
       ],
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await get()
 
@@ -825,8 +893,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
   it('calls a seat that has never been used idle', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsBody = { total_seats: 1, seats: [seat('never', { last_activity_at: null })] }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await get()
 
@@ -841,14 +908,12 @@ describe('GET /v1/integrations/copilot/seats', () => {
       total_seats: 1,
       seats: [seat('alice', { last_activity_at: '2026-10-31T12:00:00.000Z' })], // 10 days ago
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const wide = await get()
     expect(statusByLogin(wide.json())).toEqual({ alice: 'active' })
 
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const narrow = await get('?idleAfterDays=7')
     expect(statusByLogin(narrow.json())).toEqual({ alice: 'idle' })
@@ -858,7 +923,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
   it('defaults the window to 30 days when none is given', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsBody = { total_seats: 0, seats: [] }
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await get()
 
@@ -869,7 +934,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
     'rejects %s rather than computing a window from it',
     async (query) => {
       process.env.COPILOT_ENCRYPTION_KEY = KEY
-      dbState.results.push(connectedRow())
+      connect()
 
       const res = await get(query)
 
@@ -888,8 +953,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
         seat('unpriced', { plan_type: 'copilot_pro_plus', last_activity_at: null }),
       ],
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await get()
 
@@ -908,8 +972,8 @@ describe('GET /v1/integrations/copilot/seats', () => {
   it('links a seat whose login differs in case from github_username', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsBody = { total_seats: 1, seats: [seat('Alice')] }
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, name: 'Alice Smith', login: 'alice' }])
+    connect()
+    members({ id: USER_A, name: 'Alice Smith', login: 'ALICE' })
 
     const res = await get()
 
@@ -935,14 +999,14 @@ describe('GET /v1/integrations/copilot/seats', () => {
       total_seats: 3,
       seats: [seat('Zed'), seat('Alice'), seat('Bob')],
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([
+    connect()
+    members(
       { id: USER_A, name: 'Alice Smith', login: 'alice' },
       { id: '99999999-9999-4999-8999-999999999999', name: 'Alice Later', login: 'alice' },
       { id: '77777777-7777-4777-8777-777777777777', name: 'Zed One', login: 'zed' },
       { id: '88888888-8888-4888-8888-888888888888', name: 'Zed Two', login: 'zed' },
       { id: '55555555-5555-4555-8555-555555555555', name: 'Bob', login: 'bob' },
-    ])
+    )
 
     const res = await get()
 
@@ -963,8 +1027,8 @@ describe('GET /v1/integrations/copilot/seats', () => {
       total_seats: 3,
       seats: [seat('Alice'), seat('Bob'), seat('Carol')],
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([{ id: USER_A, name: 'Alice Smith', login: 'alice' }])
+    connect()
+    members({ id: USER_A, name: 'Alice Smith', login: 'alice' })
 
     const res = await get()
 
@@ -995,8 +1059,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
         seat('alfa', { last_activity_at: null }),
       ],
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await get()
 
@@ -1016,8 +1079,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
       total_seats: 9,
       seats: [seat('alice'), seat('ghost', { assignee: null })],
     }
-    dbState.results.push(connectedRow())
-    dbState.results.push([])
+    connect()
 
     const res = await get()
 
@@ -1029,7 +1091,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
   it('names the connected org', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsBody = { total_seats: 0, seats: [] }
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await get()
 
@@ -1046,7 +1108,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
 
   it('returns 404 when the org has no Copilot connection', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
-    dbState.results.push([])
+    disconnect()
 
     const res = await get()
 
@@ -1057,7 +1119,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
   it('reports a stored credential that no longer decrypts, without leaking crypto internals', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     const otherKey = Buffer.alloc(32, 9).toString('base64')
-    dbState.results.push([{ encryptedToken: sealWith(otherKey, TOKEN), githubOrg: ORG }])
+    connect({ encryptedToken: sealWith(otherKey, TOKEN) })
 
     const res = await get()
 
@@ -1072,7 +1134,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
     // the caller would lose the status that says which remedy applies.
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     github.seatsStatus = 401
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await get()
 
@@ -1091,7 +1153,7 @@ describe('GET /v1/integrations/copilot/seats', () => {
       total_seats: 5000,
       seats: Array.from({ length: 100 }, (_, i) => seat(`dev${i}`)),
     }
-    dbState.results.push(connectedRow())
+    connect()
 
     const res = await get()
 
@@ -1133,6 +1195,7 @@ describe('copilot integration routes — authorization', () => {
     expect(res.statusCode).toBe(403)
     // Rejected before anything was read or written, and before GitHub was asked.
     expect(dbState.calls).toHaveLength(0)
+    expect(mongoState.calls).toHaveLength(0)
     expect(fetchStub).not.toHaveBeenCalled()
   })
 })
@@ -1143,10 +1206,7 @@ describe('copilot integration routes — the token never leaves', () => {
     const day = '2026-11-09'
 
     // Connect.
-    dbState.results.push([]) // update organizations.github_org
-    dbState.results.push([]) // update org_integrations ... returning
-    dbState.results.push([]) // insert org_integrations
-    const connected = await app.inject({
+    const stored = await app.inject({
       method: 'PUT',
       url: CONNECTION_URL,
       headers: admin(),
@@ -1154,23 +1214,13 @@ describe('copilot integration routes — the token never leaves', () => {
     })
 
     // Status.
-    dbState.results.push([
-      { integrationId: 'integration-1', githubOrg: ORG, lastSyncAt: null },
-    ])
+    connect()
     const status = await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
 
     // Sync.
     github.downloadLinks = [DOWNLOAD]
     github.ndjson = userDayLine('alice', day)
-    dbState.results.push([{ encryptedToken: sealWith(KEY, TOKEN), githubOrg: ORG }])
-    dbState.results.push([{ id: USER_A, login: 'alice' }])
-    dbState.results.push([{ id: 'event-1' }])
-    dbState.results.push([])
-    dbState.results.push([])
-    dbState.results.push([{ orgId: ORG_A }])
-    dbState.results.push([])
-    dbState.results.push([])
-    dbState.results.push([])
+    members({ id: USER_A, login: 'alice' })
     const synced = await app.inject({
       method: 'POST',
       url: SYNC_URL,
@@ -1178,7 +1228,7 @@ describe('copilot integration routes — the token never leaves', () => {
       payload: { day },
     })
 
-    for (const res of [connected, status, synced]) {
+    for (const res of [stored, status, synced]) {
       expect(res.payload).not.toContain(TOKEN)
       // Not even a prefix of it, which would be enough to confirm a guess.
       expect(res.payload).not.toContain(TOKEN.slice(0, 12))
