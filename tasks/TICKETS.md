@@ -32,7 +32,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-18 | P4 | Budget alerts API + UI | **done** | L | BW-14 |
 | BW-19 | P4 | Invite flow on `invites` table | **done** | L | BW-14 |
 | BW-20 | P4 | Cross-platform agent scheduling | **done** | M | BW-14 |
-| BW-21 | P4 | GitHub Copilot integration | **blocked** | L | operator |
+| BW-21 | P4 | GitHub Copilot integration | **in progress** | L | operator (plan only) |
 | BW-22 | P5 | Dashboard inline styles to Tailwind | **done** | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | **done** | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
@@ -1226,12 +1226,107 @@ Deliberately NOT built: encrypted credential storage and a connection-state
 UI. Both are scaffolding for a flow that cannot be tested, and would have to
 be rewritten once the real OAuth shape is known.
 
-**Acceptance** — none of these are met, and none can be without the two inputs above
+**Unblocked 2026-11-10, and two of the premises above are wrong.**
+
+The OAuth app is not required. These endpoints accept a fine-grained PAT with
+"GitHub Copilot Business" read or "Administration" read on the org. An org
+admin creates one in the GitHub UI and pastes it into the admin page, so
+blocker 1 dissolves without registering anything. OAuth exists to let many
+orgs self-serve a connection, and BurnWatch serves one company.
+
+Premise correction 1: "Copilot columns are always zero" is false. BW-33 fixed
+the collector, and `apps/agent/src/collectors/ccusage.ts:14` maps `copilot`
+like any other agent. Production holds 22 copilot rows, 36,006,868 tokens and
+$32.12 spanning 2026-05-19 to 2026-07-10. The per-developer Copilot spend this
+ticket set out to obtain already arrives through the normal device path.
+
+Premise correction 2: "a pull from the Copilot usage API" names an API that no
+longer exists. `GET /orgs/{org}/copilot/usage` was sunset in February 2025 and
+`GET /orgs/{org}/copilot/metrics` on 2026-04-02. The replacement is a reports
+API whose endpoints return signed `download_links` to NDJSON files rather than
+inline JSON.
+
+What the replacement does carry, per user per day, is documented at
+`docs.github.com/en/copilot/reference/copilot-usage-metrics/example-schema`.
+Real token counts, under `totals_by_client[].token_usage` as
+`prompt_tokens_sum` and `output_tokens_sum`, repeated per model inside
+`totals_by_client[].totals_by_model[]`. Identity as top-level `user_id` and
+`user_login`. The day as top-level `day`. One NDJSON record per user per day,
+with every model, client and feature split nested inside it rather than
+emitted as separate lines.
+
+What it does not carry is a dollar figure. There is no per-user cost an org
+admin can read; the per-user billing endpoint needs that user's own token, not
+an admin credential. The only cost signal is top-level `ai_credits_used`, a
+float, which GitHub documents as "a metrics signal for analyzing consumption,
+not a billed total". One credit is $0.01.
+
+So the org pull can supply real Copilot tokens, and only an approximation of
+Copilot cost. It also supplies something ccusage cannot at any accuracy, which
+is who holds a seat. An assigned Copilot Business seat costs $19/month whether
+or not anyone opens an editor, and an unused seat is waste a spend dashboard
+should be the thing that catches.
+
+**Scope set 2026-11-10: both halves.** Seat coverage from
+`/orgs/{org}/copilot/billing/seats`, and credit-derived usage from the
+`users-1-day` reports written into `usage_events` behind a source
+discriminator.
+
+**Double counting is the hazard, and it resolves at read time.**
+`rebuildDailySnapshot` sums `total_tokens` and `cost_usd` grouped by agent,
+filtered on `(user_id, date)` alone. Two sources writing copilot rows for one
+developer on one day would be summed, doubling their Copilot spend. The fix is
+a `source` column plus a per-agent preference in the aggregation: where a
+developer has ccusage rows for an agent on a date, the org-sourced rows for
+that agent are ignored. Resolution sits at read time rather than at write
+time on purpose, because write-time skipping gives a different answer
+depending on which source synced first, and backfills reorder that routinely.
+
+`device_id` also goes nullable, since an org pull has no device. That forces
+the unique constraint to be recreated rather than altered: it is currently a
+plain `UNIQUE`, Postgres treats NULLs as distinct, and `onConflictDoNothing`
+would therefore never fire for org rows. The new constraint carries `source`
+and is `NULLS NOT DISTINCT`, which the database supports (Neon, Postgres 18).
+
+Rejected: a synthetic per-developer "integration device" to satisfy the
+existing `NOT NULL`. It needs no migration, but `/devices` renders
+`Registered devices (N)` to admins, so it would put a phantom row per
+developer into a real screen. A column that admits the truth beats a fake row
+that hides it.
+
+**Acceptance**
 - [ ] Org credentials encrypted at rest with `COPILOT_ENCRYPTION_KEY`
 - [ ] Key absent means the feature degrades, not crashes
-- [ ] Copilot usage lands in `usage_events` and flows to snapshots
+- [ ] ~~Copilot usage lands in `usage_events` and flows to snapshots~~ amended:
+      real tokens and credit-derived cost land in `usage_events` behind
+      `source`, one row per developer-day, and ccusage wins wherever both
+      sources cover one developer-day
+- [ ] Seat coverage pulled and reconciled against BurnWatch users
 - [ ] Admin card reflects real connection state
 - [x] Interim: the admin card no longer ships a dead button
+
+**Verification debt this will carry.** Blocker 2 from 2026-11-06 still stands
+and is now the only one. Without a Copilot Business or Enterprise plan there
+is nothing to pull against, so every part of this runs on fixtures until an
+operator points it at a real org.
+
+The record schema itself is no longer the unknown; GitHub publishes it. Three
+smaller things are genuinely undocumented rather than merely unfound, and the
+code should be defensive about each rather than encoding a guess:
+
+1. The signed `download_links` are stated to have "a limited expiration time"
+   with no duration given, and nothing says whether to resend the
+   `Authorization` header when fetching one. Fetch without it first.
+2. No lag or cutoff is published for when a day's report becomes available.
+   Request yesterday rather than today, and treat a 404 on a recent day as
+   expected rather than as a failure.
+3. `assignee` is schema-nullable on the seats endpoint, but no prose says when
+   or why. Skip those records and log them; do not assume they are pending
+   invites.
+
+Also worth guarding: the customization arrays are capped at 25 named entries
+per user per day with the overflow collapsed into an `other` entry, and the
+docs warn that absence from a capped array does not mean zero usage.
 
 ---
 
