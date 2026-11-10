@@ -55,10 +55,18 @@ export function buildTaskXml(programArguments: string[]): string {
 </Task>`
 }
 
+// schtasks rejects a BOM-less file with "(1,2)::ERROR: one root element" — it
+// reads the UTF-16 bytes as some single-byte encoding and the parse dies on the
+// first NUL. Node's 'utf16le' writes no BOM, so prepend one. Returned as bytes
+// rather than a string so a test can assert the encoding, not just the markup.
+export function buildTaskXmlBuffer(programArguments: string[]): Buffer {
+  return Buffer.from('\uFEFF' + buildTaskXml(programArguments), 'utf16le')
+}
+
 export const windowsBackend: ScheduleBackend = {
   install(programArguments) {
     mkdirSync(TASK_DIR, { recursive: true })
-    writeFileSync(TASK_XML_PATH, buildTaskXml(programArguments), 'utf16le')
+    writeFileSync(TASK_XML_PATH, buildTaskXmlBuffer(programArguments))
     // Unlike launchd/systemd, the XML alone does nothing until schtasks
     // imports it — a failure here means nothing was actually scheduled, so
     // it is left to propagate rather than swallowed.
