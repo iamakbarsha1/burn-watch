@@ -1,6 +1,6 @@
 # BurnWatch Tickets
 
-**Board updated:** 2026-11-06
+**Board updated:** 2026-11-10
 **Plan:** [ROADMAP.md](./ROADMAP.md)
 
 Status: `todo` · `doing` · `blocked` · `done`
@@ -50,6 +50,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
 | BW-37 | **P0** | Database never migrated — `tripped_at` missing in production | **done** | M | — |
 | BW-38 | P4 | `register` overwrites an existing agent config silently | **done** | S | — |
+| BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
 
 ---
 
@@ -2003,3 +2004,78 @@ accidental production submission obvious before it was sent.
 - [x] `sync` prints the host it resolved before it submits anything, so a run
       against the wrong BurnWatch is visible in the first line of output
 - [x] `sync` accepts `--api-url` to override the stored config for one run
+
+---
+
+### BW-39 · Setup instructions are macOS-only, and Windows could never collect
+**Size M** · follows BW-20
+
+BW-20 taught the agent to schedule itself on three platforms — launchd on
+macOS, a systemd user timer on Linux, a Task Scheduler task on Windows. The
+instructions never caught up. `/setup` and `docs/INSTALL.md` both told every
+developer to run `curl | bash`, `sudo mv` the binary into `/usr/local/bin`,
+and then, on Linux, to hand-write a crontab line:
+
+```
+(crontab -l 2>/dev/null; echo "0 18 * * * /usr/local/bin/burnwatch sync") | crontab -
+```
+
+That line was wrong from the day BW-20 landed. `register` already installs a
+systemd timer on Linux, so anyone who followed the page ended up with two
+schedules firing the same sync. Windows was not mentioned at all, in either
+document, despite `build:windows-x64` shipping on 2026-11-06.
+
+**The worse half was not documentation.** `CcusageCollector` spawns `npx`
+through `child_process.spawn` with no shell. On Windows `npx` is `npx.cmd`,
+which a bare spawn will not resolve: it fails `ENOENT`, `runCcusage` logs a
+spawn error and returns null, and `collect` returns an empty array. No throw,
+no non-zero exit. A Windows developer would have registered, watched the
+schedule install, and reported zero usage every evening for ever, with the
+only trace a line in a log nobody reads. Writing Windows install instructions
+on top of that would have been shipping a lie.
+
+**Done 2026-11-10.**
+
+`spawn` now takes `shell: process.platform === 'win32'`. Nothing else changes
+on macOS or Linux. The arguments are fixed strings plus a `YYYYMMDD` date, so
+there is nothing for a shell to mangle. Two tests in `ccusage.test.ts` fake
+`process.platform` and assert the option both ways; deleting the line turns
+both red.
+
+`/setup` is now one client component, `components/SetupSteps.tsx`, behind a
+three-way OS switch that defaults to whatever `navigator.userAgent` reports.
+A switch per step would have meant a reader flipping it four times, so the
+whole body moved client-side rather than the alternative of three copies of
+the page. `lib/os.ts` holds the detection as a pure function with five tests,
+including the one that matters — Android reports Linux, and nobody installs
+the agent on a phone.
+
+Four steps now differ by OS: installing Bun, building and placing the binary,
+the config path, and verifying the schedule. Windows gets the PowerShell
+build, the `$HOME\bin` PATH line nothing else sets, and `schtasks /query /tn
+BurnWatchSync`. Linux gets `loginctl enable-linger`, which the systemd backend
+has needed since BW-20 and never said so anywhere a user would look. The
+troubleshooting table branches the same way, including a
+`burnwatch: command not found` row that did not exist before and is the first
+thing a Windows developer will hit.
+
+`docs/INSTALL.md` carries the same content, plus a table of the four
+cross-compile scripts so one machine can produce every binary and a developer
+without Bun can skip straight to `register`. `setup.md` and
+`docs/ARCHITECTURE.md` had their own macOS-only scheduling lines; both now
+name all three backends.
+
+Both documents say plainly that nobody has watched Linux or Windows
+scheduling fire on real hardware yet. That is still BW-20's open debt, and a
+setup page is exactly where a developer who could settle it will be standing.
+
+**Acceptance**
+- [x] Windows collects instead of silently reporting zero — `shell: true` on
+      win32, falsified both ways
+- [x] `/setup` serves macOS, Linux and Windows commands, defaulting to the
+      reader's own OS
+- [x] The wrong Linux crontab instruction is gone from both documents
+- [x] Windows appears in the install docs at all, including PATH and the
+      prebuilt-binary route for a machine without Bun
+- [x] `loginctl enable-linger` is documented where a Linux user will find it
+- [x] Browser pass at 1440px and 390px, all three tabs

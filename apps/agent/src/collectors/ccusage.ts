@@ -18,7 +18,14 @@ const FREE_TIER_AGENTS = new Set<AgentName>(['qwen'])
 
 function runCommand(cmd: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    // npx on Windows is `npx.cmd`, which a bare spawn will not resolve — it
+    // fails ENOENT and every Windows machine reports zero usage forever. The
+    // args are fixed strings and a YYYYMMDD date, so there is nothing here for
+    // a shell to mangle.
+    const child = spawn(cmd, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+    })
     const chunks: Buffer[] = []
     const errChunks: Buffer[] = []
 
