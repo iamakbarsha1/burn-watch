@@ -13,8 +13,15 @@
  *     BW41_ALLOW_WRITES=1 npx tsx src/scripts/snapshot-race.ts
  *
  * It creates its own user documents and deletes them on the way out, so it
- * never reads or writes a document it did not make. Point it at a throwaway
- * database anyway.
+ * never reads or writes a document another process made. It does leave schema
+ * behind: it now calls the real syncSchema, which ensures every collection and
+ * index in the registry and records 0001_noop_marker in _migrations. Point it
+ * at a throwaway database.
+ *
+ * That also gives it a startup failure the old hand-rolled loop did not have.
+ * Interrupting a run between the migration claim and its completion leaves an
+ * in-flight claim, and every later run stops there with "claimed at … and
+ * never completed". Delete that _migrations document to start again.
  *
  * Three regimes per run, BW41_ROUNDS each (default 5). "fresh day" and "seeded
  * day" contend on dailySnapshots._id only, with the snapshot absent and then
@@ -37,6 +44,7 @@ import { MongoClient, MongoError, MongoServerError } from 'mongodb'
 import type { UsageEvent } from '@burn-watch/shared'
 import type { UsageSource } from '../documents.js'
 import { dayKey, newId, type IsoDate, type Micros, type OrgId, type UserId } from '../ids.js'
+import { syncSchema } from '../schema.js'
 import { agentSourceTotalsPipeline, rebuildDailySnapshot } from '../snapshot.js'
 import { runInTxn, storeFor, type Store, type Txn } from '../store.js'
 import { upsertUsageEvents } from '../usage.js'
@@ -249,20 +257,11 @@ async function main() {
   // this, the first-ever rebuild creates dailySnapshots implicitly inside its
   // transaction and the loser's conflict surfaces at commit, invisible to the
   // body, which is a different experiment from the one this script runs.
-  const db = controlClient.db()
-  for (const name of ['users', 'usageEvents', 'dailySnapshots']) {
-    await db.createCollection(name).catch((err: unknown) => {
-      if (!(err instanceof MongoServerError && err.codeName === 'NamespaceExists')) throw err
-    })
-  }
-  // The index the two-tier upsert relies on in production, so the write path
-  // under test is the real one.
-  await db
-    .collection('usageEvents')
-    .createIndex(
-      { userId: 1, date: 1, agent: 1, modelName: 1, deviceId: 1, source: 1 },
-      { unique: true, name: 'usageEvents_key' },
-    )
+  //
+  // The same call an operator makes, so the write path under test carries the
+  // real indexes, usageEvents_key included. It is also the only check that the
+  // registry can actually be built against a live cluster.
+  await syncSchema(controlClient.db())
 
   const seen = new Map<string, number>()
   let lostRounds = 0

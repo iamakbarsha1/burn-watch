@@ -13,7 +13,7 @@ import {
   type UpdateFilter,
   type UpdateResult,
 } from 'mongodb'
-import type { DailySnapshotDoc, UsageEventDoc, UserDoc } from './documents.js'
+import { COLLECTIONS, type CollectionSpec } from './registry.js'
 
 /** The ten driver calls the apps use, with the session already applied. */
 export interface Bound<T extends Document> {
@@ -37,10 +37,15 @@ export interface Bound<T extends Document> {
   deleteMany(filter: Filter<T>): Promise<number>
 }
 
-export interface Store {
-  readonly users: Bound<UserDoc>
-  readonly usageEvents: Bound<UsageEventDoc>
-  readonly dailySnapshots: Bound<DailySnapshotDoc>
+type DocOf<S> = S extends CollectionSpec<infer T> ? T : never
+
+/**
+ * Derived from COLLECTIONS, never written out. A hand-spelled member list and
+ * the registry are two places that have to agree about a collection name, and
+ * the one that drifts is the one nothing checks.
+ */
+export type Store = {
+  readonly [K in keyof typeof COLLECTIONS]: Bound<DocOf<(typeof COLLECTIONS)[K]>>
 }
 
 declare const inTxn: unique symbol
@@ -68,16 +73,24 @@ function bound<T extends Document>(coll: Collection<T>, session?: ClientSession)
 }
 
 function bindAll(db: Db, session?: ClientSession): Store {
-  return {
-    users: bound(db.collection<UserDoc>('users'), session),
-    usageEvents: bound(db.collection<UsageEventDoc>('usageEvents'), session),
-    dailySnapshots: bound(db.collection<DailySnapshotDoc>('dailySnapshots'), session),
-  }
+  const out: Record<string, Bound<Document>> = {}
+  for (const name of Object.keys(COLLECTIONS)) out[name] = bound(db.collection(name), session)
+  // The loop binds every member the same way, so the per-member document type
+  // is the registry's claim rather than something the compiler can follow here.
+  return out as unknown as Store
 }
 
 const backing = new WeakMap<Store, { client: MongoClient; db: Db }>()
 
-/** A Store over an explicit client. Scripts that need several independent connections use this. */
+/**
+ * A Store over an explicit client. Scripts that need several independent
+ * connections use this.
+ *
+ * It bypasses getDb(), so a caller holding one of these is on its own handle
+ * and gets none of the bootstrap or health guarantees that getStore()-rooted
+ * callers share. That is the point for the race script, which wants separate
+ * connections, and a trap for anything else.
+ */
 export function storeFor(client: MongoClient, dbName?: string): Store {
   const db = client.db(dbName)
   const store = bindAll(db)
@@ -86,6 +99,7 @@ export function storeFor(client: MongoClient, dbName?: string): Store {
 }
 
 let client: MongoClient | undefined
+let db: Db | undefined
 let store: Store | undefined
 
 /** One MongoClient per process, lazily built so importing needs no MONGODB_URI. */
@@ -98,8 +112,22 @@ export function getClient(): MongoClient {
   return client
 }
 
+/**
+ * The Db every Store binds and every check interrogates. One handle, no second
+ * opinion: a health check that reads a different database than the Store
+ * writes to proves nothing about the one serving traffic.
+ */
+export function getDb(): Db {
+  return (db ??= getClient().db())
+}
+
 export function getStore(): Store {
-  return (store ??= storeFor(getClient()))
+  if (!store) {
+    const handle = getDb()
+    store = bindAll(handle)
+    backing.set(store, { client: getClient(), db: handle })
+  }
+  return store
 }
 
 const TXN: TransactionOptions = {

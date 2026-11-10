@@ -2,6 +2,9 @@
 // loader does not guess them.
 export * from './ids.js'
 export * from './documents.js'
+export * from './registry.js'
+export * from './migrations.js'
+export * from './schema.js'
 export * from './store.js'
 export * from './snapshot.js'
 export * from './usage.js'
