@@ -210,10 +210,30 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       })
     }
 
-    const [seatPage, userDays] = await Promise.all([
-      listCopilotSeats(token, row.githubOrg),
-      fetchCopilotUserDays(token, row.githubOrg, day),
-    ])
+    // Wrapped for the same reason PUT wraps its own call, and the failure here
+    // is likelier: a fine-grained PAT carries an expiry, and the token that
+    // worked at connect time is the one most likely to be revoked, expired or
+    // rate-limited by the time a sync runs.
+    //
+    // Letting it escape was not merely untidy. `apiError` puts GitHub's whole
+    // response body in the message, and the global handler in `build-server`
+    // answers an unhandled error with `{ error: error.message }` — so an
+    // upstream failure echoed raw GitHub response text back to the caller,
+    // from a module that takes care elsewhere to keep a signed URL out of a
+    // log. The status travels; the body does not.
+    let seatPage: Awaited<ReturnType<typeof listCopilotSeats>>
+    let userDays: CopilotUserDay[]
+    try {
+      ;[seatPage, userDays] = await Promise.all([
+        listCopilotSeats(token, row.githubOrg),
+        fetchCopilotUserDays(token, row.githubOrg, day),
+      ])
+    } catch (error) {
+      return reply.status(502).send({
+        error: 'GitHub rejected the sync. The token may have expired or been revoked.',
+        githubStatus: githubStatusFrom(error),
+      })
+    }
 
     // Matched case-insensitively. GitHub logins are, and `github_username` is
     // typed in by hand on our side, so a capitalised entry would otherwise

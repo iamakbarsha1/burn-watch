@@ -570,7 +570,16 @@ describe('POST /v1/integrations/copilot/sync', () => {
     expect(res.json().seats).toEqual({ total: 2, skippedNullAssignee: 1 })
   })
 
-  it('is safe to run twice: a replay writes nothing and reports it as skipped', async () => {
+  /**
+   * A re-sync of a day already stored must overwrite rather than no-op.
+   * GitHub documents `ai_credits_used` as a metrics signal and not a billed
+   * total, so the figures for a day can change after it first becomes
+   * queryable, and this route is admin-triggered precisely so someone can ask
+   * again. Ignoring the repeat would make a synced day permanently
+   * unrevisable, reported as `skipped` and indistinguishable from a true
+   * no-op, with hand-deleting rows the only way back.
+   */
+  it('is safe to run twice, and a replay overwrites rather than being ignored', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     const day = '2026-11-09'
     github.downloadLinks = [DOWNLOAD]
@@ -578,7 +587,7 @@ describe('POST /v1/integrations/copilot/sync', () => {
 
     dbState.results.push(connectedRow())
     dbState.results.push([{ id: USER_A, login: 'alice' }])
-    dbState.results.push([]) // insert ... returning, the unique constraint swallowed it
+    dbState.results.push([{ id: 'event-1' }]) // the upsert returns the row it replaced
     pushRebuildAndAlerts()
     dbState.results.push([])
 
@@ -589,8 +598,62 @@ describe('POST /v1/integrations/copilot/sync', () => {
       payload: { day },
     })
 
-    expect(res.json().usage).toEqual({ matched: 1, written: 0, skipped: 1 })
-    expect(dbState.calls.some((c) => c.op === 'onConflictDoNothing')).toBe(true)
+    expect(res.json().usage).toEqual({ matched: 1, written: 1, skipped: 0 })
+    expect(dbState.calls.some((c) => c.op === 'onConflictDoUpdate')).toBe(true)
+    expect(dbState.calls.some((c) => c.op === 'onConflictDoNothing')).toBe(false)
+  })
+
+  /**
+   * A fine-grained PAT carries an expiry, so the credential that worked at
+   * connect time is exactly the one likeliest to be dead by the next sync.
+   * Before this was wrapped, the error escaped to the global handler, which
+   * answers with `{ error: error.message }` — and `apiError` puts GitHub's
+   * whole response body in that message.
+   */
+  it('answers 502 with the GitHub status when the token stopped working', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsStatus = 401
+    dbState.results.push(connectedRow())
+
+    const res = await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(res.statusCode).toBe(502)
+    expect(res.json().githubStatus).toBe(401)
+  })
+
+  it('keeps the GitHub response body out of the reply when a sync fails', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsStatus = 500
+    dbState.results.push(connectedRow())
+
+    const res = await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(res.payload).not.toContain('github says no')
+  })
+
+  it('writes nothing when the GitHub call fails', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsStatus = 403
+    dbState.results.push(connectedRow())
+
+    await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(writeOps()).toEqual([])
   })
 
   it('returns 503, and never reaches GitHub, when no key is configured', async () => {
