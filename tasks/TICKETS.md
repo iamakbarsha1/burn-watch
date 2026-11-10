@@ -63,7 +63,33 @@ them reads as done.
 
 | From | What is unproven | What would settle it |
 |------|------------------|----------------------|
-| BW-20 | That a systemd timer or a Task Scheduler task actually registers and fires. The generated unit and XML are real and the dispatch is tested by faking `process.platform`, but the agent has only ever run on macOS. | Carry the binaries to the machines and run `install-cron`, confirming with `systemctl --user status burnwatch-sync.timer` and `schtasks /query /tn BurnWatchSync`. Both binaries now build — `build:linux-x64` and `build:windows-x64`, the latter added 2026-11-06. No Linux or Windows host was reachable from this machine: Docker is not running, and a systemd timer needs a real user session rather than a container anyway. |
+| — | Nothing outstanding. | |
+
+**Cleared 2026-11-10.** BW-20's Windows and Linux debt, and with it BW-40's
+last box. Settled on GitHub's `ubuntu-latest` and `windows-latest` runners —
+real VMs with a real systemd and a real Task Scheduler, reached by
+`.github/workflows/verify-install.yml` after four sessions of treating "no
+Linux or Windows hardware here" as the end of the road. Docker was never the
+only option; the CI provider had been sitting there the whole time.
+
+| From | How it was settled |
+|------|--------------------|
+| BW-20 | Installed v0.2.1 by the documented `curl \| sh` and `irm \| iex` one-liners, ran `install-cron`, and asked each OS. Linux: `burnwatch-sync.timer` is `loaded … enabled`, `Active: active (waiting)`, `Trigger: 18:00:00 UTC; 11h left`. Windows: `\BurnWatchSync`, `Status: Ready`, `Scheduled Task State: Enabled`, `Schedule Type: Daily`, `Start Time: 6:00:00 PM`, `Task To Run: …\burnwatch.exe sync`. |
+| BW-40 | `install.ps1` executed on real Windows for the first time. It downloads, verifies the checksum, installs to `~\.local\bin`, and appends to the user PATH. The run also caught two defects that made v0.2.0 uninstallable — see below. |
+
+**What the verification caught.** v0.2.0 was broken on both platforms and
+nobody knew, because nobody had installed it:
+
+- `schtasks` rejected the task XML with `(1,2)::ERROR: one root element`.
+  Node's `utf16le` writes no byte order mark and `schtasks` requires one, so
+  `install-cron` scheduled nothing on every Windows machine. The five existing
+  unit tests asserted the XML string and could not see the encoding. Fixed in
+  `473d862`, with two tests on the bytes.
+- `install.sh` refused the Linux binary: the published `checksums.txt` carried
+  a hash from a different build than the uploaded asset. `release.yml` built
+  three targets and generated no checksums at all, so v0.2.0's Windows binary
+  and checksum file had both been added by hand. The workflow now builds all
+  four targets and hashes the same files it uploads.
 
 **Cleared 2026-11-06.** Both were cleared by doing the thing the right-hand
 column asked for, and one of them was worth every minute:
@@ -2089,9 +2115,10 @@ without Bun can skip straight to `register`. `setup.md` and
 `docs/ARCHITECTURE.md` had their own macOS-only scheduling lines; both now
 name all three backends.
 
-Both documents say plainly that nobody has watched Linux or Windows
-scheduling fire on real hardware yet. That is still BW-20's open debt, and a
-setup page is exactly where a developer who could settle it will be standing.
+Both documents said plainly that nobody had watched Linux or Windows
+scheduling fire on real hardware. Settled 2026-11-10 against v0.2.1 on
+GitHub-hosted Linux and Windows runners; see the verification debt table at
+the top.
 
 **Acceptance**
 - [x] Windows collects instead of silently reporting zero — `shell: true` on
@@ -2167,9 +2194,12 @@ the user PATH because nothing else will.
 schedule. Build-from-source moves into a native `<details>` — still there for
 anyone who wants it, no longer page height everyone else scrolls past.
 
-**Unverified:** `install.ps1` has no PowerShell on this machine to parse it,
-let alone run it. It is reviewed, not executed. That joins BW-20's Windows
-debt rather than pretending to be settled.
+**Verified 2026-11-10.** `install.ps1` ran on `windows-latest` against v0.2.1:
+downloaded `burnwatch-windows-x64.exe`, matched the checksum, installed to
+`C:\Users\runneradmin\.local\bin\burnwatch.exe`, appended to the user PATH,
+and `burnwatch --version` printed `0.2.1`. It had been reviewed and never
+executed; executing it is also what exposed the two v0.2.0 release defects
+recorded in the verification debt section.
 
 **Acceptance**
 - [x] Four binaries and `checksums.txt` published as a GitHub release
@@ -2181,5 +2211,5 @@ debt rather than pretending to be settled.
       demoted to a disclosure
 - [x] Release recipe documented for admins, including that asset names are the
       contract
-- [ ] `install.ps1` run on a real Windows machine — unparsed and unexecuted
-      here, same debt as BW-20
+- [x] `install.ps1` run on a real Windows machine — `windows-latest`,
+      v0.2.1, 2026-11-10
