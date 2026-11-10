@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { PgDialect, getTableConfig } from 'drizzle-orm/pg-core'
+import { drizzle } from 'drizzle-orm/neon-serverless'
+import * as schema from '../../drizzle/schema.js'
 import { usageEvents, claudeEnrichment, users } from '../../drizzle/schema.js'
 import type { DB } from '../plugins/db.js'
-import { rebuildDailySnapshot } from './snapshot.service.js'
+import { agentTotalsQuery, rebuildDailySnapshot } from './snapshot.service.js'
 
 type AgentRow = { agent: string; tokens: unknown; cost: unknown; models: string[] | null }
 
@@ -20,17 +25,28 @@ function fakeDb(tables: FakeTables) {
   const inserted: Record<string, unknown>[] = []
 
   const rowsFor = (table: unknown): unknown[] => {
-    if (table === usageEvents) return tables.agentRows ?? []
     if (table === claudeEnrichment) return tables.enrichment ? [tables.enrichment] : []
     if (table === users) return tables.user ? [tables.user] : []
-    throw new Error('fakeDb: unexpected table in select()')
+    // Anything else is the per-agent aggregate, which reads usage_events
+    // through a subquery object rather than the table itself. The subquery is
+    // built by the same `select()` this fake is standing in for, so matching it
+    // by identity is not possible here.
+    return tables.agentRows ?? []
   }
+
+  // A `.as()` subquery, whose columns the outer select and filter reach for by
+  // name. Every property answers with a distinct object so none of drizzle's
+  // expression builders is handed `undefined`.
+  const subquery = new Proxy({} as Record<string, unknown>, {
+    get: (store, key: string) => (store[key] ??= {}),
+  })
 
   const chain = (rows: unknown[]) => {
     const self: Record<string, unknown> = {
       where: () => self,
       groupBy: () => self,
       limit: () => self,
+      as: () => subquery,
       then: (onOk: (v: unknown) => unknown, onErr?: (e: unknown) => unknown) =>
         Promise.resolve(rows).then(onOk, onErr),
     }
@@ -209,5 +225,101 @@ describe('rebuildDailySnapshot', () => {
     await rebuildDailySnapshot(db, USER, DATE)
 
     expect(inserted).toHaveLength(0)
+  })
+})
+
+/**
+ * The source preference lives in SQL, so these render the statement the
+ * service actually builds and read it, the way `overview-query.test.ts` does.
+ * The fake above cannot reach it: it answers with rows postgres would already
+ * have resolved.
+ */
+// Never connects. The statement is built and rendered, never executed.
+const rendered = new PgDialect().sqlToQuery(
+  agentTotalsQuery(drizzle({} as never, { schema }), USER, DATE).getSQL(),
+)
+
+describe('the per-agent source resolution', () => {
+  it('aggregates tokens, cost and models per agent', () => {
+    expect(rendered.sql).toMatch(/sum\("total_tokens"\)/i)
+    expect(rendered.sql).toMatch(/sum\("cost_usd"\)/i)
+    expect(rendered.sql).toMatch(/array_agg\(distinct "model_name"\)/i)
+    expect(rendered.sql).toMatch(/group by "scoped"\."agent"/i)
+  })
+
+  it('keeps a row whose source is the agent', () => {
+    expect(rendered.sql).toMatch(/where \("scoped"\."source" = \$\d/i)
+    // The literal is bound, so the SQL text alone cannot say which source wins.
+    expect(rendered.params).toContain('agent')
+    expect(rendered.params).not.toContain('copilot-org')
+  })
+
+  it('keeps the other source only when that agent has no agent-sourced row', () => {
+    expect(rendered.sql).toMatch(/or not "agent_sourced"\)/i)
+  })
+
+  it('decides per agent rather than once for the whole day', () => {
+    // A developer with agent-sourced claude and org-sourced copilot on one day
+    // has to get both. An unpartitioned `over ()` would see the claude row and
+    // drop the copilot one.
+    expect(rendered.sql).toMatch(/bool_or\("source" = 'agent'\) over \(partition by "agent"\)/i)
+    expect(rendered.sql).not.toMatch(/over \(\s*\)/i)
+  })
+
+  it('resolves in one round trip rather than reading rows into js', () => {
+    expect(rendered.sql.match(/from "usage_events"/gi)).toHaveLength(1)
+    expect(rendered.sql).not.toContain(';')
+  })
+})
+
+const migration = readFileSync(
+  join(import.meta.dirname, '../../drizzle/migrations/0005_usage_event_source.sql'),
+  'utf8',
+)
+
+/**
+ * An org-sourced row has no device, so `device_id` is null on all of them.
+ * Under postgres' default NULLS DISTINCT the unique constraint would never see
+ * two such rows as equal, `onConflictDoNothing` would find nothing to skip, and
+ * every re-pull would add another copy of the same day.
+ *
+ * Asserted against the DDL rather than against a live database: the migration
+ * is applied by hand here, and there is no postgres 15-or-newer instance in
+ * this checkout to run it against. The behaviour these guard is postgres', so
+ * what is checkable from here is that the constraint carries the clause that
+ * selects it and names every column of the key.
+ */
+describe('the usage_events uniqueness key', () => {
+  const unique = getTableConfig(usageEvents).uniqueConstraints
+
+  it('treats two null device_ids as the same row', () => {
+    expect(unique).toHaveLength(1)
+    expect(unique[0].nullsNotDistinct).toBe(true)
+    expect(migration).toMatch(/UNIQUE NULLS NOT DISTINCT/)
+  })
+
+  it('separates the two sources instead of collapsing them', () => {
+    expect(unique[0].columns.map((c) => c.name)).toEqual([
+      'user_id',
+      'agent',
+      'date',
+      'model_name',
+      'device_id',
+      'source',
+    ])
+    expect(migration).toContain(
+      '"usage_events_unique_user_agent_date_model_device_source" UNIQUE NULLS NOT DISTINCT' +
+        '("user_id","agent","date","model_name","device_id","source")',
+    )
+  })
+
+  it('drops the device-only constraint that would have rejected the org row', () => {
+    // Left in place it still forbids a second row per (user, agent, day,
+    // model, device), which is exactly the org row for a developer ccusage
+    // already reported.
+    expect(migration).toContain(
+      'DROP CONSTRAINT "usage_events_unique_user_agent_date_model_device"',
+    )
+    expect(migration).toContain('ALTER COLUMN "device_id" DROP NOT NULL')
   })
 })
