@@ -16,12 +16,7 @@ export default async function TrendsPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  let trends: Awaited<ReturnType<typeof fetchTrends>> = []
-  try {
-    trends = await fetchTrends(from, to, orgId)
-  } catch {
-    // Show empty state if API unavailable
-  }
+  const trends = await fetchTrends(from, to, orgId)
 
   return (
     <div>

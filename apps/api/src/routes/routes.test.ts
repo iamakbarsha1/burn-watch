@@ -5,8 +5,8 @@ import fp from 'fastify-plugin'
 import { getTableName, is, Table } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
-import type { ProjectEntry } from '@burn-watch/shared'
 import { EXPECTED_SCHEMA_VERSION } from '../schema-version.js'
+import { daysBefore, today } from './dashboard/dates.js'
 
 process.env.JWT_SECRET ??= 'test-access-secret'
 process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret'
@@ -142,10 +142,17 @@ vi.mock('@burn-watch/db', async (importOriginal) => {
     ...real,
     getStore: () => store,
     runInTxn: fakeRunInTxn(mongoState, store),
+    // Both model the one thing the real pair does before anything else: they
+    // default to `getDb()`, which resolves a client from MONGODB_URI and
+    // throws when it is unset. Leaving that out would make the fakes healthier
+    // than the code they stand in for, and `/health` is the one route whose
+    // whole value is not being healthier than what it reports on.
     pingDb: async () => {
+      if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not set')
       if (mongoState.pingFails) throw new Error('connect ECONNREFUSED mongo.example:27017')
     },
     assertSchemaCurrent: async () => {
+      if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not set')
       if (mongoState.schemaFails) {
         throw new Error('MongoDB schema drift.\n  missing indexes: usageEvents.usageEvents_key')
       }
@@ -304,13 +311,28 @@ describe('dashboard routes — org scoping', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    // Asserted against the arguments the route actually handed the database.
-    // This used to read the cache keys; those went with the cache, and the query
-    // arguments are the better anchor regardless — they are what decides which
-    // rows come back, where a cache key only described them afterwards.
-    const queried = inspect(dbState.calls, { depth: null })
+    // Asserted against the arguments the route actually handed the store. The
+    // fake answers a read from what the test seeded for that collection and
+    // ignores the filter entirely, so seeding a second org's documents and
+    // watching them not come back would prove nothing — the pipeline is the
+    // only place the scoping exists, and this reads it rather than
+    // re-implementing it. The cross-org read is executed for real against a
+    // server in `src/scripts/dashboard-pipelines.ts`.
+    const queried = inspect(mongoState.calls, { depth: null })
     expect(queried).toContain(ORG_A)
     expect(queried).not.toContain(ORG_B)
+  })
+
+  it.each(DASHBOARD_ROUTES)('%s reads nothing from postgres', async (url) => {
+    // The point of the phase. A route left half-ported reads its totals from
+    // one store and its names from the other, and the two disagree silently
+    // from the Phase 7 backfill onwards.
+    await app.inject({
+      method: 'GET',
+      url: range(url),
+      headers: auth(token()),
+    })
+    expect(dbState.calls).toEqual([])
   })
 })
 
@@ -339,175 +361,433 @@ describe('dashboard routes — query validation', () => {
   })
 })
 
-// BW-25 wants the JSONB merge in these two routes moved from Node into SQL.
-// These describe blocks characterize the merge as it exists today, including
-// behaviour that is surprising, so the rewrite has to make a deliberate choice
-// rather than drift. They assert on the mock's queued rows, which match the
-// shape Drizzle's `select({...})` returns but not necessarily what the real
-// driver coerces a JSONB column into — see the characterization note below on
-// absent-vs-null columns.
-describe('GET /v1/dashboard/activity — merge behaviour', () => {
-  const activityUrl = () => range('/v1/dashboard/activity')
-  const get = () => app.inject({ method: 'GET', url: activityUrl(), headers: auth(token()) })
-  const enrichmentRow = (
-    toolUsage: Record<string, number> | null | undefined = {},
-    shellUsage: Record<string, number> | null | undefined = {},
-    mcpUsage: Record<string, number> | null | undefined = {},
-  ) => ({ toolUsage, shellUsage, mcpUsage })
+/**
+ * The merge these routes used to do in node now happens in the database, so
+ * what is left in a handler is the mapping of an aggregate's rows onto the
+ * response shape — and every one of these reads that mapping.
+ *
+ * Three things they deliberately cannot show, because the fake answers a read
+ * from what the test seeded and never looks at the pipeline:
+ *
+ *   - that the grouping sums the right field, or groups on the right key;
+ *   - that the `$match` keeps another org's documents out;
+ *   - that `$addToSet` plus `$size` counts people rather than user-days.
+ *
+ * `enrichment-query.test.ts` and `overview-query.test.ts` read the stages, and
+ * `src/scripts/dashboard-pipelines.ts` runs all five against a real server with
+ * two orgs seeded. Seeding a second org into the fake would look like a
+ * cross-org test and assert nothing.
+ */
+const dashboardAggregate = (collection: string, rows: Record<string, unknown>[]) => {
+  mongoState.aggregates[collection] = rows
+}
 
-  it('sums a key that two rows share', async () => {
-    dbState.results.push([enrichmentRow({ bash: 5 }), enrichmentRow({ bash: 3 })])
-    const res = await get()
-    expect(res.json()).toContainEqual({ tool: 'bash', count: 8, category: 'tool' })
+describe('GET /v1/dashboard/overview', () => {
+  const get = (url = range('/v1/dashboard/overview')) =>
+    app.inject({ method: 'GET', url, headers: auth(token()) })
+
+  const facet = (over: Record<string, unknown> = {}) =>
+    dashboardAggregate('dailySnapshots', [
+      { totals: [{ costMicros: 12 * USD, tokens: 400, activeUsers: 3 }], byAgent: [], ...over },
+    ])
+
+  it('renders the stored micros as dollars', async () => {
+    facet()
+    expect((await get()).json()).toMatchObject({ totalCostUsd: 12, totalTokens: 400 })
   })
 
-  it('keeps a key that only one row has, with that row\'s own value', async () => {
-    dbState.results.push([enrichmentRow({ bash: 5 }), enrichmentRow({ edit: 2 })])
-    const res = await get()
-    expect(res.json()).toEqual(
-      expect.arrayContaining([
-        { tool: 'bash', count: 5, category: 'tool' },
-        { tool: 'edit', count: 2, category: 'tool' },
-      ]),
-    )
+  it('reports the distinct-developer count the pipeline computed', async () => {
+    facet()
+    expect((await get()).json().activeUsers).toBe(3)
   })
 
-  it('treats an absent or null JSONB field as contributing nothing, without throwing', async () => {
-    // characterized, not endorsed: `?? {}` cannot tell "this column is null"
-    // from "this column is an empty object". A SQL rewrite should pick one
-    // meaning on purpose instead of collapsing both into it.
-    dbState.results.push([{ toolUsage: null, shellUsage: undefined, mcpUsage: { neon: 4 } }])
-    const res = await get()
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual([{ tool: 'neon', count: 4, category: 'mcp' }])
+  it('answers zeros, not nulls, when the org has no snapshots in range', async () => {
+    dashboardAggregate('dailySnapshots', [])
+    expect((await get()).json()).toMatchObject({
+      totalCostUsd: 0,
+      totalTokens: 0,
+      activeUsers: 0,
+      vsYesterday: { costDelta: 0, costPct: 0, tokensDelta: 0 },
+    })
   })
 
-  it('treats an empty object as contributing nothing', async () => {
-    dbState.results.push([enrichmentRow({}, {}, { neon: 1 })])
-    const res = await get()
-    expect(res.json()).toEqual([{ tool: 'neon', count: 1, category: 'mcp' }])
+  it('lists every agent in a fixed order, zero-filling the ones with no row', async () => {
+    facet({ byAgent: [{ _id: 'copilot', tokens: 90, costMicros: 3 * USD }] })
+    expect((await get()).json().byAgent).toEqual([
+      { agent: 'claude', tokens: 0, costUsd: 0, isFreeTier: true },
+      { agent: 'qwen', tokens: 0, costUsd: 0, isFreeTier: true },
+      { agent: 'gemini', tokens: 0, costUsd: 0, isFreeTier: true },
+      { agent: 'codex', tokens: 0, costUsd: 0, isFreeTier: true },
+      { agent: 'copilot', tokens: 90, costUsd: 3, isFreeTier: false },
+    ])
   })
 
-  it('keeps the same key name separate across categories', async () => {
-    dbState.results.push([enrichmentRow({ git: 1 }, { git: 2 }, {})])
-    const res = await get()
-    expect(res.json()).toEqual(
-      expect.arrayContaining([
-        { tool: 'git', count: 1, category: 'tool' },
-        { tool: 'git', count: 2, category: 'shell' },
-      ]),
-    )
-    expect(res.json()).toHaveLength(2)
+  it('drops an agent name the shared union does not carry', async () => {
+    // A document written by a later build must not add a column to the page.
+    facet({ byAgent: [{ _id: 'mystery', tokens: 5, costMicros: USD }] })
+    expect((await get()).json().byAgent.map((a: { agent: string }) => a.agent)).toEqual([
+      'claude',
+      'qwen',
+      'gemini',
+      'codex',
+      'copilot',
+    ])
   })
 
-  it('tags each entry with the category of its own source column', async () => {
-    dbState.results.push([enrichmentRow({ bash: 1 }, { npx: 1 }, { playwright: 1 })])
-    const res = await get()
-    expect(res.json()).toEqual(
-      expect.arrayContaining([
-        { tool: 'bash', count: 1, category: 'tool' },
-        { tool: 'npx', count: 1, category: 'shell' },
-        { tool: 'playwright', count: 1, category: 'mcp' },
-      ]),
-    )
+  it('marks an agent that reported tokens at no cost as free tier', async () => {
+    facet({ byAgent: [{ _id: 'qwen', tokens: 280_000_000, costMicros: 0 }] })
+    const qwen = (await get()).json().byAgent.find((a: { agent: string }) => a.agent === 'qwen')
+    expect(qwen).toEqual({ agent: 'qwen', tokens: 280_000_000, costUsd: 0, isFreeTier: true })
   })
 
-  it('returns an empty array, not null, for zero matching rows', async () => {
-    dbState.results.push([])
+  it('derives the delta against the previous day the pipeline returned', async () => {
+    const url = `/v1/dashboard/overview?date=${DATE}`
+    facet({ previous: [{ costMicros: 10 * USD, tokens: 100, activeUsers: 1 }] })
+    expect((await get(url)).json().vsYesterday).toEqual({
+      costDelta: 2,
+      costPct: 20,
+      tokensDelta: 300,
+    })
+  })
+
+  it('reports 0 percent, not Infinity, when the previous day spent nothing', async () => {
+    const url = `/v1/dashboard/overview?date=${DATE}`
+    facet({ previous: [{ costMicros: 0, tokens: 0, activeUsers: 0 }] })
+    expect((await get(url)).json().vsYesterday).toMatchObject({ costDelta: 12, costPct: 0 })
+  })
+
+  it('asks for no previous day on a multi-day range, and reports a zero delta', async () => {
+    facet()
+    const res = await get(`/v1/dashboard/overview?from=2026-11-01&to=${DATE}`)
+    expect(res.json().vsYesterday).toEqual({ costDelta: 0, costPct: 0, tokensDelta: 0 })
+    expect(res.json().date).toBe(`2026-11-01 — ${DATE}`)
+    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [Record<string, never>[]]
+    expect(JSON.stringify(pipeline)).not.toContain('previous')
+  })
+
+  it('labels a single-day view with the bare date', async () => {
+    facet()
+    expect((await get(`/v1/dashboard/overview?date=${DATE}`)).json().date).toBe(DATE)
+  })
+})
+
+describe('GET /v1/dashboard/leaderboard', () => {
+  const url = range('/v1/dashboard/leaderboard')
+  const get = () => app.inject({ method: 'GET', url, headers: auth(token()) })
+
+  const seed = (over: Record<string, unknown> = {}) => {
+    dashboardAggregate('dailySnapshots', [
+      {
+        users: [{ _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 7 }],
+        agents: [],
+        everyone: [{ ids: [USER_A] }],
+        ...over,
+      },
+    ])
+    mongoState.docs.users = [{ _id: USER_A, name: 'Ada', email: 'ada@example.com' }]
+  }
+
+  it('renders a person with their totals in dollars', async () => {
+    seed()
+    expect((await get()).json()).toEqual([
+      expect.objectContaining({
+        userId: USER_A,
+        name: 'Ada',
+        email: 'ada@example.com',
+        totalCostUsd: 20,
+        totalTokens: 900,
+        sessions: 7,
+        cacheHitRate: null,
+      }),
+    ])
+  })
+
+  it('maps each agent onto its own field, zero-filling the ones with no row', async () => {
+    seed({
+      agents: [
+        { _id: { userId: USER_A, agent: 'claude' }, tokens: 800, costMicros: 19 * USD },
+        { _id: { userId: USER_A, agent: 'codex' }, tokens: 100, costMicros: USD },
+      ],
+    })
+    expect((await get()).json()[0]).toMatchObject({
+      claude: { tokens: 800, costUsd: 19 },
+      codex: { tokens: 100, costUsd: 1 },
+      qwen: { tokens: 0, costUsd: 0 },
+      gemini: { tokens: 0, costUsd: 0 },
+      copilot: { tokens: 0, costUsd: 0 },
+    })
+  })
+
+  it('never credits one person with another person agent totals', async () => {
+    seed({
+      agents: [
+        { _id: { userId: 'someone-else', agent: 'claude' }, tokens: 999, costMicros: 99 * USD },
+      ],
+    })
+    expect((await get()).json()[0].claude).toEqual({ tokens: 0, costUsd: 0 })
+  })
+
+  it('returns an empty array, and reads no users, when nobody spent anything', async () => {
+    dashboardAggregate('dailySnapshots', [])
+    const res = await get()
+    expect(res.json()).toEqual([])
+    expect(mongoCalls('users', 'find')).toEqual([])
+  })
+
+  it('fails loudly when a snapshot has no user document, naming the id it could not resolve', async () => {
+    // Postgres declared `daily_snapshots.user_id` NOT NULL with a cascading
+    // foreign key, so the inner join never dropped a row. MongoDB enforces
+    // nothing of the kind, and a leaderboard quietly missing people reads
+    // exactly like an org where nobody spent anything.
+    //
+    // Asserted on the thrown error, not on the 500 alone. Deleting the guard
+    // also produces a 500 — a TypeError off the undefined user, a line later —
+    // so a test that stopped at the status code would pass with the guard gone
+    // and keep passing the day someone "fixes" that crash with a `?? null`,
+    // which is the blank-name row the guard exists to refuse.
+    seed()
+    mongoState.docs.users = []
+    const logged = vi.spyOn(app.log, 'error')
+    const res = await get()
+    expect(res.statusCode).toBe(500)
+    const thrown = logged.mock.calls.at(-1)?.[0] as Error
+    expect(thrown?.message).toContain('no user document')
+    expect(thrown?.message).toContain(USER_A)
+  })
+
+  it('refuses the request for an unresolvable person who is not even on this page', async () => {
+    // The check runs over everyone in range, not the page, so the failure does
+    // not move depending on which page was asked for. Looking it up per page
+    // made an orphan that sorted onto page 0 fail page 0 and leave page 1
+    // answering 200 — an integrity failure you could page past.
+    seed({ everyone: [{ ids: [USER_A, '99999999-9999-4999-8999-999999999999'] }] })
+    const logged = vi.spyOn(app.log, 'error')
+    const res = await get()
+    expect(res.statusCode).toBe(500)
+    expect((logged.mock.calls.at(-1)?.[0] as Error)?.message).toContain('99999999')
+  })
+
+  it('scopes the user lookup to the caller org', async () => {
+    seed()
+    await get()
+    expect(mongoCalls('users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+  })
+
+  it('looks up everyone in range, not just the page it is about to render', async () => {
+    seed({ everyone: [{ ids: [USER_A, 'someone-on-page-two'] }] })
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada', email: 'ada@example.com' },
+      { _id: 'someone-on-page-two', name: 'Bo', email: 'bo@example.com' },
+    ]
+    await get()
+    expect(mongoCalls('users', 'find')[0][0]).toMatchObject({
+      _id: { $in: [USER_A, 'someone-on-page-two'] },
+    })
+  })
+
+  it('passes the paging window to the database, not to node', async () => {
+    seed()
+    await app.inject({
+      method: 'GET',
+      url: `/v1/dashboard/leaderboard?date=${DATE}&limit=5&offset=10`,
+      headers: auth(token()),
+    })
+    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [Record<string, never>[]]
+    const rendered = JSON.stringify(pipeline)
+    expect(rendered).toContain('"$limit":5')
+    expect(rendered).toContain('"$skip":10')
+  })
+})
+
+describe('GET /v1/dashboard/trends', () => {
+  const url = range('/v1/dashboard/trends')
+  const get = () => app.inject({ method: 'GET', url, headers: auth(token()) })
+
+  const seed = (over: Record<string, unknown> = {}) =>
+    dashboardAggregate('dailySnapshots', [
+      {
+        days: [{ _id: DATE, totalCostMicros: 9 * USD, totalTokens: 500 }],
+        agents: [],
+        ...over,
+      },
+    ])
+
+  it('renders one point per day, in dollars', async () => {
+    seed()
+    expect((await get()).json()).toEqual([
+      expect.objectContaining({ date: DATE, totalCost: 9, totalTokens: 500 }),
+    ])
+  })
+
+  it('keeps the order the pipeline sorted the days into', async () => {
+    seed({
+      days: [
+        { _id: '2026-11-04', totalCostMicros: USD, totalTokens: 1 },
+        { _id: DATE, totalCostMicros: 2 * USD, totalTokens: 2 },
+      ],
+    })
+    expect((await get()).json().map((p: { date: string }) => p.date)).toEqual(['2026-11-04', DATE])
+  })
+
+  it('maps each agent cost onto its own series, zero-filling the silent ones', async () => {
+    seed({
+      agents: [
+        { _id: { date: DATE, agent: 'claude' }, tokens: 400, costMicros: 8 * USD },
+        { _id: { date: DATE, agent: 'gemini' }, tokens: 100, costMicros: USD },
+      ],
+    })
+    expect((await get()).json()[0]).toMatchObject({
+      claudeCost: 8,
+      claudeTokens: 400,
+      geminiCost: 1,
+      qwenCost: 0,
+      qwenTokens: 0,
+      codexCost: 0,
+      copilotCost: 0,
+    })
+  })
+
+  it('never credits one day with another day agent totals', async () => {
+    seed({ agents: [{ _id: { date: '2026-01-01', agent: 'claude' }, tokens: 9, costMicros: USD }] })
+    expect((await get()).json()[0]).toMatchObject({ claudeCost: 0, claudeTokens: 0 })
+  })
+
+  it('returns an empty array, not null, for a range with no snapshots', async () => {
+    dashboardAggregate('dailySnapshots', [])
+    expect((await get()).json()).toEqual([])
+  })
+
+  // `days` is the branch the dashboard's own links use, and the shared `range()`
+  // helper every other case here goes through sends `from`+`to`, so until this
+  // was written the whole else-branch computing the window was never executed
+  // by the suite. A sign flip there asks for the next N days and always answers
+  // with an empty chart — which looks exactly like a quiet month.
+  const windowOf = () => {
+    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [Record<string, never>[]]
+    return (pipeline[0] as unknown as { $match: { date: { $gte: string; $lte: string } } }).$match
+      .date
+  }
+
+  it.each([7, 30, 90])('derives a %i-day window backwards from today', async (days) => {
+    await app.inject({
+      method: 'GET',
+      url: `/v1/dashboard/trends?days=${days}`,
+      headers: auth(token()),
+    })
+    expect(windowOf()).toEqual({ $gte: daysBefore(today(), days), $lte: today() })
+  })
+
+  it('answers 400, rather than picking a window, when the request names none', async () => {
+    // Worth pinning next to the cases above: the handler carries a `?? 30`
+    // that looks like a default and is unreachable, because the schema refines
+    // to `days || (from && to)`. Anyone reading the handler alone would take
+    // that fallback for live behaviour and test it.
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/dashboard/trends',
+      headers: auth(token()),
+    })
+    expect(res.statusCode).toBe(400)
+    expect(mongoCalls('dailySnapshots', 'aggregate')).toEqual([])
+  })
+})
+
+describe('GET /v1/dashboard/activity', () => {
+  const get = () =>
+    app.inject({ method: 'GET', url: range('/v1/dashboard/activity'), headers: auth(token()) })
+
+  it('hands back the rows the aggregate produced, unchanged', async () => {
+    // The pipeline already emits `ToolUsageSummary`. There is nothing left for
+    // the handler to fold, which is the whole point of the move.
+    dashboardAggregate('claudeEnrichment', [
+      { tool: 'bash', count: 8, category: 'tool' },
+      { tool: 'git', count: 2, category: 'shell' },
+      { tool: 'playwright', count: 1, category: 'mcp' },
+    ])
+    expect((await get()).json()).toEqual([
+      { tool: 'bash', count: 8, category: 'tool' },
+      { tool: 'git', count: 2, category: 'shell' },
+      { tool: 'playwright', count: 1, category: 'mcp' },
+    ])
+  })
+
+  it('does not re-sum in node what the database already grouped', async () => {
+    // Two rows carrying one tool name would mean the `$group` key is wrong;
+    // folding them here would hide that behind a plausible-looking total.
+    dashboardAggregate('claudeEnrichment', [
+      { tool: 'bash', count: 5, category: 'tool' },
+      { tool: 'bash', count: 3, category: 'tool' },
+    ])
+    expect((await get()).json()).toHaveLength(2)
+  })
+
+  it('reads the enrichment collection, not the snapshots', async () => {
+    await get()
+    expect(mongoCalls('claudeEnrichment', 'aggregate')).toHaveLength(1)
+    expect(mongoCalls('dailySnapshots', 'aggregate')).toEqual([])
+  })
+
+  it('returns an empty array, not null, for zero matching documents', async () => {
+    dashboardAggregate('claudeEnrichment', [])
     const res = await get()
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([])
   })
 })
 
-describe('GET /v1/dashboard/projects — merge behaviour', () => {
-  const projectsUrl = () => range('/v1/dashboard/projects')
-  const get = () => app.inject({ method: 'GET', url: projectsUrl(), headers: auth(token()) })
-  const project = (over: Partial<ProjectEntry> = {}): ProjectEntry => ({
-    path: 'acme/widgets',
-    cost: 10,
-    sessions: 4,
-    avgPerSession: 2.5, // characterized: read off the merged entry, never used downstream
-    overheadK: 0,
-    ...over,
-  })
-  const enrichmentRow = (
-    projects: ProjectEntry[] | null | undefined,
-    userId = 'user-1',
-  ) => ({ userId, projectBreakdown: projects })
+describe('GET /v1/dashboard/projects', () => {
+  const get = () =>
+    app.inject({ method: 'GET', url: range('/v1/dashboard/projects'), headers: auth(token()) })
 
-  it('sums cost and sessions across rows sharing a path', async () => {
-    dbState.results.push([
-      enrichmentRow([project({ cost: 10, sessions: 4 })]),
-      enrichmentRow([project({ cost: 5, sessions: 3 })]),
+  const totals = (over: Record<string, unknown> = {}) =>
+    dashboardAggregate('claudeEnrichment', [
+      { path: 'acme/widgets', totalCost: 15, totalSessions: 6, userCount: 2, ...over },
     ])
-    const res = await get()
-    expect(res.json()).toEqual([
-      expect.objectContaining({ path: 'acme/widgets', totalCost: 15, totalSessions: 7 }),
+
+  it('passes the folded figures through and adds the derived average', async () => {
+    totals()
+    expect((await get()).json()).toEqual([
+      {
+        path: 'acme/widgets',
+        totalCost: 15,
+        totalSessions: 6,
+        userCount: 2,
+        avgCostPerSession: 2.5,
+      },
     ])
   })
 
   it('derives avgCostPerSession as totalCost divided by totalSessions', async () => {
-    dbState.results.push([enrichmentRow([project({ path: 'acme/uneven', cost: 10, sessions: 3 })])])
-    const res = await get()
-    expect(res.json()[0].avgCostPerSession).toBeCloseTo(10 / 3)
+    totals({ path: 'acme/uneven', totalCost: 10, totalSessions: 3 })
+    expect((await get()).json()[0].avgCostPerSession).toBeCloseTo(10 / 3)
   })
 
   it('yields avgCostPerSession 0, not NaN or Infinity, when totalSessions is 0', async () => {
-    dbState.results.push([enrichmentRow([project({ path: 'acme/free', cost: 7, sessions: 0 })])])
-    const res = await get()
-    expect(res.json()[0]).toMatchObject({ totalSessions: 0, avgCostPerSession: 0 })
+    // The guard is why this one field stayed in node: `$divide` by zero errors
+    // the whole stage, taking every other project down with it.
+    totals({ path: 'acme/free', totalCost: 7, totalSessions: 0 })
+    expect((await get()).json()[0]).toMatchObject({ totalSessions: 0, avgCostPerSession: 0 })
   })
 
-  it('treats a null or absent project_breakdown as contributing nothing', async () => {
-    dbState.results.push([
-      enrichmentRow(null),
-      enrichmentRow(undefined),
-      enrichmentRow([project({ path: 'acme/widgets' })]),
+  it('does not re-fold in node what the database already grouped', async () => {
+    // Two rows on one path would mean the `$group` key is wrong; folding them
+    // here would hide that behind a plausible-looking total.
+    dashboardAggregate('claudeEnrichment', [
+      { path: 'acme/widgets', totalCost: 10, totalSessions: 4, userCount: 1 },
+      { path: 'acme/widgets', totalCost: 5, totalSessions: 2, userCount: 1 },
     ])
-    const res = await get()
-    expect(res.json()).toHaveLength(1)
-    expect(res.json()[0].path).toBe('acme/widgets')
+    expect((await get()).json()).toHaveLength(2)
   })
 
-  it('treats an empty array as contributing nothing', async () => {
-    dbState.results.push([enrichmentRow([])])
-    const res = await get()
-    expect(res.json()).toEqual([])
+  it('reads the enrichment collection, not the snapshots', async () => {
+    await get()
+    expect(mongoCalls('claudeEnrichment', 'aggregate')).toHaveLength(1)
+    expect(mongoCalls('dailySnapshots', 'aggregate')).toEqual([])
   })
 
-  it('counts one user once however many days they worked on the project', async () => {
-    // There is one enrichment row per user per day, so a row count is a count
-    // of user-days. The column is headed "Users" on the dashboard.
-    dbState.results.push([
-      enrichmentRow([project({ path: 'acme/widgets' })], 'user-1'), // 2026-11-04
-      enrichmentRow([project({ path: 'acme/widgets' })], 'user-1'), // 2026-11-05
-    ])
-    const res = await get()
-    expect(res.json()[0]).toMatchObject({ path: 'acme/widgets', userCount: 1 })
-  })
-
-  it('counts two different people on one project as two', async () => {
-    dbState.results.push([
-      enrichmentRow([project({ path: 'acme/widgets' })], 'user-1'),
-      enrichmentRow([project({ path: 'acme/widgets' })], 'user-2'),
-    ])
-    const res = await get()
-    expect(res.json()[0]).toMatchObject({ path: 'acme/widgets', userCount: 2 })
-  })
-
-  it('counts a user on each project they touch, not only the first', async () => {
-    dbState.results.push([
-      enrichmentRow(
-        [project({ path: 'acme/widgets' }), project({ path: 'acme/gadgets' })],
-        'user-1',
-      ),
-    ])
-    const res = await get()
-    expect(res.json()).toEqual([
-      expect.objectContaining({ path: 'acme/widgets', userCount: 1 }),
-      expect.objectContaining({ path: 'acme/gadgets', userCount: 1 }),
-    ])
+  it('returns an empty array, not null, for zero matching documents', async () => {
+    dashboardAggregate('claudeEnrichment', [])
+    expect((await get()).json()).toEqual([])
   })
 })
 /** Whole micro-dollars in one dollar, for tests that read in dollars. */
@@ -1936,27 +2216,26 @@ describe('GET /health', () => {
   })
 
   /**
-   * Phase 2 lands before Phase 0 provisions Atlas, and no request path reads
-   * Mongo yet — getStore has no callers outside its own module. An unset
-   * MONGODB_URI is therefore an absent dependency, not a broken one, and
-   * reporting it down would hold the documented deploy gate red over a
-   * database nothing touches. Verified against the preview deployment: with
-   * the variable unset the route answered 503 {"failed":["mongo","mongoSchema"]}
-   * while production on Postgres answered 200.
+   * The inverse of the case that stood here through Phases 2 and 3, which
+   * asserted that both MongoDB checks are skipped when MONGODB_URI is unset.
    *
-   * Both mocks are armed to fail here, so deleting the guard in build-server
-   * turns this case red rather than leaving it quietly meaningless. Phase 8
-   * makes the variable required and deletes both the guard and this test.
+   * That was right while nothing in a request path read Mongo. It stopped
+   * being right at Phase 3, and Phase 4 made it acute: fifteen handlers call
+   * getStore(), which throws outright when the variable is unset. Checked
+   * against the branch preview, where the variable is set in no environment —
+   * /health answered 200 {"ok":true} while all five dashboard routes answered
+   * 500. The endpoint was certifying a deployment that could not serve a page.
+   *
+   * Both mocks are left healthy, so the only thing that can fail this case is
+   * the missing variable itself.
    */
-  it('skips both MongoDB checks when MONGODB_URI is unset', async () => {
+  it('reports mongo down when MONGODB_URI is unset, because handlers need it', async () => {
     delete process.env.MONGODB_URI
     schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
-    mongoState.pingFails = true
-    mongoState.schemaFails = true
 
     const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ ok: true })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, failed: ['mongo', 'mongoSchema'] })
   })
 })
 

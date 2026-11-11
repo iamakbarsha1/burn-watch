@@ -92,16 +92,25 @@ export function configureServer(server: FastifyInstance): FastifyInstance {
       ['database', server.db.execute(sql`select 1`)],
       ['schema', assertSchemaCurrent(server.db)],
     ]
-    // Guarded until Phase 0 provisions Atlas. Nothing in a request path reads
-    // Mongo yet — getStore has no callers outside its own module — so an
-    // unset MONGODB_URI is an absent dependency rather than a broken one, and
-    // reporting it down would take the deploy gate red for a database no
-    // request touches. Set the variable and both checks apply in full: a
-    // reachable but drifted cluster still answers 503. Phase 8 makes the
-    // variable required and deletes this guard.
-    if (process.env.MONGODB_URI) {
-      checked.push(['mongo', pingDb()], ['mongoSchema', assertMongoSchemaCurrent()])
-    }
+    // Unguarded since Phase 4. The guard that stood here skipped both checks
+    // when MONGODB_URI was unset, on the stated grounds that "nothing in a
+    // request path reads Mongo yet — getStore has no callers outside its own
+    // module". That was true when it was written and stopped being true at
+    // Phase 3. Fifteen handlers call getStore() now, across usage submit, the
+    // Copilot integration and every dashboard route, and getStore throws
+    // outright when the variable is unset.
+    //
+    // So the guard had inverted this endpoint's one job. Verified against the
+    // branch preview, where MONGODB_URI is set in no environment: /health
+    // answered 200 {"ok":true} while all five dashboard routes answered 500.
+    // An uptime monitor watching that deployment would have reported a
+    // dashboard that cannot serve a single page as healthy — the exact failure
+    // the comment above describes this endpoint as existing to prevent.
+    //
+    // An absent dependency and a broken one are the same thing once something
+    // depends on it. Phase 8 makes the variable required at boot, which is
+    // what finally makes this check redundant rather than merely honest.
+    checked.push(['mongo', pingDb()], ['mongoSchema', assertMongoSchemaCurrent()])
 
     const checks = await Promise.allSettled(checked.map(([, promise]) => promise))
     const failed = checked.filter((_pair, i) => checks[i].status === 'rejected').map(([name]) => name)
