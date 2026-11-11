@@ -141,10 +141,17 @@ vi.mock('@burn-watch/db', async (importOriginal) => {
     ...real,
     getStore: () => store,
     runInTxn: fakeRunInTxn(mongoState, store),
+    // Both model the one thing the real pair does before anything else: they
+    // default to `getDb()`, which resolves a client from MONGODB_URI and
+    // throws when it is unset. Leaving that out would make the fakes healthier
+    // than the code they stand in for, and `/health` is the one route whose
+    // whole value is not being healthier than what it reports on.
     pingDb: async () => {
+      if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not set')
       if (mongoState.pingFails) throw new Error('connect ECONNREFUSED mongo.example:27017')
     },
     assertSchemaCurrent: async () => {
+      if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not set')
       if (mongoState.schemaFails) {
         throw new Error('MongoDB schema drift.\n  missing indexes: usageEvents.usageEvents_key')
       }
@@ -2149,27 +2156,26 @@ describe('GET /health', () => {
   })
 
   /**
-   * Phase 2 lands before Phase 0 provisions Atlas, and no request path reads
-   * Mongo yet — getStore has no callers outside its own module. An unset
-   * MONGODB_URI is therefore an absent dependency, not a broken one, and
-   * reporting it down would hold the documented deploy gate red over a
-   * database nothing touches. Verified against the preview deployment: with
-   * the variable unset the route answered 503 {"failed":["mongo","mongoSchema"]}
-   * while production on Postgres answered 200.
+   * The inverse of the case that stood here through Phases 2 and 3, which
+   * asserted that both MongoDB checks are skipped when MONGODB_URI is unset.
    *
-   * Both mocks are armed to fail here, so deleting the guard in build-server
-   * turns this case red rather than leaving it quietly meaningless. Phase 8
-   * makes the variable required and deletes both the guard and this test.
+   * That was right while nothing in a request path read Mongo. It stopped
+   * being right at Phase 3, and Phase 4 made it acute: fifteen handlers call
+   * getStore(), which throws outright when the variable is unset. Checked
+   * against the branch preview, where the variable is set in no environment —
+   * /health answered 200 {"ok":true} while all five dashboard routes answered
+   * 500. The endpoint was certifying a deployment that could not serve a page.
+   *
+   * Both mocks are left healthy, so the only thing that can fail this case is
+   * the missing variable itself.
    */
-  it('skips both MongoDB checks when MONGODB_URI is unset', async () => {
+  it('reports mongo down when MONGODB_URI is unset, because handlers need it', async () => {
     delete process.env.MONGODB_URI
     schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
-    mongoState.pingFails = true
-    mongoState.schemaFails = true
 
     const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ ok: true })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, failed: ['mongo', 'mongoSchema'] })
   })
 })
 
