@@ -619,6 +619,31 @@ describe('GET /v1/dashboard/budget-alerts', () => {
     const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
     expect(row).toMatchObject({ userId: USER_A, userName: null })
   })
+
+  /**
+   * PATCH accepts a userId without checking its org, where POST checks, so an
+   * alert in this org can carry another org's user id. The name lookup must
+   * not resolve it. Asserted on the filter because the fake answers every read
+   * from what the test seeded, so the response alone cannot show the scope.
+   */
+  it('scopes the user name lookup to the caller org', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A })]
+    spend(0)
+
+    await get(auth(token({ orgId: ORG_A })))
+
+    expect(mongoCalls('users', 'find')[0][0]).toEqual({ _id: { $in: [USER_A] }, orgId: ORG_A })
+  })
+
+  it('reads month-to-date spend for the caller org and the alert scope only', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A, agent: 'claude' })]
+    spend(0)
+
+    await get(auth(token({ orgId: ORG_A })))
+
+    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [{ $match?: unknown }[]]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: USER_A })
+  })
 })
 
 describe('POST /v1/dashboard/budget-alerts', () => {
@@ -863,17 +888,22 @@ describe('POST /v1/usage', () => {
     expect(mongoCalls('usageEvents', 'find')).toHaveLength(0)
   })
 
-  it('touches the device so lastSeenAt tracks the sync', async () => {
+  /**
+   * Held on Postgres on purpose. routes/auth/device.ts reads `last_seen_at`
+   * back for the admin and devices pages and does not move until Phase 5, so
+   * writing it to Mongo now would put it in a store nothing reads and freeze
+   * both pages at whatever Postgres last recorded.
+   */
+  it('touches the device on Postgres, where the pages that read it still look', async () => {
     liveDeviceToken()
     knownUser()
     await submit()
 
-    const [filter, update] = mongoCalls('devices', 'updateOne')[0] as [
-      Record<string, unknown>,
-      { $set: { lastSeenAt: unknown } },
-    ]
-    expect(filter).toEqual({ _id: DEVICE_A })
-    expect(update.$set.lastSeenAt).toBeInstanceOf(Date)
+    const touch = dbState.calls.find(
+      (c) => c.op === 'set' && c.arg !== null && typeof c.arg === 'object' && 'lastSeenAt' in c.arg,
+    )
+    expect((touch?.arg as { lastSeenAt: unknown })?.lastSeenAt).toBeInstanceOf(Date)
+    expect(mongoCalls('devices', 'updateOne')).toHaveLength(0)
   })
 
   it('runs every write inside one transaction', async () => {
@@ -887,7 +917,6 @@ describe('POST /v1/usage', () => {
     const opened = ops.indexOf('.transaction')
     expect(opened).toBeGreaterThanOrEqual(0)
     expect(opened).toBeLessThan(ops.indexOf('usageEvents.bulkWrite'))
-    expect(opened).toBeLessThan(ops.indexOf('devices.updateOne'))
     expect(opened).toBeLessThan(ops.indexOf('dailySnapshots.updateOne'))
     expect(ops).not.toContain('.rollback')
   })
@@ -907,7 +936,50 @@ describe('POST /v1/usage', () => {
     const counters = (mongoCalls('dailySnapshots', 'updateOne') as [unknown, { $set: Record<string, unknown> }][])
       .map(([, update]) => update.$set)
       .find((set) => 'callCount' in set)
-    expect(counters).toEqual({ callCount: 31, sessionCount: 4, cacheHitRate: 92.1 })
+    expect(counters).toEqual({
+      callCount: 31,
+      sessionCount: 4,
+      cacheHitRate: 92.1,
+      // Both writes set it: it records when the document was last written, so
+      // an enrichment that moves three counters and leaves it alone would be
+      // lying about its own freshness.
+      updatedAt: expect.any(Date),
+    })
+  })
+
+  /**
+   * The enrichment keys the snapshot off the date the rest of the transaction
+   * is using, never `enrichment.date` — the schema validates the two
+   * separately and does not require them to agree. Taking the client's would
+   * create a snapshot document for a day no rebuild ever runs against, and
+   * overwrite that day's counters if one already existed.
+   */
+  it('keys the enrichment off the submission date, not the one inside the enrichment', async () => {
+    liveDeviceToken()
+    knownUser()
+    await submit({ ...payload, enrichment: { ...enrichment, date: '2026-03-17' } })
+
+    for (const collection of ['claudeEnrichment', 'dailySnapshots']) {
+      for (const [filter] of mongoCalls(collection, 'updateOne') as [{ _id: string }][]) {
+        expect(filter._id).toBe(`${USER_A}:${DATE}`)
+      }
+    }
+  })
+
+  /**
+   * `users` is read by the rebuild to learn the org, and nothing populates
+   * that collection yet. A guard that returned quietly would answer
+   * `{accepted: 1}` for a submission whose snapshot was never written and
+   * whose budget alerts can never trip.
+   */
+  it('fails the request, and rolls back, when the user is absent from the store', async () => {
+    liveDeviceToken()
+    mongoState.docs.users = []
+
+    const res = await submit()
+
+    expect(res.statusCode).toBe(500)
+    expect(mongoState.calls.map((c) => c.op)).toContain('rollback')
   })
 
   it('rolls back and fails the request when the snapshot rebuild throws', async () => {
@@ -1525,7 +1597,9 @@ describe('device token revocation', () => {
 
   it('lets a device with a live token row through', async () => {
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }])
+    // The rebuild reads the user to learn the org and aborts the transaction
+    // when it is absent, so a submission that is meant to reach 200 needs one.
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
 
     const res = await submit()
 
@@ -1546,7 +1620,7 @@ describe('device token revocation', () => {
     // refreshing device on day 31. Expiry is the JWT `exp` claim's job, and
     // accessJwtVerify has already checked it by the time this runs.
     liveDeviceToken()
-    dbState.results.push([{ id: 'event-1' }])
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
 
     const res = await submit()
 

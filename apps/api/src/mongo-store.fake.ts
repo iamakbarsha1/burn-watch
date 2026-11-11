@@ -53,8 +53,14 @@ export function fakeStore(state: MongoFakeState, collections: string[]): Store {
       aggregate: async (...args: unknown[]) =>
         (record('aggregate', args), state.aggregates[collection] ?? []),
       insertOne: async (...args: unknown[]) => record('insertOne', args),
-      updateOne: async (...args: unknown[]) => (record('updateOne', args), { matchedCount: 1 }),
-      updateMany: async (...args: unknown[]) => (record('updateMany', args), { matchedCount: 1 }),
+      // matchedCount follows what the test seeded. An unconditional 1 made a
+      // write that matched nothing indistinguishable from one that landed,
+      // which is precisely the failure a caller checking matchedCount exists
+      // to catch.
+      updateOne: async (...args: unknown[]) =>
+        (record('updateOne', args), { matchedCount: seeded().length > 0 ? 1 : 0 }),
+      updateMany: async (...args: unknown[]) =>
+        (record('updateMany', args), { matchedCount: seeded().length }),
       findOneAndUpdate: async (...args: unknown[]) =>
         (record('findOneAndUpdate', args), seeded()[0] ?? null),
       bulkWrite: async (...args: unknown[]) => (record('bulkWrite', args), state.bulk),

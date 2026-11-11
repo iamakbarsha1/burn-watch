@@ -57,6 +57,26 @@ describe('evaluateBudgetAlerts', () => {
     expect(reads()[0][0]).toEqual({ orgId: ORG, $or: [{ userId: null }, { userId: USER }] })
   })
 
+  /**
+   * The spend an alert is judged against has to be its own org's. The fake
+   * answers the aggregation from a canned row, so this asserts the `$match`
+   * the pipeline carries rather than the figure it returns — a dropped `orgId`
+   * is invisible in the number and plain in the filter.
+   */
+  it('judges the alert against its own org-s spend and its own scope', async () => {
+    const state: MongoFakeState = {
+      docs: { budgetAlerts: [alert({ userId: USER, agent: 'claude' })] },
+      aggregates: { dailySnapshots: [{ _id: null, spend: 0 }] },
+      calls: [],
+      failOn: null,
+      bulk: { upsertedCount: 0, matchedCount: 0 },
+    }
+    await evaluateBudgetAlerts(fakeStore(state, Object.keys(COLLECTIONS)), ORG, USER, DATE)
+
+    const [pipeline] = callsTo(state, 'dailySnapshots', 'aggregate')[0] as [{ $match?: unknown }[]]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG, userId: USER })
+  })
+
   // The ticket's boundary case: a $100 limit at threshold 1 (100%) must trip
   // the instant spend reaches $100, not only after it passes it. Flipping the
   // service's `>=` to `>` makes this go red.
