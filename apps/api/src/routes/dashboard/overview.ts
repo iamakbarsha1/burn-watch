@@ -1,94 +1,187 @@
 import type { FastifyInstance } from 'fastify'
-import { eq, and, sum, sql, countDistinct, gte, lte } from 'drizzle-orm'
-import { dailySnapshots } from '../../../drizzle/schema.js'
+import type { Document } from 'mongodb'
+import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId } from '@burn-watch/db'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
 import { dateQuerySchema as QuerySchema } from './query-schema.js'
 
-export async function overviewRoutes(fastify: FastifyInstance) {
-  fastify.get(
-    '/overview',
-    async (request, reply) => {
-      const orgId = request.user.orgId
-      const parsed = QuerySchema.safeParse(request.query)
-      if (!parsed.success) {
-        return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
-      }
-      const fromDate = parsed.data.date ?? parsed.data.from!
-      const toDate = parsed.data.date ?? parsed.data.to!
-      const isRange = fromDate !== toDate
+/**
+ * Every agent the response lists, in render order.
+ *
+ * `satisfies Record<AgentName, 0>` is doing the work the five spelled-out
+ * column lists used to: an agent added to the shared union is a compile error
+ * here, and a name that is not in the union is one too. The previous version
+ * built the Postgres column names by interpolating the agent name, which needed
+ * two stacked assertions and turned the type checker off across the whole
+ * fan-out — renaming a snapshot column compiled fine and returned undefined.
+ */
+const AGENTS = Object.keys({
+  claude: 0,
+  qwen: 0,
+  gemini: 0,
+  codex: 0,
+  copilot: 0,
+} satisfies Record<AgentName, 0>) as AgentName[]
 
-      const [today] = await db_aggregate(fastify, orgId, fromDate, toDate)
-
-      const todayCost = today?.totalCost ?? 0
-      const todayTokens = today?.totalTokens ?? 0
-
-      // Only compute delta for single-day views
-      let vsYesterday: { costDelta: number; costPct: number; tokensDelta: number } | null = null
-      if (!isRange) {
-        const yesterday = new Date(fromDate)
-        yesterday.setDate(yesterday.getDate() - 1)
-        const yesterdayStr = yesterday.toISOString().slice(0, 10)
-        const [yest] = await db_aggregate(fastify, orgId, yesterdayStr, yesterdayStr)
-        const yesterdayCost = yest?.totalCost ?? 0
-        const costDelta = todayCost - yesterdayCost
-        vsYesterday = {
-          costDelta,
-          costPct: yesterdayCost > 0 ? (costDelta / yesterdayCost) * 100 : 0,
-          tokensDelta: todayTokens - (yest?.totalTokens ?? 0),
-        }
-      }
-
-      // Spelled out one agent at a time rather than building the column names
-      // from the agent name. The string-built version needed two stacked
-      // assertions, which turned the type checker off across the whole fan-out:
-      // renaming a snapshot column compiled fine and returned undefined.
-      const agentTotals: { agent: AgentName; tokens: number; costUsd: number }[] = [
-        { agent: 'claude', tokens: today?.claudeTokens ?? 0, costUsd: today?.claudeCost ?? 0 },
-        { agent: 'qwen', tokens: today?.qwenTokens ?? 0, costUsd: today?.qwenCost ?? 0 },
-        { agent: 'gemini', tokens: today?.geminiTokens ?? 0, costUsd: today?.geminiCost ?? 0 },
-        { agent: 'codex', tokens: today?.codexTokens ?? 0, costUsd: today?.codexCost ?? 0 },
-        { agent: 'copilot', tokens: today?.copilotTokens ?? 0, costUsd: today?.copilotCost ?? 0 },
-      ]
-      const byAgent: AgentSummary[] = agentTotals.map((row) => ({
-        ...row,
-        isFreeTier: row.costUsd === 0,
-      }))
-
-      const result: OverviewResponse = {
-        date: isRange ? `${fromDate} — ${toDate}` : fromDate,
-        totalCostUsd: todayCost,
-        totalTokens: todayTokens,
-        activeUsers: today?.activeUsers ?? 0,
-        vsYesterday: vsYesterday ?? { costDelta: 0, costPct: 0, tokensDelta: 0 },
-        byAgent,
-      }
-
-      return result
-    },
-  )
+interface Totals {
+  costMicros: Micros
+  tokens: number
+  activeUsers: number
 }
 
-async function db_aggregate(fastify: FastifyInstance, orgId: string, fromDate: string, toDate: string) {
-  return fastify.db
-    .select({
-      totalCost: sum(dailySnapshots.totalCostUsd).mapWith(Number),
-      totalTokens: sum(dailySnapshots.totalTokens).mapWith(Number),
-      // daily_snapshots holds one row per user per day, so a plain count() here
-      // counted rows and called them people: a single developer across 63 days
-      // reported "63 active users" on a dashboard whose whole job is telling an
-      // org how many of its developers are actually using AI.
-      activeUsers: countDistinct(dailySnapshots.userId),
-      claudeTokens: sum(dailySnapshots.claudeTokens).mapWith(Number),
-      claudeCost: sum(dailySnapshots.claudeCostUsd).mapWith(Number),
-      qwenTokens: sum(dailySnapshots.qwenTokens).mapWith(Number),
-      qwenCost: sum(dailySnapshots.qwenCostUsd).mapWith(Number),
-      geminiTokens: sum(dailySnapshots.geminiTokens).mapWith(Number),
-      geminiCost: sum(dailySnapshots.geminiCostUsd).mapWith(Number),
-      codexTokens: sum(dailySnapshots.codexTokens).mapWith(Number),
-      codexCost: sum(dailySnapshots.codexCostUsd).mapWith(Number),
-      copilotTokens: sum(dailySnapshots.copilotTokens).mapWith(Number),
-      copilotCost: sum(dailySnapshots.copilotCostUsd).mapWith(Number),
+/** One `byAgent` key, summed across the range. `_id` is the agent name. */
+interface AgentRow {
+  _id: string
+  tokens: number
+  costMicros: Micros
+}
+
+interface OverviewFacet {
+  totals: Totals[]
+  byAgent: AgentRow[]
+  /** Absent unless the request asked for a single day. */
+  previous?: Totals[]
+}
+
+const EMPTY: Totals = { costMicros: 0 as Micros, tokens: 0, activeUsers: 0 }
+
+/**
+ * The calendar day before `date`, in UTC and nothing else.
+ *
+ * The version this replaces parsed the date with `new Date(fromDate)` — UTC
+ * midnight — and then stepped it with `setDate(getDate() - 1)`, which reads and
+ * writes in the server's local time. In a fixed-offset zone the two cancel out
+ * and the answer is right; what they do not survive is a DST transition between
+ * the two days, where `setDate` holds the local clock still while the offset
+ * underneath it moves and the resulting instant can land on either side of UTC
+ * midnight.
+ *
+ * Subtracting a fixed 86,400,000ms from a UTC timestamp consults no offset at
+ * all, and `Date.UTC` still does the calendar arithmetic across month, year and
+ * leap-day ends.
+ */
+export function dayBefore(date: IsoDate): IsoDate {
+  const [year, month, day] = date.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day) - 86_400_000).toISOString().slice(0, 10) as IsoDate
+}
+
+/**
+ * One round trip for the whole page: the range's totals, its per-agent split,
+ * and — for a single-day view — the previous day's totals for the delta.
+ *
+ * A `$facet` rather than two `aggregate` calls. The outer `$match` spans both
+ * windows so `dailySnapshots_org_date` narrows the scan once, and each branch
+ * re-filters the days it owns.
+ *
+ * The per-agent branch never names an agent. `byAgent` is a map on the
+ * document, so `$objectToArray` turns it into rows and the `$group` sums
+ * whatever keys are there — which is how ten hand-written per-agent column sums
+ * become four lines that cannot fall out of step with the schema. An agent
+ * written by an older build still totals correctly here; it is dropped at the
+ * `AGENTS` map below, where Postgres' fixed columns dropped it too.
+ */
+export function overviewPipeline(
+  orgId: OrgId,
+  from: IsoDate,
+  to: IsoDate,
+  previous: IsoDate | null,
+): Document[] {
+  const span = (lo: IsoDate, hi: IsoDate): Document => ({ $match: { date: { $gte: lo, $lte: hi } } })
+
+  const totals = (lo: IsoDate, hi: IsoDate): Document[] => [
+    span(lo, hi),
+    {
+      $group: {
+        _id: null,
+        costMicros: { $sum: '$totalCostMicros' },
+        tokens: { $sum: '$totalTokens' },
+        // `$addToSet`, never `$sum: 1`. dailySnapshots holds one document per
+        // user per day, so counting documents over a range counts user-days and
+        // calls them people: one developer with 63 days of history reported
+        // "63 active users" on the page whose stated job is telling an org how
+        // many of its developers actually use AI.
+        users: { $addToSet: '$userId' },
+      },
+    },
+    { $project: { _id: 0, costMicros: 1, tokens: 1, activeUsers: { $size: '$users' } } },
+  ]
+
+  const facet: Document = {
+    totals: totals(from, to),
+    byAgent: [
+      span(from, to),
+      // `$ifNull` so a snapshot written before any agent reported still
+      // contributes its row rather than erroring the stage.
+      { $project: { entries: { $objectToArray: { $ifNull: ['$byAgent', {}] } } } },
+      { $unwind: '$entries' },
+      {
+        $group: {
+          _id: '$entries.k',
+          tokens: { $sum: '$entries.v.tokens' },
+          costMicros: { $sum: '$entries.v.costMicros' },
+        },
+      },
+    ],
+  }
+  if (previous) facet.previous = totals(previous, previous)
+
+  const start = previous && previous < from ? previous : from
+  return [{ $match: { orgId, date: { $gte: start, $lte: to } } }, { $facet: facet }]
+}
+
+export async function overviewRoutes(fastify: FastifyInstance) {
+  fastify.get('/overview', async (request, reply) => {
+    const orgId = request.user.orgId as OrgId
+    const parsed = QuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const fromDate = (parsed.data.date ?? parsed.data.from!) as IsoDate
+    const toDate = (parsed.data.date ?? parsed.data.to!) as IsoDate
+    const isRange = fromDate !== toDate
+
+    // Only a single-day view carries a delta, as before. A range has no
+    // "yesterday" that means anything.
+    const previous = isRange ? null : dayBefore(fromDate)
+
+    const [facet] = await getStore().dailySnapshots.aggregate<OverviewFacet>(
+      overviewPipeline(orgId, fromDate, toDate, previous),
+    )
+
+    const current = facet?.totals[0] ?? EMPTY
+    const todayCost = usdFromMicros(current.costMicros)
+    const todayTokens = current.tokens
+
+    let vsYesterday: { costDelta: number; costPct: number; tokensDelta: number } | null = null
+    if (previous) {
+      const yesterday = facet?.previous?.[0] ?? EMPTY
+      // Subtracted in micros and divided in micros, converted once. Going to
+      // dollars first reintroduces exactly the binary fractions the integer
+      // encoding exists to avoid, and a percentage of two rounded floats is not
+      // the percentage of the two figures the page prints above it.
+      const deltaMicros = (current.costMicros - yesterday.costMicros) as Micros
+      vsYesterday = {
+        costDelta: usdFromMicros(deltaMicros),
+        costPct: yesterday.costMicros > 0 ? (deltaMicros / yesterday.costMicros) * 100 : 0,
+        tokensDelta: todayTokens - yesterday.tokens,
+      }
+    }
+
+    const summed = new Map((facet?.byAgent ?? []).map((row) => [row._id, row]))
+    const byAgent: AgentSummary[] = AGENTS.map((agent) => {
+      const row = summed.get(agent)
+      const costUsd = usdFromMicros((row?.costMicros ?? 0) as Micros)
+      return { agent, tokens: row?.tokens ?? 0, costUsd, isFreeTier: costUsd === 0 }
     })
-    .from(dailySnapshots)
-    .where(and(eq(dailySnapshots.orgId, orgId), gte(dailySnapshots.date, fromDate), lte(dailySnapshots.date, toDate)))
+
+    const result: OverviewResponse = {
+      date: isRange ? `${fromDate} — ${toDate}` : fromDate,
+      totalCostUsd: todayCost,
+      totalTokens: todayTokens,
+      activeUsers: current.activeUsers,
+      vsYesterday: vsYesterday ?? { costDelta: 0, costPct: 0, tokensDelta: 0 },
+      byAgent,
+    }
+
+    return result
+  })
 }
