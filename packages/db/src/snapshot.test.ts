@@ -76,11 +76,11 @@ describe('buildSnapshot', () => {
 })
 
 /** A Txn that answers the three reads a rebuild makes and records its one write. */
-function fakeTxn(rows: AgentSourceTotals[]) {
+function fakeTxn(rows: AgentSourceTotals[], user: Document | null = { _id: userId, orgId }) {
   const writes: Array<{ filter: Document; update: Document; opts: Document | undefined }> = []
   const tx = {
     usageEvents: { aggregate: async () => rows },
-    users: { findOne: async () => ({ _id: userId, orgId }) },
+    users: { findOne: async () => user },
     dailySnapshots: {
       updateOne: async (filter: Document, update: Document, opts?: Document) => {
         writes.push({ filter, update, opts })
@@ -106,6 +106,22 @@ describe('rebuildDailySnapshot', () => {
       expect(update.$set).not.toHaveProperty(field)
     }
     expect(update.$setOnInsert).toEqual({ callCount: 0, sessionCount: 0, cacheHitRate: null })
+  })
+
+  /**
+   * The one branch of this function that is not about arithmetic.
+   *
+   * Under Postgres the lookup hit the same database the JWT was issued from, so
+   * a miss meant a user deleted mid-request and returning quietly was fine. On
+   * Mongo a miss is also what an unpopulated `users` collection looks like, and
+   * the caller would answer `{accepted: N}` for a day whose snapshot was never
+   * written. Throwing aborts the transaction, which rolls the events back with
+   * it, so the agent re-sends rather than being told a lie.
+   */
+  it('aborts the transaction when the user is missing, instead of writing nothing quietly', async () => {
+    const { tx, writes } = fakeTxn([row('claude', 'agent', 100, ['opus'])], null)
+    await expect(rebuildDailySnapshot(tx, userId, date)).rejects.toThrow(/no user/)
+    expect(writes).toHaveLength(0)
   })
 })
 
@@ -196,7 +212,7 @@ const wireEnrichment = {
 describe('upsertEnrichment', () => {
   it('writes the heavy blobs to claudeEnrichment under the user-day key', async () => {
     const { tx, writes } = fakeWriteTxn()
-    await upsertEnrichment(tx, userId, orgId, wireEnrichment)
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
     const [{ filter, update, opts }] = writes.claudeEnrichment
     expect(filter).toEqual({ _id: dayKey(userId, date) })
     expect(opts).toEqual({ upsert: true })
@@ -220,17 +236,22 @@ describe('upsertEnrichment', () => {
    */
   it('also lands the three counters on the day snapshot, in the same transaction', async () => {
     const { tx, writes } = fakeWriteTxn()
-    await upsertEnrichment(tx, userId, orgId, wireEnrichment)
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
     expect(writes.dailySnapshots).toHaveLength(1)
     const [{ filter, update, opts }] = writes.dailySnapshots
     expect(filter).toEqual({ _id: dayKey(userId, date) })
     expect(opts).toEqual({ upsert: true })
-    expect(update.$set).toEqual({ callCount: 31, sessionCount: 4, cacheHitRate: 92.1 })
+    expect(update.$set).toEqual({
+      callCount: 31,
+      sessionCount: 4,
+      cacheHitRate: 92.1,
+      updatedAt: expect.any(Date),
+    })
   })
 
   it('writes a genuine zero rather than leaving the field alone', async () => {
     const { tx, writes } = fakeWriteTxn()
-    await upsertEnrichment(tx, userId, orgId, {
+    await upsertEnrichment(tx, userId, orgId, date, {
       ...wireEnrichment,
       callCount: 0,
       sessionCount: 0,
@@ -240,6 +261,7 @@ describe('upsertEnrichment', () => {
       callCount: 0,
       sessionCount: 0,
       cacheHitRate: 0,
+      updatedAt: expect.any(Date),
     })
   })
 
@@ -251,14 +273,19 @@ describe('upsertEnrichment', () => {
    */
   it('seeds every field the rebuild owns on insert, and sets none of them', async () => {
     const { tx, writes } = fakeWriteTxn()
-    await upsertEnrichment(tx, userId, orgId, wireEnrichment)
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
     const { $set, $setOnInsert } = writes.dailySnapshots[0].update
 
-    const rebuildOwns = ['byAgent', 'totalTokens', 'totalCostMicros', 'modelsUsed', 'updatedAt']
+    const rebuildOwns = ['byAgent', 'totalTokens', 'totalCostMicros', 'modelsUsed']
     for (const field of rebuildOwns) {
       expect($set).not.toHaveProperty(field)
       expect($setOnInsert).toHaveProperty(field)
     }
+    // updatedAt is the exception, and the only field both writes $set: it
+    // records when the document was last written, so a write that changes the
+    // counters and leaves it alone would be lying about its own freshness.
+    expect($set).toHaveProperty('updatedAt')
+    expect($setOnInsert).not.toHaveProperty('updatedAt')
     // A snapshot created by this write is still a whole document: the dashboard
     // reads orgId and date off it, and a rebuild may never run for this day.
     expect($setOnInsert).toMatchObject({ userId, orgId, date, totalCostMicros: 0 })
@@ -283,6 +310,16 @@ describe('costFieldFor', () => {
     expect(costFieldFor('claude.costMicros')).toBe('$totalCostMicros')
     expect(costFieldFor('$where')).toBe('$totalCostMicros')
   })
+
+  // A plain index finds these on Object.prototype, and every one of them is
+  // truthy, so an `||` fallback never fires and a function object reaches the
+  // pipeline where a path string belongs.
+  it.each(['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'falls back for the inherited key %s rather than reading through the prototype',
+    (key) => {
+      expect(costFieldFor(key)).toBe('$totalCostMicros')
+    },
+  )
 })
 
 const at = (path: string, doc: Document): unknown =>
@@ -375,6 +412,32 @@ describe('monthToDateSpend', () => {
       snapshot('2027-01-01', { totalCostMicros: 9_000_000 as Micros }),
     ])
     expect(await monthToDateSpend(store, orgId, null, null, '2026-12-05' as IsoDate)).toBe(4_000_000)
+  })
+
+  /**
+   * The scoping that matters most, and the one a single-org fixture cannot
+   * see: with only one org seeded, a `$match` that had dropped `orgId`
+   * entirely still returns the right number. The second org has to be present
+   * and large enough that including it would be unmistakable.
+   */
+  it('counts only the caller org, with another org-s spend sitting beside it', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-11-03', { orgId: 'o2' as OrgId, totalCostMicros: 500_000_000 as Micros }),
+      snapshot('2026-11-04', { orgId: 'o2' as OrgId, totalCostMicros: 500_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(1_000_000)
+  })
+
+  it('counts only the caller org for a per-agent alert too', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { byAgent: { claude: { tokens: 1, costMicros: 700_000 as Micros } } }),
+      snapshot('2026-11-03', {
+        orgId: 'o2' as OrgId,
+        byAgent: { claude: { tokens: 1, costMicros: 900_000_000 as Micros } },
+      }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(700_000)
   })
 
   it('narrows to one user when the alert is scoped to one', async () => {

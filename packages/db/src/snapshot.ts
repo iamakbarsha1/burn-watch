@@ -103,7 +103,18 @@ export function buildSnapshot(
 export async function rebuildDailySnapshot(tx: Txn, userId: UserId, date: IsoDate): Promise<void> {
   const rows = await tx.usageEvents.aggregate<AgentSourceTotals>(agentSourceTotalsPipeline(userId, date))
   const user = await tx.users.findOne({ _id: userId }, { projection: { orgId: 1 } })
-  if (!user) return
+  // Throws rather than returning. Under Postgres this read hit the same
+  // database the JWT's userId was issued from, so a miss meant "deleted
+  // mid-request" and returning quietly was defensible. Reading `users` here
+  // means a miss is also what an unpopulated collection looks like, and the
+  // caller would answer `{accepted: N}` for a submission whose snapshot was
+  // never written and whose budget alerts can never trip — truthful about the
+  // events and silently false about everything downstream of them.
+  //
+  // Aborting the transaction rolls the events back too, so the agent's next
+  // run re-sends them. That is the BW-41 contract this function exists to
+  // honour: a rebuild that did not happen must not leave spend recorded.
+  if (!user) throw new Error(`rebuildDailySnapshot: no user ${userId} for ${date}`)
   const { _id, ...fields } = buildSnapshot(userId, user.orgId, date, pickWinningSource(rows), new Date())
   await tx.dailySnapshots.updateOne(
     { _id },
@@ -154,7 +165,14 @@ const AGENT_COST_FIELD: Record<AgentName, string> = {
 }
 
 export function costFieldFor(agent: string | null): string {
-  return (agent && AGENT_COST_FIELD[agent as AgentName]) || '$totalCostMicros'
+  // Own keys only. A plain index also finds `toString`, `constructor` and
+  // `__proto__` on Object.prototype, and each of those is truthy, so the
+  // fallback below would not fire and a function object would go into the
+  // pipeline where a path string belongs. The comment above promises this
+  // function is defensive about a name TypeScript has not checked; reading
+  // through the prototype chain is the one way it was not.
+  if (!agent || !Object.hasOwn(AGENT_COST_FIELD, agent)) return '$totalCostMicros'
+  return AGENT_COST_FIELD[agent as AgentName]
 }
 
 /**
