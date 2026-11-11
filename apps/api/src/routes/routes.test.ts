@@ -479,6 +479,7 @@ describe('GET /v1/dashboard/leaderboard', () => {
       {
         users: [{ _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 7 }],
         agents: [],
+        everyone: [{ ids: [USER_A] }],
         ...over,
       },
     ])
@@ -553,10 +554,34 @@ describe('GET /v1/dashboard/leaderboard', () => {
     expect(thrown?.message).toContain(USER_A)
   })
 
+  it('refuses the request for an unresolvable person who is not even on this page', async () => {
+    // The check runs over everyone in range, not the page, so the failure does
+    // not move depending on which page was asked for. Looking it up per page
+    // made an orphan that sorted onto page 0 fail page 0 and leave page 1
+    // answering 200 — an integrity failure you could page past.
+    seed({ everyone: [{ ids: [USER_A, '99999999-9999-4999-8999-999999999999'] }] })
+    const logged = vi.spyOn(app.log, 'error')
+    const res = await get()
+    expect(res.statusCode).toBe(500)
+    expect((logged.mock.calls.at(-1)?.[0] as Error)?.message).toContain('99999999')
+  })
+
   it('scopes the user lookup to the caller org', async () => {
     seed()
     await get()
     expect(mongoCalls('users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+  })
+
+  it('looks up everyone in range, not just the page it is about to render', async () => {
+    seed({ everyone: [{ ids: [USER_A, 'someone-on-page-two'] }] })
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada', email: 'ada@example.com' },
+      { _id: 'someone-on-page-two', name: 'Bo', email: 'bo@example.com' },
+    ]
+    await get()
+    expect(mongoCalls('users', 'find')[0][0]).toMatchObject({
+      _id: { $in: [USER_A, 'someone-on-page-two'] },
+    })
   })
 
   it('passes the paging window to the database, not to node', async () => {

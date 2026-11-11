@@ -17,12 +17,7 @@ export default async function OverviewPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  let overview = null
-  try {
-    overview = await fetchOverview(from, to, orgId)
-  } catch {
-    // Show empty state if API unavailable
-  }
+  const overview = await fetchOverview(from, to, orgId)
 
   return (
     <div>

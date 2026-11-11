@@ -322,6 +322,70 @@ async function leaderboard(store: Store) {
       'offset 1 of the spend ranking',
     )
   })
+
+  check('leaderboard sees everyone in range on every page, not just that page', () => {
+    // The integrity check the route runs is only page-independent if this
+    // branch is. Page 1 holds BO alone and must still carry ADA's id, or an
+    // orphan sorted onto page 0 would be invisible from page 1 and the request
+    // would answer 200 with a silently short ranking.
+    const everyone = (paged.everyone as { ids: string[] }[])[0].ids
+    assert.deepEqual([...everyone].sort(), [ADA, BO].sort())
+    assert.equal(everyone.includes(ZED), false)
+  })
+}
+
+/**
+ * The join Postgres had and MongoDB does not, in the one state where the two
+ * stores disagree: an enrichment or snapshot document whose user is gone.
+ *
+ * Postgres could not reach that state — `claude_enrichment.user_id` and
+ * `daily_snapshots.user_id` are both NOT NULL with a cascading foreign key —
+ * and its inner join dropped such a row if it somehow had. MongoDB enforces
+ * neither, and a half-finished Phase 7 backfill produces exactly this.
+ *
+ * The three routes answer differently on purpose, and this pins which is which
+ * so the next person reading the diff finds a decision rather than a drift.
+ */
+async function orphans(store: Store) {
+  const GHOST = newId<UserId>()
+  await store.dailySnapshots.insertOne(snapshot(GHOST, MINE, D2, { claude: slice(100, 2) }, 1))
+  await store.claudeEnrichment.insertOne(
+    enrichment(GHOST, MINE, D2, {
+      toolUsage: { bash: 100 },
+      projectBreakdown: [project('acme/widgets', 50, 5)],
+    }),
+  )
+  try {
+    const [facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 1, 0))
+    check('leaderboard surfaces an orphan from any page, not only the one it lands on', () => {
+      const page = (facet.users as { _id: string }[]).map((u) => u._id)
+      assert.deepEqual(page, [ADA], 'the ghost spent less than ADA, so it is not on page 0')
+      const everyone = (facet.everyone as { ids: string[] }[])[0].ids
+      assert.equal(everyone.includes(GHOST), true, 'and the check still sees it')
+    })
+
+    const rows = await store.claudeEnrichment.aggregate<{ tool: string; count: number }>(
+      toolUsageTotals({ orgId: MINE, from: D1, to: D2 }),
+    )
+    check('activity counts an orphan document, where the Postgres join dropped it', () => {
+      // Deliberate, and the opposite of what the leaderboard does. These two
+      // routes report org-level totals and never name a person; `orgId` is on
+      // the enrichment document itself, so the spend is attributable without
+      // `users` and dropping it would under-report the org. The leaderboard
+      // cannot do the same because its whole output is a list of names.
+      assert.equal(rows.find((r) => r.tool === 'bash')!.count, 108, 'ADA 5 + 3, ghost 100')
+    })
+
+    const byPath = await store.claudeEnrichment.aggregate<{ path: string; userCount: number }>(
+      projectTotals({ orgId: MINE, from: D1, to: D2 }),
+    )
+    check('projects counts an orphan as a person, for the same reason', () => {
+      assert.equal(byPath.find((p) => p.path === 'acme/widgets')!.userCount, 3)
+    })
+  } finally {
+    await store.dailySnapshots.deleteOne({ _id: dayKey(GHOST, D2) })
+    await store.claudeEnrichment.deleteOne({ _id: dayKey(GHOST, D2) })
+  }
 }
 
 async function trends(store: Store) {
@@ -431,6 +495,7 @@ async function main() {
     await trends(store)
     await activity(store)
     await projects(store)
+    await orphans(store)
   } finally {
     await clean(store)
     await client.close()
