@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
 import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId } from '@burn-watch/db'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
+import { dayBefore } from './dates.js'
 import { dateQuerySchema as QuerySchema } from './query-schema.js'
 
 /**
@@ -43,26 +44,6 @@ interface OverviewFacet {
 }
 
 const EMPTY: Totals = { costMicros: 0 as Micros, tokens: 0, activeUsers: 0 }
-
-/**
- * The calendar day before `date`, in UTC and nothing else.
- *
- * The version this replaces parsed the date with `new Date(fromDate)` — UTC
- * midnight — and then stepped it with `setDate(getDate() - 1)`, which reads and
- * writes in the server's local time. In a fixed-offset zone the two cancel out
- * and the answer is right; what they do not survive is a DST transition between
- * the two days, where `setDate` holds the local clock still while the offset
- * underneath it moves and the resulting instant can land on either side of UTC
- * midnight.
- *
- * Subtracting a fixed 86,400,000ms from a UTC timestamp consults no offset at
- * all, and `Date.UTC` still does the calendar arithmetic across month, year and
- * leap-day ends.
- */
-export function dayBefore(date: IsoDate): IsoDate {
-  const [year, month, day] = date.split('-').map(Number)
-  return new Date(Date.UTC(year, month - 1, day) - 86_400_000).toISOString().slice(0, 10) as IsoDate
-}
 
 /**
  * One round trip for the whole page: the range's totals, its per-agent split,

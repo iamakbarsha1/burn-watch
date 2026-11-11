@@ -6,6 +6,7 @@ import { getTableName, is, Table } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
 import { EXPECTED_SCHEMA_VERSION } from '../schema-version.js'
+import { daysBefore, today } from './dashboard/dates.js'
 
 process.env.JWT_SECRET ??= 'test-access-secret'
 process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret'
@@ -654,6 +655,40 @@ describe('GET /v1/dashboard/trends', () => {
   it('returns an empty array, not null, for a range with no snapshots', async () => {
     dashboardAggregate('dailySnapshots', [])
     expect((await get()).json()).toEqual([])
+  })
+
+  // `days` is the branch the dashboard's own links use, and the shared `range()`
+  // helper every other case here goes through sends `from`+`to`, so until this
+  // was written the whole else-branch computing the window was never executed
+  // by the suite. A sign flip there asks for the next N days and always answers
+  // with an empty chart — which looks exactly like a quiet month.
+  const windowOf = () => {
+    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [Record<string, never>[]]
+    return (pipeline[0] as unknown as { $match: { date: { $gte: string; $lte: string } } }).$match
+      .date
+  }
+
+  it.each([7, 30, 90])('derives a %i-day window backwards from today', async (days) => {
+    await app.inject({
+      method: 'GET',
+      url: `/v1/dashboard/trends?days=${days}`,
+      headers: auth(token()),
+    })
+    expect(windowOf()).toEqual({ $gte: daysBefore(today(), days), $lte: today() })
+  })
+
+  it('answers 400, rather than picking a window, when the request names none', async () => {
+    // Worth pinning next to the cases above: the handler carries a `?? 30`
+    // that looks like a default and is unreachable, because the schema refines
+    // to `days || (from && to)`. Anyone reading the handler alone would take
+    // that fallback for live behaviour and test it.
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/dashboard/trends',
+      headers: auth(token()),
+    })
+    expect(res.statusCode).toBe(400)
+    expect(mongoCalls('dailySnapshots', 'aggregate')).toEqual([])
   })
 })
 

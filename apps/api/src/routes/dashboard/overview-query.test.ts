@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { Document } from 'mongodb'
 import type { IsoDate, OrgId } from '@burn-watch/db'
-import { dayBefore, overviewPipeline } from './overview.js'
+import { dayBefore } from './dates.js'
+import { overviewPipeline } from './overview.js'
 
 /**
  * `activeUsers` counted rows, not people.
@@ -67,6 +68,15 @@ describe('the overview pipeline', () => {
     expect(project.entries).toEqual({ $objectToArray: { $ifNull: ['$byAgent', {}] } })
   })
 
+  it('suppresses _id, which is the only thing keeping the group key off the row', () => {
+    // The handler reads named fields off `totals`, so an extra `_id: null`
+    // changes the document the driver returns without changing the response —
+    // invisible to every behavioural assertion, and a field on the wire the
+    // moment anything starts passing these rows through.
+    const shaping = facetOf(range).totals.find((s) => '$project' in s)!.$project
+    expect(shaping._id).toBe(0)
+  })
+
   it('asks for no previous day on a range, where there is no yesterday', () => {
     expect(facetOf(range)).not.toHaveProperty('previous')
   })
@@ -84,33 +94,5 @@ describe('the overview pipeline', () => {
     expect(single[0]).toEqual({
       $match: { orgId: ORG, date: { $gte: '2026-11-04', $lte: DAY } },
     })
-  })
-})
-
-describe('dayBefore', () => {
-  it('steps back one calendar day', () => {
-    expect(dayBefore('2026-11-05' as IsoDate)).toBe('2026-11-04')
-  })
-
-  it('crosses a month boundary', () => {
-    expect(dayBefore('2026-11-01' as IsoDate)).toBe('2026-10-31')
-  })
-
-  it('crosses a year boundary', () => {
-    expect(dayBefore('2026-01-01' as IsoDate)).toBe('2025-12-31')
-  })
-
-  it('handles the leap day', () => {
-    expect(dayBefore('2028-03-01' as IsoDate)).toBe('2028-02-29')
-  })
-
-  it('steps back across a DST transition, where the old local-clock step did not', () => {
-    // 2026-03-29 is the European spring-forward. The version this replaces held
-    // the local clock still and let the offset move underneath it, which lands
-    // the resulting instant an hour either side of UTC midnight; these literal
-    // expectations hold on any host because the arithmetic consults no offset.
-    expect(dayBefore('2026-03-29' as IsoDate)).toBe('2026-03-28')
-    expect(dayBefore('2026-03-30' as IsoDate)).toBe('2026-03-29')
-    expect(dayBefore('2026-11-02' as IsoDate)).toBe('2026-11-01')
   })
 })
