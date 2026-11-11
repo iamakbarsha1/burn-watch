@@ -14,6 +14,27 @@ jobs:
   check:
     runs-on: ubuntu-latest
 
+    # The dashboard aggregations are the one thing in this repo that no unit
+    # test can check. The route tests answer reads from a fake store that
+    # ignores filters on purpose — one that honoured them would be a second,
+    # unverified MongoDB — and the pipeline tests read stages as data, which
+    # catches a missing $match and never a $group that sums the wrong field.
+    # Without a server in CI, a flipped comparison or a wrong group key merges
+    # on code review alone.
+    #
+    # A standalone is enough: these are plain reads with no transaction.
+    # packages/db's snapshot-race needs a replica set and stays out of CI.
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -29,3 +50,17 @@ jobs:
 
       - name: Typecheck and test
         run: npx turbo run typecheck test
+
+      # apps/api resolves @burn-watch/db through packages/db/dist, never src,
+      # so this needs a build to exist. `turbo run test` already depends on
+      # ^build and leaves one behind; naming it here is a cached no-op that
+      # keeps the step runnable on its own, and keeps the dependency visible to
+      # whoever reorders these steps next.
+      - name: Build the db package
+        run: npx turbo run build --filter=@burn-watch/db
+
+      - name: Dashboard aggregations against a real MongoDB
+        env:
+          MONGODB_URI: mongodb://127.0.0.1:27017/burnwatch_ci
+          BW_DASHBOARD_ALLOW_WRITES: '1'
+        run: npm run dashboard-pipelines -w @burn-watch/api

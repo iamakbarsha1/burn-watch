@@ -51,6 +51,15 @@ describe.each([
   it('sorts, so two identical requests return the same order', () => {
     expect(pipeline().at(-1)).toHaveProperty('$sort')
   })
+
+  it('strips _id, which is the only thing keeping the group key off the wire', () => {
+    // Both handlers pass the driver's documents to the serializer with no
+    // field list of their own, so the generic parameter is an assertion and
+    // this stage is the enforcement. Postgres had an explicit `select({...})`
+    // that could not leak a column.
+    const shaping = pipeline().filter((s) => '$project' in s).at(-1)!.$project
+    expect(shaping._id).toBe(0)
+  })
 })
 
 describe('the activity pipeline', () => {
