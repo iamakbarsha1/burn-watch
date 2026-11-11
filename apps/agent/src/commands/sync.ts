@@ -15,6 +15,10 @@ function yesterdayDate(): string {
   return d.toISOString().slice(0, 10)
 }
 
+function todayDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 function datesForLastN(n: number): string[] {
   const dates: string[] = []
   for (let i = n; i >= 1; i--) {
@@ -25,10 +29,24 @@ function datesForLastN(n: number): string[] {
   return dates
 }
 
+export function selectDates(options: {
+  date?: string
+  last7?: boolean
+  days?: string
+  today?: boolean
+}): string[] {
+  if (options.days) return datesForLastN(parseInt(options.days, 10))
+  if (options.last7) return datesForLastN(7)
+  if (options.date) return [options.date]
+  if (options.today) return [todayDate()]
+  return [yesterdayDate()]
+}
+
 export async function syncCommand(options: {
   date?: string
   last7?: boolean
   days?: string
+  today?: boolean
   apiUrl?: string
 }) {
   const config = loadConfig()
@@ -46,16 +64,7 @@ export async function syncCommand(options: {
     console.log(`  Overriding the registered host for this run (${config.apiUrl})`)
   }
 
-  let dates: string[]
-  if (options.days) {
-    dates = datesForLastN(parseInt(options.days, 10))
-  } else if (options.last7) {
-    dates = datesForLastN(7)
-  } else if (options.date) {
-    dates = [options.date]
-  } else {
-    dates = [yesterdayDate()]
-  }
+  const dates = selectDates(options)
 
   const ccusage = new CcusageCollector(config.npxPath ?? 'npx')
   const codeburn = new CodeburnCollector()
