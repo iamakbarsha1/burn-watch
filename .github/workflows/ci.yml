@@ -1,10 +1,14 @@
 name: CI
 
+# mongo-migration is the integration branch phases 3 through 7 stack on, and
+# it does not reach main until the Phase 8 cutover. Without it named here the
+# whole migration merges with no CI at all, and the first run would be the one
+# that takes main with it.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, mongo-migration]
   push:
-    branches: [main]
+    branches: [main, mongo-migration]
 
 jobs:
   check:
