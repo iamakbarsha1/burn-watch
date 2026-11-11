@@ -24,9 +24,14 @@ jobs:
     #
     # A standalone is enough: these are plain reads with no transaction.
     # packages/db's snapshot-race needs a replica set and stays out of CI.
+    # mongo:8 refuses to boot on the current runner image: "Linux kernel
+    # versions 6.19 and newer has a known incompatibility with this version of
+    # MongoDB" (SERVER-121912). Pinned to the 9 series, which carries the fix.
+    # The server version here only has to run the aggregations; the driver in
+    # packages/db is what the app is actually coupled to.
     services:
       mongo:
-        image: mongo:8
+        image: mongo:9
         ports:
           - 27017:27017
         options: >-
