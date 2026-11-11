@@ -2,7 +2,7 @@ import type { Document } from 'mongodb'
 import type { AgentName } from '@burn-watch/shared'
 import type { DailySnapshotDoc, UsageSource } from './documents.js'
 import { dayKey, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
-import type { Txn } from './store.js'
+import type { Store, Txn } from './store.js'
 
 export interface AgentSourceTotals {
   agent: AgentName
@@ -103,11 +103,105 @@ export function buildSnapshot(
 export async function rebuildDailySnapshot(tx: Txn, userId: UserId, date: IsoDate): Promise<void> {
   const rows = await tx.usageEvents.aggregate<AgentSourceTotals>(agentSourceTotalsPipeline(userId, date))
   const user = await tx.users.findOne({ _id: userId }, { projection: { orgId: 1 } })
-  if (!user) return
+  // Throws rather than returning. Under Postgres this read hit the same
+  // database the JWT's userId was issued from, so a miss meant "deleted
+  // mid-request" and returning quietly was defensible. Reading `users` here
+  // means a miss is also what an unpopulated collection looks like, and the
+  // caller would answer `{accepted: N}` for a submission whose snapshot was
+  // never written and whose budget alerts can never trip — truthful about the
+  // events and silently false about everything downstream of them.
+  //
+  // Aborting the transaction rolls the events back too, so the agent's next
+  // run re-sends them. That is the BW-41 contract this function exists to
+  // honour: a rebuild that did not happen must not leave spend recorded.
+  if (!user) throw new Error(`rebuildDailySnapshot: no user ${userId} for ${date}`)
   const { _id, ...fields } = buildSnapshot(userId, user.orgId, date, pickWinningSource(rows), new Date())
   await tx.dailySnapshots.updateOne(
     { _id },
     { $set: fields, $setOnInsert: { callCount: 0, sessionCount: 0, cacheHitRate: null } },
     { upsert: true },
   )
+}
+
+/**
+ * Half-open [start, end) over the `date` field, which every snapshot stores as
+ * a plain YYYY-MM-DD string. Kept as string arithmetic rather than Date
+ * arithmetic so no timezone is ever consulted: `2026-11-30` and `2026-12-01`
+ * are a month apart here whatever the server's offset is.
+ */
+function monthRange(date: IsoDate): [IsoDate, IsoDate] {
+  const prefix = date.slice(0, 7)
+  const [year, month] = prefix.split('-').map(Number)
+  const nextMonth = month === 12 ? 1 : month + 1
+  const nextYear = month === 12 ? year + 1 : year
+  return [`${prefix}-01` as IsoDate, `${nextYear}-${String(nextMonth).padStart(2, '0')}-01` as IsoDate]
+}
+
+/**
+ * Which field of a snapshot an alert's scope sums: one agent's slot in
+ * `byAgent`, or the all-agent total.
+ *
+ * Spelled out as five literal paths rather than built by interpolating the
+ * agent name, and rather than reached through `$getField`. All three are the
+ * same query; only this one cannot be handed a name that rewrites the path.
+ * `agent` is read off a stored document, so TypeScript has vouched for nothing
+ * about it, and a value carrying a dot or a leading `$` would otherwise point
+ * the sum somewhere else entirely.
+ *
+ * `Record<AgentName, …>` rather than a loose map, so an agent added to the
+ * shared union is a compile error here instead of an alert that silently
+ * starts summing the all-agent total.
+ *
+ * An unrecognised name falls back to that total rather than to nothing, which
+ * is what the Postgres `costColumnFor` did: a row written by an older build
+ * still has to be priced against something real.
+ */
+const AGENT_COST_FIELD: Record<AgentName, string> = {
+  claude: '$byAgent.claude.costMicros',
+  qwen: '$byAgent.qwen.costMicros',
+  gemini: '$byAgent.gemini.costMicros',
+  codex: '$byAgent.codex.costMicros',
+  copilot: '$byAgent.copilot.costMicros',
+}
+
+export function costFieldFor(agent: string | null): string {
+  // Own keys only. A plain index also finds `toString`, `constructor` and
+  // `__proto__` on Object.prototype, and each of those is truthy, so the
+  // fallback below would not fire and a function object would go into the
+  // pipeline where a path string belongs. The comment above promises this
+  // function is defensive about a name TypeScript has not checked; reading
+  // through the prototype chain is the one way it was not.
+  if (!agent || !Object.hasOwn(AGENT_COST_FIELD, agent)) return '$totalCostMicros'
+  return AGENT_COST_FIELD[agent as AgentName]
+}
+
+/**
+ * Month-to-date spend, in micros, for one scope: a whole org or one user of
+ * it, and either one agent or every agent.
+ *
+ * Shared by the budget-alert evaluator and by the GET route that renders the
+ * figure, so what an admin reads can never drift from what the last evaluation
+ * decided against.
+ */
+export async function monthToDateSpend(
+  store: Store,
+  orgId: OrgId,
+  userId: UserId | null,
+  agent: string | null,
+  date: IsoDate,
+): Promise<Micros> {
+  const [start, end] = monthRange(date)
+  const match: Document = { orgId, date: { $gte: start, $lt: end } }
+  if (userId) match.userId = userId
+
+  const [row] = await store.dailySnapshots.aggregate<{ spend: number }>([
+    { $match: match },
+    { $group: { _id: null, spend: { $sum: costFieldFor(agent) } } },
+  ])
+
+  // `byAgent` is a partial map, so a day on which this agent did nothing has no
+  // slot at all. `$sum` skips the missing path, which reads it as the zero it
+  // is rather than dropping the whole document from the total. A scope with no
+  // matching days produces no group row, and that is zero too.
+  return (row?.spend ?? 0) as Micros
 }

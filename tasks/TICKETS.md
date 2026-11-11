@@ -2598,8 +2598,10 @@ guard.
 **Fixed 2026-11-10**, commits `775854b` (repro), `52ff9e8` (fix), `b8d2285`
 (comment correction). The suggested one-line guard is what shipped.
 
-The repro lives at `apps/api/src/scripts/bw41-snapshot-race.ts` and is run by
-hand against a branch, not by `npm test`. The suite's fake Drizzle resolves
+The repro lives at `packages/db/src/scripts/snapshot-race.ts` (`npm run
+snapshot-race` in that package) and is run by hand against a throwaway
+database, not by `npm test`. It replaced the Postgres original, whose whole
+subject was the advisory lock the Mongo port does not have. The suite's fake Drizzle resolves
 every query inline, so two overlapping reads have nowhere to overlap. A
 barrier holds both writers at the point their snapshots diverge, because two
 transactions racing one row otherwise serialise by luck and the script passes
