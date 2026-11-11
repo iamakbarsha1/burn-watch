@@ -35,7 +35,16 @@ export function selectDates(options: {
   days?: string
   today?: boolean
 }): string[] {
-  if (options.days) return datesForLastN(parseInt(options.days, 10))
+  if (options.days) {
+    // commander hands --days the next token when no number follows it, so
+    // `--days --today` arrives as days === '--today'. Unchecked, that became
+    // NaN and a zero-date sync indistinguishable from the deliberate --days 0.
+    const n = Number(options.days)
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(`--days must be a non-negative whole number, got "${options.days}"`)
+    }
+    return datesForLastN(n)
+  }
   if (options.last7) return datesForLastN(7)
   if (options.date) return [options.date]
   if (options.today) return [todayDate()]
@@ -64,7 +73,13 @@ export async function syncCommand(options: {
     console.log(`  Overriding the registered host for this run (${config.apiUrl})`)
   }
 
-  const dates = selectDates(options)
+  let dates: string[]
+  try {
+    dates = selectDates(options)
+  } catch (err) {
+    console.error(`[burnwatch] ${(err as Error).message}`)
+    process.exit(1)
+  }
 
   const ccusage = new CcusageCollector(config.npxPath ?? 'npx')
   const codeburn = new CodeburnCollector()
