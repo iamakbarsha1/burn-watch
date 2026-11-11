@@ -1,14 +1,22 @@
 import type { FastifyInstance } from 'fastify'
-import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { CopilotSeatRow, CopilotSeatsResponse, UsageEvent } from '@burn-watch/shared'
-import { orgIntegrations, organizations, users } from '../../../drizzle/schema.js'
+import {
+  getStore,
+  integrationKey,
+  rebuildDailySnapshot,
+  runInTxn,
+  upsertUsageEvents,
+  type IsoDate,
+  type OrgId,
+  type Store,
+  type UserDoc,
+  type UserId,
+} from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
 import { credentialCrypto } from '../../credential-crypto.js'
 import { listCopilotSeats, fetchCopilotUserDays } from '../../services/copilot.service.js'
 import type { CopilotReport, CopilotUserDay } from '../../services/copilot.service.js'
-import { upsertUsageEvents } from '../../services/usage.service.js'
-import { rebuildDailySnapshot } from '../../services/snapshot.service.js'
 import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
 
 const PROVIDER = 'copilot'
@@ -93,6 +101,82 @@ function upstreamFailure(error: unknown, subject: string) {
   }
 }
 
+/**
+ * What is stored for one org: the sealed credential, and the GitHub org name
+ * it is bound to. Null when the organization document itself is absent.
+ *
+ * Two key lookups where Postgres used a join, and the null is what keeps them
+ * equivalent. The Postgres read drove from `organizations`, so a missing
+ * organization produced no row at all; two independent lookups would instead
+ * let GET /status answer `connected: true` for an org that does not exist,
+ * while /sync and /seats 404 on the missing name. One answer, not two.
+ *
+ * The org name lives on `organizations.githubOrg`, not beside the ciphertext —
+ * it is not a secret, and keeping it readable is what lets GET /status name
+ * the org while the encryption key is missing.
+ */
+async function connection(store: Store, orgId: OrgId) {
+  const [integration, org] = await Promise.all([
+    store.orgIntegrations.findOne({ _id: integrationKey(orgId, PROVIDER) }),
+    store.organizations.findOne({ _id: orgId }, { projection: { githubOrg: 1 } }),
+  ])
+  if (!org) return null
+  return { integration, githubOrg: org.githubOrg }
+}
+
+/**
+ * Every member of an org.
+ *
+ * The whole roster, not just the ones carrying a GitHub username, because the
+ * callers have to tell two things apart that look identical in a response: an
+ * org whose developers have not had `githubUsername` filled in — BW-33, a real
+ * condition an operator must act on — and an org with no user documents in
+ * this store at all, which is a migration gap and must not be reported as the
+ * first. An empty roster is impossible in the first case: the admin making the
+ * request is a member.
+ */
+async function orgMembers(store: Store, orgId: OrgId) {
+  return store.users.find({ orgId }, { projection: { name: 1, githubUsername: 1 } })
+}
+
+/**
+ * The members whose GitHub login is one of `logins`, matched
+ * case-insensitively on both sides.
+ *
+ * GitHub logins are case-insensitive and `githubUsername` is typed in by hand
+ * on our side, so a capitalised entry would otherwise drop a developer's whole
+ * day of spend without a word — the exact defect `unmatchedLogins` exists to
+ * make visible, so it should not be one these routes create for themselves.
+ * Both callers go through here, so neither can link a developer the other
+ * calls unknown.
+ *
+ * Matched in js rather than in the filter. Neither database carries an index
+ * over a lowercased username, so the comparison reads every member of the org
+ * wherever it runs, and here it is one rule a reader can see rather than a
+ * `$expr` repeated in two places.
+ */
+function matchLogins(members: UserDoc[], logins: Set<string>) {
+  return members
+    .filter((u) => u.githubUsername !== null)
+    .map((u) => ({ id: u._id, name: u.name, login: u.githubUsername!.toLowerCase() }))
+    .filter((u) => logins.has(u.login))
+}
+
+/** What both routes answer when this org has no users in the store at all. */
+const EMPTY_ROSTER = {
+  error:
+    'No users for this organization are present in the store, so no Copilot seat ' +
+    'or usage can be attributed to anyone. This is a migration gap, not a ' +
+    'missing GitHub username.',
+}
+
+/** Raised by a write that was supposed to match an existing document and did not. */
+class MissingOrganization extends Error {
+  constructor(orgId: OrgId) {
+    super(`organizations/${orgId} is absent, so the Copilot connection has nowhere to attach`)
+  }
+}
+
 export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
   // GET /copilot/status — what the dashboard renders the integration panel
   // from. Answers 200 whatever the encryption key is doing, because an absent
@@ -104,29 +188,18 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
   fastify.get('/copilot/status', { preHandler: requireAdmin(fastify) }, async (request) => {
     const crypto = credentialCrypto()
 
-    const [row] = await fastify.db
-      .select({
-        integrationId: orgIntegrations.id,
-        githubOrg: organizations.githubOrg,
-        lastSyncAt: orgIntegrations.lastSyncAt,
-      })
-      .from(organizations)
-      .leftJoin(
-        orgIntegrations,
-        and(eq(orgIntegrations.orgId, organizations.id), eq(orgIntegrations.provider, PROVIDER)),
-      )
-      .where(eq(organizations.id, request.user.orgId))
-      .limit(1)
-
-    const connected = row?.integrationId != null
+    const stored = await connection(getStore(), request.user.orgId as OrgId)
+    const connected = stored?.integration != null
 
     return {
       encryption: crypto.available ? ('ready' as const) : crypto.reason,
       connected,
       // Gated on `connected` so a disconnect does not leave the panel naming
       // an org nothing is being pulled from.
-      org: connected ? row?.githubOrg ?? null : null,
-      lastSyncAt: row?.lastSyncAt ? row.lastSyncAt.toISOString() : null,
+      org: connected ? stored!.githubOrg : null,
+      lastSyncAt: stored?.integration?.lastSyncAt
+        ? stored.integration.lastSyncAt.toISOString()
+        : null,
     }
   })
 
@@ -136,7 +209,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     { preHandler: requireAdmin(fastify) },
     async (request, reply) => {
       const body = ConnectionSchema.parse(request.body)
-      const orgId = request.user.orgId
+      const orgId = request.user.orgId as OrgId
 
       const crypto = credentialCrypto()
       if (!crypto.available) {
@@ -169,28 +242,53 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
 
       const encryptedToken = crypto.seal(body.token, credentialContext(orgId))
 
-      await fastify.db.transaction(async (tx) => {
-        // The org name lives on `organizations.github_org`, which already
-        // exists, rather than beside the ciphertext. It is not a secret, and
-        // keeping it readable is what lets GET /status name the org while the
-        // encryption key is missing.
-        await tx
-          .update(organizations)
-          .set({ githubOrg: body.org })
-          .where(eq(organizations.id, orgId))
+      const store = getStore()
+      try {
+        await runInTxn(store, async (tx) => {
+          const org = await tx.organizations.updateOne(
+            { _id: orgId },
+            { $set: { githubOrg: body.org } },
+          )
+          // Not an upsert, and the matched count is checked. The credential
+          // below upserts because its key is this org and this provider and
+          // nothing else creates it; an organization is created by the
+          // bootstrap and invite paths, and inventing one here would have to
+          // guess a name and a slug, the second of which is uniquely indexed.
+          // Unchecked, this is the asymmetry that let a connect return
+          // `{connected: true}` for a write that matched nothing, after which
+          // /status reported an org of null and /sync and /seats 404'd.
+          if (org.matchedCount !== 1) throw new MissingOrganization(orgId)
 
-        // A plain upsert, arbitrated by the unique index migration 0006 puts on
-        // (org_id, provider). Reconnecting replaces the credential in place.
-        // `last_sync_at` is deliberately left alone: a new token for the same
-        // org does not undo the sync history behind it.
-        await tx
-          .insert(orgIntegrations)
-          .values({ orgId, provider: PROVIDER, encryptedToken })
-          .onConflictDoUpdate({
-            target: [orgIntegrations.orgId, orgIntegrations.provider],
-            set: { encryptedToken },
-          })
-      })
+        // One upsert on the org-and-provider key, which is the _id here rather
+        // than a unique index that could be dropped or never synced.
+        // Reconnecting replaces the credential in place, and `lastSyncAt` is
+        // seeded only on insert: a new token for the same org does not undo
+        // the sync history behind it.
+          await tx.orgIntegrations.updateOne(
+            { _id: integrationKey(orgId, PROVIDER) },
+            {
+              $set: { encryptedToken },
+              $setOnInsert: {
+                orgId,
+                provider: PROVIDER,
+                lastSyncAt: null,
+                createdAt: new Date(),
+              },
+            },
+            { upsert: true },
+          )
+        })
+      } catch (error) {
+        if (!(error instanceof MissingOrganization)) throw error
+        // 503 on the same terms as the missing encryption key above: the
+        // request is well formed and an operator can fix it, by migrating the
+        // organization. The transaction rolled back, so no credential was
+        // stored against an org that is not there.
+        request.log.error(error)
+        return reply.status(503).send({
+          error: 'This organization is not present in the store yet, so the connection was not saved.',
+        })
+      }
 
       // The token never travels back, not even a prefix of it. `connected` is
       // the whole of what the caller needs to know.
@@ -206,14 +304,8 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     '/copilot/connection',
     { preHandler: requireAdmin(fastify) },
     async (request, reply) => {
-      await fastify.db
-        .delete(orgIntegrations)
-        .where(
-          and(
-            eq(orgIntegrations.orgId, request.user.orgId),
-            eq(orgIntegrations.provider, PROVIDER),
-          ),
-        )
+      const orgId = request.user.orgId as OrgId
+      await getStore().orgIntegrations.deleteOne({ _id: integrationKey(orgId, PROVIDER) })
       return reply.status(204).send()
     },
   )
@@ -222,7 +314,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
   fastify.post('/copilot/sync', { preHandler: requireAdmin(fastify) }, async (request, reply) => {
     const body = SyncSchema.parse(request.body ?? {})
     const day = body.day ?? yesterdayUtc()
-    const orgId = request.user.orgId
+    const orgId = request.user.orgId as OrgId
 
     const crypto = credentialCrypto()
     if (!crypto.available) {
@@ -231,23 +323,26 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         .send({ error: 'Credential encryption is not configured', encryption: crypto.reason })
     }
 
-    const [row] = await fastify.db
-      .select({
-        encryptedToken: orgIntegrations.encryptedToken,
-        githubOrg: organizations.githubOrg,
-      })
-      .from(orgIntegrations)
-      .innerJoin(organizations, eq(organizations.id, orgIntegrations.orgId))
-      .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
-      .limit(1)
+    const store = getStore()
+    const stored = await connection(store, orgId)
 
-    if (!row?.githubOrg) {
+    if (!stored?.integration || !stored.githubOrg) {
       return reply.status(404).send({ error: 'Copilot is not connected for this organization' })
+    }
+    const { integration, githubOrg } = stored
+
+    // Read before GitHub is asked, because an org with no members in the store
+    // cannot attribute a single row of whatever comes back, and a sync that
+    // attributes nothing must not stamp lastSyncAt as a healthy run.
+    const members = await orgMembers(store, orgId)
+    if (members.length === 0) {
+      request.log.error({ orgId }, 'Copilot sync: no users in the store for this organization')
+      return reply.status(503).send(EMPTY_ROSTER)
     }
 
     let token: string
     try {
-      token = crypto.open(row.encryptedToken, credentialContext(orgId))
+      token = crypto.open(integration.encryptedToken, credentialContext(orgId))
     } catch {
       // A stored credential that no longer verifies is a real fault, and the
       // only repair is to store it again. Said in those words rather than
@@ -274,19 +369,14 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     let report: CopilotReport
     try {
       ;[seatPage, report] = await Promise.all([
-        listCopilotSeats(token, row.githubOrg),
-        fetchCopilotUserDays(token, row.githubOrg, day),
+        listCopilotSeats(token, githubOrg),
+        fetchCopilotUserDays(token, githubOrg, day),
       ])
     } catch (error) {
       request.log.error(error)
       return reply.status(502).send(upstreamFailure(error, 'sync'))
     }
 
-    // Matched case-insensitively. GitHub logins are, and `github_username` is
-    // typed in by hand on our side, so a capitalised entry would otherwise
-    // drop a developer's whole day of spend without a word — the exact defect
-    // `unmatchedLogins` exists to make visible, so it should not be one this
-    // route creates for itself.
     const byLogin = new Map<string, CopilotUserDay[]>()
     for (const d of report.rows) {
       const key = d.login.toLowerCase()
@@ -296,14 +386,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     }
 
     const logins = [...byLogin.keys()]
-    const matchedUsers = logins.length
-      ? await fastify.db
-          .select({ id: users.id, login: sql<string>`lower(${users.githubUsername})` })
-          .from(users)
-          .where(
-            and(eq(users.orgId, orgId), inArray(sql`lower(${users.githubUsername})`, logins)),
-          )
-      : []
+    const matchedUsers = matchLogins(members, new Set(logins))
 
     let matched = 0
     let written = 0
@@ -370,16 +453,24 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       // for the same reason: a failed rebuild must not leave spend recorded
       // but missing from the snapshot. Per developer rather than per org so
       // one bad row cannot discard everyone else's sync.
-      const counts = await fastify.db.transaction(async (tx) => {
-        const c = await upsertUsageEvents(tx, user.id, null, day, events, 'copilot-org')
+      const counts = await runInTxn(store, async (tx) => {
+        const c = await upsertUsageEvents(
+          tx,
+          user.id,
+          orgId,
+          null,
+          day as IsoDate,
+          events,
+          'copilot-org',
+        )
         // Safe to repeat, though not by inserting nothing: an org row now
         // overwrites on conflict, so a re-sync replaces the day's figures
         // with whatever GitHub currently reports. The rebuild recomputes the
         // day from scratch rather than adding to it, and a budget alert
         // latches per calendar month instead of firing again, so repeating a
         // sync converges rather than accumulating.
-        await rebuildDailySnapshot(tx, user.id, day)
-        await evaluateBudgetAlerts(tx, orgId, user.id, day)
+        await rebuildDailySnapshot(tx, user.id, day as IsoDate)
+        await evaluateBudgetAlerts(tx, orgId, user.id, day as IsoDate)
         return c
       })
 
@@ -393,10 +484,10 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     // that fetched nothing. A stalled `lastSyncAt` is the signal an operator
     // needs when a token silently lacks the metrics permission.
     if (report.published) {
-      await fastify.db
-        .update(orgIntegrations)
-        .set({ lastSyncAt: new Date() })
-        .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
+      await store.orgIntegrations.updateOne(
+        { _id: integrationKey(orgId, PROVIDER) },
+        { $set: { lastSyncAt: new Date() } },
+      )
     }
 
     return {
@@ -431,7 +522,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
   // nothing calls this on page load.
   fastify.get('/copilot/seats', { preHandler: requireAdmin(fastify) }, async (request, reply) => {
     const { idleAfterDays } = SeatsQuerySchema.parse(request.query)
-    const orgId = request.user.orgId
+    const orgId = request.user.orgId as OrgId
 
     const crypto = credentialCrypto()
     if (!crypto.available) {
@@ -440,23 +531,26 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         .send({ error: 'Credential encryption is not configured', encryption: crypto.reason })
     }
 
-    const [row] = await fastify.db
-      .select({
-        encryptedToken: orgIntegrations.encryptedToken,
-        githubOrg: organizations.githubOrg,
-      })
-      .from(orgIntegrations)
-      .innerJoin(organizations, eq(organizations.id, orgIntegrations.orgId))
-      .where(and(eq(orgIntegrations.orgId, orgId), eq(orgIntegrations.provider, PROVIDER)))
-      .limit(1)
+    const store = getStore()
+    const stored = await connection(store, orgId)
 
-    if (!row?.githubOrg) {
+    if (!stored?.integration || !stored.githubOrg) {
       return reply.status(404).send({ error: 'Copilot is not connected for this organization' })
+    }
+    const { integration, githubOrg } = stored
+
+    // Same guard as the sync, and for a sharper reason: `unlinked` and
+    // `idleMonthlyCostUsd` are what an admin cancels seats on, and an empty
+    // roster makes every seat read as unclaimed and every dollar as wasted.
+    const members = await orgMembers(store, orgId)
+    if (members.length === 0) {
+      request.log.error({ orgId }, 'Copilot seats: no users in the store for this organization')
+      return reply.status(503).send(EMPTY_ROSTER)
     }
 
     let token: string
     try {
-      token = crypto.open(row.encryptedToken, credentialContext(orgId))
+      token = crypto.open(integration.encryptedToken, credentialContext(orgId))
     } catch {
       return reply.status(500).send({
         error: 'The stored Copilot credential could not be decrypted. Reconnect the integration.',
@@ -468,27 +562,13 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     // rather than a generic 500. The status travels; the body does not.
     let seatPage: Awaited<ReturnType<typeof listCopilotSeats>>
     try {
-      seatPage = await listCopilotSeats(token, row.githubOrg)
+      seatPage = await listCopilotSeats(token, githubOrg)
     } catch (error) {
       request.log.error(error)
       return reply.status(502).send(upstreamFailure(error, 'seat roster read'))
     }
 
-    // Matched the way POST /copilot/sync matches, down to the lowercasing on
-    // both sides. GitHub logins are case-insensitive and `github_username` is
-    // typed in by hand here, so a second matcher that disagreed would link a
-    // developer on one route and call them unknown on the other.
-    const logins = [...new Set(seatPage.seats.map((s) => s.login.toLowerCase()))]
-    const linked = logins.length
-      ? await fastify.db
-          .select({
-            id: users.id,
-            name: users.name,
-            login: sql<string>`lower(${users.githubUsername})`,
-          })
-          .from(users)
-          .where(and(eq(users.orgId, orgId), inArray(sql`lower(${users.githubUsername})`, logins)))
-      : []
+    const linked = matchLogins(members, new Set(seatPage.seats.map((s) => s.login.toLowerCase())))
     // `github_username` carries no uniqueness constraint, so one login can
     // match two users. The seat still goes to exactly one of them, the lowest
     // id, so two reads of the same roster agree; and the login is reported
@@ -545,7 +625,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     const idleSeats = seats.filter((s) => s.status === 'idle')
 
     const response: CopilotSeatsResponse = {
-      org: row.githubOrg,
+      org: githubOrg,
       idleAfterDays,
       totalSeats: seatPage.totalSeats,
       skippedNullAssignee: seatPage.skippedNullAssignee,

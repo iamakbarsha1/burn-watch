@@ -1,11 +1,20 @@
 import type { FastifyInstance } from 'fastify'
-import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { BudgetAlertInputSchema, BudgetAlertPatchSchema } from '@burn-watch/shared'
-import type { BudgetAlert, AgentName } from '@burn-watch/shared'
-import { budgetAlerts, users } from '../../../drizzle/schema.js'
+import type { BudgetAlert } from '@burn-watch/shared'
+import {
+  getStore,
+  microsFromUsd,
+  monthToDateSpend,
+  newId,
+  usdFromMicros,
+  type BudgetAlertDoc,
+  type IsoDate,
+  type OrgId,
+  type UserId,
+} from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
-import { monthToDateSpend, evaluateBudgetAlert } from '../../services/budget-alert.service.js'
+import { evaluateBudgetAlert } from '../../services/budget-alert.service.js'
 
 const IdParamSchema = z.object({ id: z.string().uuid() })
 
@@ -13,8 +22,8 @@ function isoMonth(d: Date): string {
   return d.toISOString().slice(0, 7)
 }
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
+function today(): IsoDate {
+  return new Date().toISOString().slice(0, 10) as IsoDate
 }
 
 export async function budgetAlertsRoutes(fastify: FastifyInstance) {
@@ -23,40 +32,51 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
   // Open to every dashboard role: a developer should see why a banner is up,
   // even though only an admin can change the threshold that raised it.
   fastify.get('/budget-alerts', async (request) => {
-    const orgId = request.user.orgId
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
     const date = today()
     const monthKey = date.slice(0, 7)
 
-    const rows = await fastify.db
-      .select({
-        id: budgetAlerts.id,
-        userId: budgetAlerts.userId,
-        userName: users.name,
-        agent: budgetAlerts.agent,
-        monthlyLimitUsd: budgetAlerts.monthlyLimitUsd,
-        threshold: budgetAlerts.threshold,
-        createdAt: budgetAlerts.createdAt,
-        trippedAt: budgetAlerts.trippedAt,
-      })
-      .from(budgetAlerts)
-      .leftJoin(users, eq(users.id, budgetAlerts.userId))
-      .where(eq(budgetAlerts.orgId, orgId))
+    const alerts = await store.budgetAlerts.find({ orgId })
+
+    // The left join Postgres did, as one lookup for every scoped alert rather
+    // than one per alert. An id that matches no user still renders, with a null
+    // name, which is what the left join gave and what keeps a deleted user from
+    // hiding the limit set against them.
+    //
+    // `orgId` is in the filter where the Postgres join had nothing: PATCH
+    // accepts a userId without checking its org (POST does check), so an alert
+    // in this org can carry another org's user id and this lookup would
+    // otherwise resolve that user's name into the response. Scoping the read
+    // renders it as null instead. The PATCH hole itself predates this phase
+    // and is left for its own change.
+    const scoped = [...new Set(alerts.map((a) => a.userId).filter((id): id is UserId => id !== null))]
+    const names = new Map<string, string>()
+    if (scoped.length > 0) {
+      const found = await store.users.find(
+        { _id: { $in: scoped }, orgId },
+        { projection: { name: 1 } },
+      )
+      for (const user of found) names.set(user._id, user.name)
+    }
 
     const result: BudgetAlert[] = await Promise.all(
-      rows.map(async (row): Promise<BudgetAlert> => {
-        const spend = await monthToDateSpend(fastify.db, orgId, row.userId, row.agent, date)
-        const trippedMonth = row.trippedAt ? isoMonth(row.trippedAt) : null
+      alerts.map(async (alert): Promise<BudgetAlert> => {
+        const spend = await monthToDateSpend(store, orgId, alert.userId, alert.agent, date)
+        const trippedMonth = alert.trippedAt ? isoMonth(alert.trippedAt) : null
         return {
-          id: row.id,
-          userId: row.userId,
-          userName: row.userName,
-          agent: row.agent as AgentName | null,
-          monthlyLimitUsd: Number(row.monthlyLimitUsd),
-          threshold: Number(row.threshold),
-          createdAt: row.createdAt.toISOString(),
-          trippedAt: row.trippedAt ? row.trippedAt.toISOString() : null,
+          id: alert._id,
+          userId: alert.userId,
+          userName: alert.userId ? names.get(alert.userId) ?? null : null,
+          agent: alert.agent,
+          // Micros travel as far as this line and no further. Everything below
+          // a handler works in whole micros; dollars exist for the wire.
+          monthlyLimitUsd: usdFromMicros(alert.monthlyLimitMicros),
+          threshold: alert.threshold,
+          createdAt: alert.createdAt.toISOString(),
+          trippedAt: alert.trippedAt ? alert.trippedAt.toISOString() : null,
           tripped: trippedMonth === monthKey,
-          monthToDateSpendUsd: spend,
+          monthToDateSpendUsd: usdFromMicros(spend),
         }
       }),
     )
@@ -71,32 +91,31 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
     { preHandler: requireAdmin(fastify) },
     async (request, reply) => {
       const body = BudgetAlertInputSchema.parse(request.body)
-      const orgId = request.user.orgId
+      const store = getStore()
+      const orgId = request.user.orgId as OrgId
 
       if (body.userId) {
-        const [user] = await fastify.db
-          .select({ id: users.id })
-          .from(users)
-          .where(and(eq(users.id, body.userId), eq(users.orgId, orgId)))
+        const user = await store.users.findOne({ _id: body.userId as UserId, orgId })
         if (!user) {
           return reply.status(400).send({ error: 'User not found in this organization' })
         }
       }
 
-      const [created] = await fastify.db
-        .insert(budgetAlerts)
-        .values({
-          orgId,
-          userId: body.userId,
-          agent: body.agent,
-          monthlyLimitUsd: String(body.monthlyLimitUsd),
-          threshold: String(body.threshold),
-        })
-        .returning({ id: budgetAlerts.id })
+      const id = newId<string>()
+      await store.budgetAlerts.insertOne({
+        _id: id,
+        orgId,
+        userId: body.userId as UserId | null,
+        agent: body.agent,
+        monthlyLimitMicros: microsFromUsd(body.monthlyLimitUsd),
+        threshold: body.threshold,
+        trippedAt: null,
+        createdAt: new Date(),
+      })
 
-      await evaluateBudgetAlert(fastify.db, orgId, created.id, today())
+      await evaluateBudgetAlert(store, orgId, id, today())
 
-      return reply.status(201).send({ id: created.id })
+      return reply.status(201).send({ id })
     },
   )
 
@@ -109,27 +128,28 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamSchema.parse(request.params)
       const patch = BudgetAlertPatchSchema.parse(request.body)
-      const orgId = request.user.orgId
+      const store = getStore()
+      const orgId = request.user.orgId as OrgId
 
-      const values: Record<string, unknown> = {}
-      if (patch.userId !== undefined) values.userId = patch.userId
+      // Never empty: the schema refuses a patch with no fields, because an
+      // empty one would be a successful no-op that looks like a saved change.
+      const values: Partial<BudgetAlertDoc> = {}
+      if (patch.userId !== undefined) values.userId = patch.userId as UserId | null
       if (patch.agent !== undefined) values.agent = patch.agent
-      if (patch.monthlyLimitUsd !== undefined) values.monthlyLimitUsd = String(patch.monthlyLimitUsd)
-      if (patch.threshold !== undefined) values.threshold = String(patch.threshold)
+      if (patch.monthlyLimitUsd !== undefined) {
+        values.monthlyLimitMicros = microsFromUsd(patch.monthlyLimitUsd)
+      }
+      if (patch.threshold !== undefined) values.threshold = patch.threshold
 
-      const [updated] = await fastify.db
-        .update(budgetAlerts)
-        .set(values)
-        .where(and(eq(budgetAlerts.id, id), eq(budgetAlerts.orgId, orgId)))
-        .returning({ id: budgetAlerts.id })
+      const updated = await store.budgetAlerts.findOneAndUpdate({ _id: id, orgId }, { $set: values })
 
       if (!updated) {
         return reply.status(404).send({ error: 'Budget alert not found' })
       }
 
-      await evaluateBudgetAlert(fastify.db, orgId, updated.id, today())
+      await evaluateBudgetAlert(store, orgId, id, today())
 
-      return { id: updated.id }
+      return { id }
     },
   )
 
@@ -139,17 +159,14 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
     { preHandler: requireAdmin(fastify) },
     async (request, reply) => {
       const { id } = IdParamSchema.parse(request.params)
-      const orgId = request.user.orgId
+      const store = getStore()
+      const orgId = request.user.orgId as OrgId
 
-      const [deleted] = await fastify.db
-        .delete(budgetAlerts)
-        .where(and(eq(budgetAlerts.id, id), eq(budgetAlerts.orgId, orgId)))
-        .returning({ id: budgetAlerts.id })
-
-      if (!deleted) {
+      const deleted = await store.budgetAlerts.deleteOne({ _id: id, orgId })
+      if (deleted === 0) {
         return reply.status(404).send({ error: 'Budget alert not found' })
       }
-      return { id: deleted.id }
+      return { id }
     },
   )
 }
