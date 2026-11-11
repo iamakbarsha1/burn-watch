@@ -1,51 +1,27 @@
-import { and, eq, gte, lte } from 'drizzle-orm'
-import type { PgColumn, WithSubqueryWithSelection } from 'drizzle-orm/pg-core'
-import { claudeEnrichment, users } from '../../../drizzle/schema.js'
-import type { DB } from '../../plugins/db.js'
+import type { Document } from 'mongodb'
+import type { IsoDate, OrgId } from '@burn-watch/db'
 
 export interface EnrichmentRange {
-  orgId: string
-  from: string
-  to: string
+  orgId: OrgId
+  from: IsoDate
+  to: IsoDate
 }
 
 /**
- * The `claude_enrichment` rows one org wrote between two dates, as a CTE named
- * `scoped`. Both dashboard routes that read enrichment JSONB aggregate on top
- * of this, so the join and the org and date scoping are written once.
+ * The `claudeEnrichment` documents one org wrote between two dates, as the
+ * opening `$match` of both aggregates that read enrichment blobs.
  *
- * The join and the filter go through the query builder rather than being
- * spelled out in a `sql` template. Drizzle renders a column without its table
- * prefix inside a single-table select list, and a predicate written inline in
- * a template inherits that, which is how every correlated subquery on the
- * admin roster once resolved against the wrong table and returned zero. See
- * `adminUserFields` in routes/auth/device.ts. Inside the CTE the prefixes
- * survive, and `enrichment-query.test.ts` renders both statements to check.
+ * Postgres had to reach `org_id` by joining `users`, because `claude_enrichment`
+ * carried no org column — and getting that join written once, with both table
+ * prefixes intact, is the entire reason the CTE this replaces existed.
+ * `ClaudeEnrichmentDoc` denormalises `orgId`, so the scoping is now an equality
+ * on an indexed field (`claudeEnrichment_org_date`) and there is no join left to
+ * render wrong.
  *
- * The two assertions are the price of taking the columns as a parameter.
- * Drizzle's select type branches on whether its argument is `undefined`, and a
- * type parameter leaves that branch unresolved, which strips `.where` and
- * `.getSQL` off everything downstream. Handing the builder a concrete type and
- * restating the result keeps both assertions inside this function: callers
- * still get `scoped.toolUsage` checked against the schema, so renaming a
- * column is still a type error.
+ * Inclusive at both ends, as the `>=`/`<=` pair was. `date` is a YYYY-MM-DD
+ * string whose lexicographic order is date order, so the comparison never
+ * consults a timezone.
  */
-export function orgEnrichment<T extends Record<string, PgColumn>>(
-  db: DB,
-  columns: T,
-  { orgId, from, to }: EnrichmentRange,
-): WithSubqueryWithSelection<T, 'scoped'> {
-  return db.$with('scoped').as(
-    db
-      .select(columns as Record<string, PgColumn>)
-      .from(claudeEnrichment)
-      .innerJoin(users, eq(claudeEnrichment.userId, users.id))
-      .where(
-        and(
-          eq(users.orgId, orgId),
-          gte(claudeEnrichment.date, from),
-          lte(claudeEnrichment.date, to),
-        ),
-      ),
-  ) as WithSubqueryWithSelection<T, 'scoped'>
+export function enrichmentMatch({ orgId, from, to }: EnrichmentRange): Document {
+  return { $match: { orgId, date: { $gte: from, $lte: to } } }
 }

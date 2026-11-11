@@ -59,12 +59,7 @@ export default async function ActivityPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  let items: Awaited<ReturnType<typeof fetchActivity>> = []
-  try {
-    items = await fetchActivity(from, to, orgId)
-  } catch {
-    // Show empty state if API unavailable
-  }
+  const items = await fetchActivity(from, to, orgId)
 
   const total = items.reduce((s, i) => s + i.count, 0)
 
