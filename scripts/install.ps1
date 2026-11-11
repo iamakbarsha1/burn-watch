@@ -47,11 +47,22 @@ try {
 
 Write-Host "burnwatch: installed to $installDir\burnwatch.exe"
 
+# A machine already holding a config has been through register before — this
+# run is an upgrade, not a first install, so repeating the hint reads as if
+# nothing was remembered.
+$alreadyRegistered = Test-Path (Join-Path $HOME '.burnwatch\config.json')
+
 # PATH is read when a shell starts, so this takes effect in the next window.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (($userPath -split ';') -notcontains $installDir) {
   [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')
-  Write-Host "burnwatch: added $installDir to your PATH. Reopen PowerShell, then run  burnwatch register"
+  if ($alreadyRegistered) {
+    Write-Host "burnwatch: added $installDir to your PATH. Reopen PowerShell — upgrade complete, no need to register again."
+  } else {
+    Write-Host "burnwatch: added $installDir to your PATH. Reopen PowerShell, then run  burnwatch register"
+  }
+} elseif ($alreadyRegistered) {
+  Write-Host 'burnwatch: upgraded in place. No need to register again.'
 } else {
   Write-Host 'burnwatch: next, run  burnwatch register'
 }

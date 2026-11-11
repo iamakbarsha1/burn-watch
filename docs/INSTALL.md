@@ -157,8 +157,12 @@ uploaded, say so — that is the open item in the verification debt table in
 
 ### Upgrading
 
-Re-run the install command from step 2. It overwrites the binary in place and
-leaves your config and schedule alone. If you installed by hand into
+```bash
+burnwatch update
+```
+
+Re-runs the install command from step 2 for you. It overwrites the binary in
+place and leaves your config and schedule alone. If you installed by hand into
 `/usr/local/bin` before releases existed, the script warns that the old copy
 still wins the PATH lookup rather than letting you believe the upgrade took.
 

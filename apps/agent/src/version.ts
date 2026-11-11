@@ -7,4 +7,4 @@
  * every machine that registers with it, and the dashboard's "stale agent"
  * column reads from exactly that field.
  */
-export const AGENT_VERSION = '0.2.1'
+export const AGENT_VERSION = '0.2.2'

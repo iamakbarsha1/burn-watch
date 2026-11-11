@@ -1,4 +1,5 @@
 import { Command } from 'commander'
+import { execSync } from 'child_process'
 import { registerCommand } from './commands/register.js'
 import { syncCommand } from './commands/sync.js'
 import { statusCommand } from './commands/status.js'
@@ -9,6 +10,7 @@ import {
   SELF_CHECK_SENTINEL,
 } from './lib/cron.js'
 import { DEFAULT_API_URL, hasConfig, loadConfig, deleteConfig } from './lib/config.js'
+import { updateInstallCommand } from './lib/update.js'
 import { ApiClient } from './lib/api.js'
 import { AGENT_VERSION } from './version.js'
 
@@ -37,6 +39,13 @@ program
   .command('status')
   .description('Show agent status and last sync info')
   .action(statusCommand)
+
+program
+  .command('update')
+  .description('Upgrade this agent in place by re-running the installer')
+  .action(() => {
+    execSync(updateInstallCommand(process.platform), { stdio: 'inherit' })
+  })
 
 program
   .command('install-cron')

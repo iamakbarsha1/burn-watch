@@ -63,6 +63,12 @@ mv "$tmp/burnwatch" "$INSTALL_DIR/burnwatch"
 
 echo "burnwatch: installed to $INSTALL_DIR/burnwatch"
 
+# A machine already holding a config has been through register before — this
+# run is an upgrade, not a first install, so repeating the hint reads as if
+# nothing was remembered.
+already_registered=false
+[ -f "$HOME/.burnwatch/config.json" ] && already_registered=true
+
 case ":$PATH:" in
   *":$INSTALL_DIR:"*)
     # Earlier installs put the binary in /usr/local/bin by hand. If one is
@@ -72,6 +78,8 @@ case ":$PATH:" in
     if [ -n "$found" ] && [ "$found" != "$INSTALL_DIR/burnwatch" ]; then
       echo "burnwatch: warning — $found comes first on your PATH and will run instead."
       echo "  Remove it, or re-run with BURNWATCH_INSTALL_DIR=$(dirname "$found")"
+    elif [ "$already_registered" = true ]; then
+      echo 'burnwatch: upgraded in place. No need to register again.'
     else
       echo 'burnwatch: next, run  burnwatch register'
     fi
