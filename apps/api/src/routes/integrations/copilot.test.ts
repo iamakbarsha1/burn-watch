@@ -256,6 +256,16 @@ const members = (...rows: { id: string; name?: string; login: string }[]) => {
   }))
 }
 
+/** This organization has no user documents at all — a migration gap. */
+const noMembers = () => {
+  mongoState.docs.users = []
+}
+
+/** The organization document itself is absent from the store. */
+const noOrganization = () => {
+  mongoState.docs.organizations = []
+}
+
 /** The arguments of every call to one collection's operation, in order. */
 const mongoCalls = (collection: string, op: string) =>
   mongoState.calls.filter((c) => c.collection === collection && c.op === op).map((c) => c.args)
@@ -265,7 +275,15 @@ beforeEach(async () => {
   dbState.calls = []
   dbState.failOn = null
 
-  mongoState.docs = {}
+  // The caller holds an admin JWT for an organization that exists, and is
+  // itself a member of it. Both are invariants the routes now lean on — the
+  // connection write checks that the organization matched, and the sync and
+  // seats routes refuse an org with no members rather than reporting every
+  // login unmatched. A test that wants either absent clears it explicitly.
+  mongoState.docs = {
+    organizations: [{ _id: ORG_A, githubOrg: null }],
+    users: [{ _id: USER_A, orgId: ORG_A, name: 'Admin', githubUsername: null }],
+  }
   mongoState.aggregates = {}
   mongoState.calls = []
   mongoState.failOn = null
@@ -375,6 +393,23 @@ describe('GET /v1/integrations/copilot/status', () => {
     expect(mongoCalls('orgIntegrations', 'findOne')[0][0]).toEqual({ _id: INTEGRATION_ID })
     expect(mongoCalls('organizations', 'findOne')[0][0]).toEqual({ _id: ORG_A })
   })
+
+  /**
+   * Postgres drove this read from `organizations`, so a missing organization
+   * produced no row and `connected` was false. Two independent key lookups
+   * would instead report `connected: true` for an org that is not there, while
+   * /sync and /seats 404 on the missing name — one question, two answers.
+   */
+  it('reports not connected when the organization document is absent', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    connect()
+    noOrganization()
+
+    const res = await app.inject({ method: 'GET', url: STATUS_URL, headers: admin() })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ connected: false, org: null, lastSyncAt: null })
+  })
 })
 
 describe('PUT /v1/integrations/copilot/connection', () => {
@@ -469,6 +504,28 @@ describe('PUT /v1/integrations/copilot/connection', () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     const res = await put(admin(), { org: ORG })
     expect(res.statusCode).toBe(400)
+  })
+
+  /**
+   * `orgIntegrations` upserts and `organizations` does not, which is right —
+   * an organization is created by the bootstrap and invite paths, and this
+   * handler could only invent a name and a uniquely-indexed slug. What is not
+   * right is reporting success for the half that matched nothing: the admin
+   * got `{connected: true}`, then /status reported an org of null and /sync
+   * and /seats 404'd, with nothing logged.
+   */
+  it('refuses, and stores no credential, when the organization document is absent', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    noOrganization()
+
+    const res = await put(admin())
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json().error).toMatch(/not present in the store/)
+    // The transaction rolled back, so no credential is left attached to an org
+    // that is not there.
+    expect(mongoState.calls.map((c) => c.op)).toContain('rollback')
+    expect(res.payload).not.toContain(TOKEN)
   })
 })
 
@@ -828,6 +885,52 @@ describe('POST /v1/integrations/copilot/sync', () => {
     expect(fetchStub).not.toHaveBeenCalled()
   })
 
+  /**
+   * An org with no user documents produces exactly the response the real BW-33
+   * condition produces — every login in `unmatchedLogins`, zero written, 200
+   * OK — and `lastSyncAt` stamps a healthy sync beside it. An operator reads
+   * that as "nobody has their GitHub username filled in" and goes editing
+   * records that are already correct.
+   */
+  it('refuses a sync for an org with no users in the store, rather than blaming their usernames', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    connect()
+    noMembers()
+    github.downloadLinks = [DOWNLOAD]
+    github.ndjson = userDayLine('alice', '2026-11-09')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json().error).toMatch(/migration gap/)
+    // Refused before GitHub was asked, so nothing stamps lastSyncAt either.
+    expect(fetchStub).not.toHaveBeenCalled()
+    expect(writeOps()).toEqual([])
+  })
+
+  it('reads the roster scoped to the caller org', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    connect()
+    members({ id: USER_A, login: 'alice' })
+
+    await app.inject({
+      method: 'POST',
+      url: SYNC_URL,
+      headers: admin(),
+      payload: { day: '2026-11-09' },
+    })
+
+    // Asserted on the filter: the fake answers every read from what the test
+    // seeded, so another org's members would come back regardless and the
+    // response could not show a dropped scope.
+    expect(mongoCalls('users', 'find')[0][0]).toEqual({ orgId: ORG_A })
+  })
+
   it('rejects a day that is not YYYY-MM-DD', async () => {
     process.env.COPILOT_ENCRYPTION_KEY = KEY
     const res = await app.inject({
@@ -1104,6 +1207,34 @@ describe('GET /v1/integrations/copilot/seats', () => {
     expect(res.statusCode).toBe(503)
     expect(res.json().encryption).toBe('missing-key')
     expect(fetchStub).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Sharper here than on the sync. `unlinked` and `idleMonthlyCostUsd` are the
+   * figures an admin cancels seats on, and an empty roster makes every seat
+   * read as unclaimed and every dollar of it as wasted.
+   */
+  it('refuses the roster for an org with no users in the store', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    connect()
+    noMembers()
+    github.seatsBody = { total_seats: 1, seats: [seat('alice')] }
+
+    const res = await get()
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json().error).toMatch(/migration gap/)
+    expect(fetchStub).not.toHaveBeenCalled()
+  })
+
+  it('reads the roster scoped to the caller org', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    connect()
+    github.seatsBody = { total_seats: 1, seats: [seat('alice')] }
+
+    await get()
+
+    expect(mongoCalls('users', 'find')[0][0]).toEqual({ orgId: ORG_A })
   })
 
   it('returns 404 when the org has no Copilot connection', async () => {

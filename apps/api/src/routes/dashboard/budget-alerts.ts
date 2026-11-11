@@ -43,12 +43,21 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
     // than one per alert. An id that matches no user still renders, with a null
     // name, which is what the left join gave and what keeps a deleted user from
     // hiding the limit set against them.
+    //
+    // `orgId` is in the filter where the Postgres join had nothing: PATCH
+    // accepts a userId without checking its org (POST does check), so an alert
+    // in this org can carry another org's user id and this lookup would
+    // otherwise resolve that user's name into the response. Scoping the read
+    // renders it as null instead. The PATCH hole itself predates this phase
+    // and is left for its own change.
     const scoped = [...new Set(alerts.map((a) => a.userId).filter((id): id is UserId => id !== null))]
     const names = new Map<string, string>()
     if (scoped.length > 0) {
-      for (const user of await store.users.find({ _id: { $in: scoped } }, { projection: { name: 1 } })) {
-        names.set(user._id, user.name)
-      }
+      const found = await store.users.find(
+        { _id: { $in: scoped }, orgId },
+        { projection: { name: 1 } },
+      )
+      for (const user of found) names.set(user._id, user.name)
     }
 
     const result: BudgetAlert[] = await Promise.all(

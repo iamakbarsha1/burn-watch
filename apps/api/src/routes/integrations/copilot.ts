@@ -10,6 +10,7 @@ import {
   type IsoDate,
   type OrgId,
   type Store,
+  type UserDoc,
   type UserId,
 } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
@@ -101,24 +102,45 @@ function upstreamFailure(error: unknown, subject: string) {
 }
 
 /**
- * The stored connection for one org: the sealed credential, and the GitHub org
- * name it is bound to.
+ * What is stored for one org: the sealed credential, and the GitHub org name
+ * it is bound to. Null when the organization document itself is absent.
  *
- * Two key lookups rather than the join Postgres used. The org name lives on
- * `organizations.githubOrg`, not beside the ciphertext — it is not a secret,
- * and keeping it readable is what lets GET /status name the org while the
- * encryption key is missing.
+ * Two key lookups where Postgres used a join, and the null is what keeps them
+ * equivalent. The Postgres read drove from `organizations`, so a missing
+ * organization produced no row at all; two independent lookups would instead
+ * let GET /status answer `connected: true` for an org that does not exist,
+ * while /sync and /seats 404 on the missing name. One answer, not two.
+ *
+ * The org name lives on `organizations.githubOrg`, not beside the ciphertext —
+ * it is not a secret, and keeping it readable is what lets GET /status name
+ * the org while the encryption key is missing.
  */
 async function connection(store: Store, orgId: OrgId) {
   const [integration, org] = await Promise.all([
     store.orgIntegrations.findOne({ _id: integrationKey(orgId, PROVIDER) }),
     store.organizations.findOne({ _id: orgId }, { projection: { githubOrg: 1 } }),
   ])
-  return { integration, githubOrg: org?.githubOrg ?? null }
+  if (!org) return null
+  return { integration, githubOrg: org.githubOrg }
 }
 
 /**
- * The org's members whose GitHub login is one of `logins`, matched
+ * Every member of an org.
+ *
+ * The whole roster, not just the ones carrying a GitHub username, because the
+ * callers have to tell two things apart that look identical in a response: an
+ * org whose developers have not had `githubUsername` filled in — BW-33, a real
+ * condition an operator must act on — and an org with no user documents in
+ * this store at all, which is a migration gap and must not be reported as the
+ * first. An empty roster is impossible in the first case: the admin making the
+ * request is a member.
+ */
+async function orgMembers(store: Store, orgId: OrgId) {
+  return store.users.find({ orgId }, { projection: { name: 1, githubUsername: 1 } })
+}
+
+/**
+ * The members whose GitHub login is one of `logins`, matched
  * case-insensitively on both sides.
  *
  * GitHub logins are case-insensitive and `githubUsername` is typed in by hand
@@ -133,14 +155,26 @@ async function connection(store: Store, orgId: OrgId) {
  * wherever it runs, and here it is one rule a reader can see rather than a
  * `$expr` repeated in two places.
  */
-async function membersByLogin(store: Store, orgId: OrgId, logins: Set<string>) {
-  const members = await store.users.find(
-    { orgId, githubUsername: { $ne: null } },
-    { projection: { name: 1, githubUsername: 1 } },
-  )
+function matchLogins(members: UserDoc[], logins: Set<string>) {
   return members
-    .map((u) => ({ id: u._id, name: u.name, login: (u.githubUsername ?? '').toLowerCase() }))
+    .filter((u) => u.githubUsername !== null)
+    .map((u) => ({ id: u._id, name: u.name, login: u.githubUsername!.toLowerCase() }))
     .filter((u) => logins.has(u.login))
+}
+
+/** What both routes answer when this org has no users in the store at all. */
+const EMPTY_ROSTER = {
+  error:
+    'No users for this organization are present in the store, so no Copilot seat ' +
+    'or usage can be attributed to anyone. This is a migration gap, not a ' +
+    'missing GitHub username.',
+}
+
+/** Raised by a write that was supposed to match an existing document and did not. */
+class MissingOrganization extends Error {
+  constructor(orgId: OrgId) {
+    super(`organizations/${orgId} is absent, so the Copilot connection has nowhere to attach`)
+  }
 }
 
 export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
@@ -154,16 +188,18 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
   fastify.get('/copilot/status', { preHandler: requireAdmin(fastify) }, async (request) => {
     const crypto = credentialCrypto()
 
-    const { integration, githubOrg } = await connection(getStore(), request.user.orgId as OrgId)
-    const connected = integration !== null
+    const stored = await connection(getStore(), request.user.orgId as OrgId)
+    const connected = stored?.integration != null
 
     return {
       encryption: crypto.available ? ('ready' as const) : crypto.reason,
       connected,
       // Gated on `connected` so a disconnect does not leave the panel naming
       // an org nothing is being pulled from.
-      org: connected ? githubOrg : null,
-      lastSyncAt: integration?.lastSyncAt ? integration.lastSyncAt.toISOString() : null,
+      org: connected ? stored!.githubOrg : null,
+      lastSyncAt: stored?.integration?.lastSyncAt
+        ? stored.integration.lastSyncAt.toISOString()
+        : null,
     }
   })
 
@@ -207,28 +243,52 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       const encryptedToken = crypto.seal(body.token, credentialContext(orgId))
 
       const store = getStore()
-      await runInTxn(store, async (tx) => {
-        await tx.organizations.updateOne({ _id: orgId }, { $set: { githubOrg: body.org } })
+      try {
+        await runInTxn(store, async (tx) => {
+          const org = await tx.organizations.updateOne(
+            { _id: orgId },
+            { $set: { githubOrg: body.org } },
+          )
+          // Not an upsert, and the matched count is checked. The credential
+          // below upserts because its key is this org and this provider and
+          // nothing else creates it; an organization is created by the
+          // bootstrap and invite paths, and inventing one here would have to
+          // guess a name and a slug, the second of which is uniquely indexed.
+          // Unchecked, this is the asymmetry that let a connect return
+          // `{connected: true}` for a write that matched nothing, after which
+          // /status reported an org of null and /sync and /seats 404'd.
+          if (org.matchedCount !== 1) throw new MissingOrganization(orgId)
 
         // One upsert on the org-and-provider key, which is the _id here rather
         // than a unique index that could be dropped or never synced.
         // Reconnecting replaces the credential in place, and `lastSyncAt` is
         // seeded only on insert: a new token for the same org does not undo
         // the sync history behind it.
-        await tx.orgIntegrations.updateOne(
-          { _id: integrationKey(orgId, PROVIDER) },
-          {
-            $set: { encryptedToken },
-            $setOnInsert: {
-              orgId,
-              provider: PROVIDER,
-              lastSyncAt: null,
-              createdAt: new Date(),
+          await tx.orgIntegrations.updateOne(
+            { _id: integrationKey(orgId, PROVIDER) },
+            {
+              $set: { encryptedToken },
+              $setOnInsert: {
+                orgId,
+                provider: PROVIDER,
+                lastSyncAt: null,
+                createdAt: new Date(),
+              },
             },
-          },
-          { upsert: true },
-        )
-      })
+            { upsert: true },
+          )
+        })
+      } catch (error) {
+        if (!(error instanceof MissingOrganization)) throw error
+        // 503 on the same terms as the missing encryption key above: the
+        // request is well formed and an operator can fix it, by migrating the
+        // organization. The transaction rolled back, so no credential was
+        // stored against an org that is not there.
+        request.log.error(error)
+        return reply.status(503).send({
+          error: 'This organization is not present in the store yet, so the connection was not saved.',
+        })
+      }
 
       // The token never travels back, not even a prefix of it. `connected` is
       // the whole of what the caller needs to know.
@@ -264,10 +324,20 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     }
 
     const store = getStore()
-    const { integration, githubOrg } = await connection(store, orgId)
+    const stored = await connection(store, orgId)
 
-    if (!integration || !githubOrg) {
+    if (!stored?.integration || !stored.githubOrg) {
       return reply.status(404).send({ error: 'Copilot is not connected for this organization' })
+    }
+    const { integration, githubOrg } = stored
+
+    // Read before GitHub is asked, because an org with no members in the store
+    // cannot attribute a single row of whatever comes back, and a sync that
+    // attributes nothing must not stamp lastSyncAt as a healthy run.
+    const members = await orgMembers(store, orgId)
+    if (members.length === 0) {
+      request.log.error({ orgId }, 'Copilot sync: no users in the store for this organization')
+      return reply.status(503).send(EMPTY_ROSTER)
     }
 
     let token: string
@@ -316,7 +386,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     }
 
     const logins = [...byLogin.keys()]
-    const matchedUsers = logins.length ? await membersByLogin(store, orgId, new Set(logins)) : []
+    const matchedUsers = matchLogins(members, new Set(logins))
 
     let matched = 0
     let written = 0
@@ -462,10 +532,20 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     }
 
     const store = getStore()
-    const { integration, githubOrg } = await connection(store, orgId)
+    const stored = await connection(store, orgId)
 
-    if (!integration || !githubOrg) {
+    if (!stored?.integration || !stored.githubOrg) {
       return reply.status(404).send({ error: 'Copilot is not connected for this organization' })
+    }
+    const { integration, githubOrg } = stored
+
+    // Same guard as the sync, and for a sharper reason: `unlinked` and
+    // `idleMonthlyCostUsd` are what an admin cancels seats on, and an empty
+    // roster makes every seat read as unclaimed and every dollar as wasted.
+    const members = await orgMembers(store, orgId)
+    if (members.length === 0) {
+      request.log.error({ orgId }, 'Copilot seats: no users in the store for this organization')
+      return reply.status(503).send(EMPTY_ROSTER)
     }
 
     let token: string
@@ -488,8 +568,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       return reply.status(502).send(upstreamFailure(error, 'seat roster read'))
     }
 
-    const logins = new Set(seatPage.seats.map((s) => s.login.toLowerCase()))
-    const linked = logins.size ? await membersByLogin(store, orgId, logins) : []
+    const linked = matchLogins(members, new Set(seatPage.seats.map((s) => s.login.toLowerCase())))
     // `github_username` carries no uniqueness constraint, so one login can
     // match two users. The seat still goes to exactly one of them, the lowest
     // id, so two reads of the same roster agree; and the login is reported
