@@ -29,9 +29,14 @@ interface AgentTotals {
 interface LeaderboardFacet {
   users: UserTotals[]
   agents: AgentTotals[]
+  /** Everyone in range, not only the page. One row, or none for an empty range. */
+  everyone: { ids: UserId[] }[]
 }
 
-const NO_SPEND = { tokens: 0, costUsd: 0 }
+/** Built per slot, never shared. A single frozen literal handed to every
+ * zero-spend agent of every row is one object the whole response aliases, and
+ * anything that later edits a row in place would edit all of them. */
+const noSpend = () => ({ tokens: 0, costUsd: 0 })
 
 /**
  * The page of people, and the per-agent split for everyone in range, in one
@@ -90,6 +95,13 @@ export function leaderboardPipeline(
             },
           },
         ],
+        // Everyone in range, so the integrity check below does not depend on
+        // which page was asked for. Postgres joined `users` before LIMIT, so an
+        // unresolvable row affected every page the same way; doing the lookup
+        // on the page alone would make an orphan on page 0 fail page 0 and
+        // leave page 1 answering 200, which is a failure that moves when you
+        // look at it.
+        everyone: [{ $group: { _id: null, ids: { $addToSet: '$userId' } } }],
       },
     },
   ]
@@ -116,11 +128,18 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       if (page.length === 0) return []
 
       // The `inner join users` the Postgres query opened with, as one lookup
-      // for the page. Scoped to the caller's org as well as the id: the ids come
-      // from snapshots already matched on `orgId`, so a snapshot whose user sits
-      // in another org is corrupt rather than merely unusual, and resolving that
-      // person's name into this response would be a cross-org leak.
-      const ids = page.map((row) => row._id)
+      // covering everyone in range rather than only the page. Scoped to the
+      // caller's org as well as the id: the ids come from snapshots already
+      // matched on `orgId`, so a snapshot whose user sits in another org is
+      // corrupt rather than merely unusual, and resolving that person's name
+      // into this response would be a cross-org leak.
+      // The union, though `everyone` is an `$addToSet` over the same `$match`
+      // the page came from and is therefore always a superset. Spelling it out
+      // costs one line and means the page is covered by its own integrity
+      // check rather than by that reasoning staying true: a broken `everyone`
+      // branch now reaches the named throw below instead of a TypeError on the
+      // first row it cannot resolve.
+      const ids = [...new Set([...page.map((row) => row._id), ...(facet?.everyone[0]?.ids ?? [])])]
       const people = await store.users.find(
         { _id: { $in: ids }, orgId },
         { projection: { name: 1, email: 1 } },
@@ -132,9 +151,16 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       // not exist and the inner join never dropped a row. MongoDB enforces no
       // such thing, so the same join silently drops the row instead — and a
       // leaderboard missing people is indistinguishable from an org where
-      // nobody spent anything. On this branch, where `users` is not populated
-      // until the Phase 7 backfill, that would render an empty page and call it
-      // the truth.
+      // nobody spent anything.
+      //
+      // This is narrower than "the users collection is empty". Both writers of
+      // dailySnapshots go through rebuildDailySnapshot, which throws on a
+      // missing user inside the transaction, so the application cannot commit
+      // an orphan: with no users there are no snapshots either, and the empty
+      // range returns above without reading this collection at all. What
+      // reaches here is a half-finished Phase 7 backfill, or a user deleted
+      // without their snapshots — and in both the honest answer is that this
+      // page cannot be drawn, not a shorter version of it.
       const missing = ids.filter((id) => !byId.has(id))
       if (missing.length > 0) {
         throw new Error(`leaderboard: no user document in ${orgId} for ${missing.join(', ')}`)
@@ -151,7 +177,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         const perAgent = spendByUser.get(row._id)
         const agent = (name: AgentName) => {
           const totals = perAgent?.get(name)
-          if (!totals) return NO_SPEND
+          if (!totals) return noSpend()
           return { tokens: totals.tokens, costUsd: usdFromMicros(totals.costMicros) }
         }
         const user = byId.get(row._id)!
