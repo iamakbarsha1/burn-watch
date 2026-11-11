@@ -40,6 +40,24 @@ describe('selectDates', () => {
     expect(selectDates({ days: '0' })).toEqual([])
   })
 
+  it('rejects a flag swallowed as the --days value', () => {
+    expect(() => selectDates({ days: '--today' })).toThrow(
+      '--days must be a non-negative whole number, got "--today"'
+    )
+  })
+
+  it('rejects a non-numeric --days value', () => {
+    expect(() => selectDates({ days: 'abc' })).toThrow('got "abc"')
+  })
+
+  it('rejects a negative --days value', () => {
+    expect(() => selectDates({ days: '-1' })).toThrow('got "-1"')
+  })
+
+  it('rejects a fractional --days value', () => {
+    expect(() => selectDates({ days: '1.5' })).toThrow('got "1.5"')
+  })
+
   it('prioritizes --days over --last-7, --date, and --today', () => {
     expect(selectDates({ days: '2', last7: true, date: '2026-01-01', today: true })).toEqual([
       isoDate(2),
