@@ -137,13 +137,15 @@ export async function syncCommand(options: {
         enrichment,
       })
 
-      const claudeEvent = events.find((e) => e.agent === 'claude')
-      const qwenEvent = events.find((e) => e.agent === 'qwen')
+      const claudeEvents = events.filter((e) => e.agent === 'claude')
+      const qwenEvents = events.filter((e) => e.agent === 'qwen')
+      const claudeCostTotal = claudeEvents.reduce((sum, e) => sum + e.costUsd, 0)
+      const qwenTokenTotal = qwenEvents.reduce((sum, e) => sum + e.totalTokens, 0)
 
       console.log(
         `  Accepted: ${result.accepted} | Skipped: ${result.skipped}` +
-        (claudeEvent ? ` | Claude: $${claudeEvent.costUsd.toFixed(2)}` : '') +
-        (qwenEvent ? ` | Qwen: ${(qwenEvent.totalTokens / 1_000_000).toFixed(1)}M tokens (free)` : '')
+        (claudeEvents.length ? ` | Claude: $${claudeCostTotal.toFixed(2)}` : '') +
+        (qwenEvents.length ? ` | Qwen: ${(qwenTokenTotal / 1_000_000).toFixed(1)}M tokens (free)` : '')
       )
     } catch (err: any) {
       console.error(`  Error: ${err.message}`)
