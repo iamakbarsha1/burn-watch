@@ -29,9 +29,9 @@ const count = (pipeline: Document[], name: string) =>
   pipeline.filter((s) => name in s).length
 
 describe.each([
-  ['the activity pipeline', () => activity],
-  ['the projects pipeline', () => projects],
-])('%s', (_name, pipeline) => {
+  ['the activity pipeline', () => activity, () => ({ $sort: { count: -1, tool: 1 } })],
+  ['the projects pipeline', () => projects, () => ({ $sort: { totalCost: -1, path: 1 } })],
+])('%s', (_name, pipeline, expectedSort) => {
   it('opens by scoping to one organization and one date range', () => {
     // First stage, not merely present: an indexed `$match` placed after an
     // `$unwind` still returns the right answer and scans the whole collection
@@ -48,8 +48,12 @@ describe.each([
     expect(JSON.stringify(pipeline())).not.toContain('$lookup')
   })
 
-  it('sorts, so two identical requests return the same order', () => {
-    expect(pipeline().at(-1)).toHaveProperty('$sort')
+  it('sorts on a full spec, tie-break included', () => {
+    // The whole spec, not "a $sort exists". Removing a tie-break cannot be
+    // caught by a fixture — two rows that tie come out of `$group` in whatever
+    // order the server chose, as likely to be the sorted one as not — so the
+    // term's presence has to be asserted where it is written.
+    expect(pipeline().at(-1)).toEqual(expectedSort())
   })
 
   it('strips _id, which is the only thing keeping the group key off the wire', () => {

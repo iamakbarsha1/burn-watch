@@ -3,6 +3,7 @@ import type { Document } from 'mongodb'
 import { z } from 'zod'
 import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId } from '@burn-watch/db'
 import type { AgentName, TrendPoint } from '@burn-watch/shared'
+import { daysBefore, today } from './dates.js'
 import { dateRangeFields } from './query-schema.js'
 
 const QuerySchema = z.object({
@@ -87,11 +88,20 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         fromDate = parsed.data.from as IsoDate
         toDate = parsed.data.to as IsoDate
       } else {
+        // UTC throughout, for the reason `daysBefore` documents: the version
+        // this replaces read the day number in local time and then serialised
+        // in UTC, which is the same mixing `dayBefore` was rewritten to remove.
+        // Fixed at one site in this phase and not the other until review said
+        // so.
+        // The `??` is a type floor, not a default anyone reaches. The schema
+        // above refines to `days || (from && to)`, so arriving in this branch
+        // without `from`+`to` means `days` was supplied — but `.refine` does
+        // not narrow the type, so the compiler still sees `number | undefined`.
+        // A paramless request is answered 400 before any of this runs, which
+        // `routes.test.ts` covers for every dashboard route.
         const days = parsed.data.days ?? 30
-        const since = new Date()
-        since.setDate(since.getDate() - days)
-        fromDate = since.toISOString().slice(0, 10) as IsoDate
-        toDate = new Date().toISOString().slice(0, 10) as IsoDate
+        toDate = today()
+        fromDate = daysBefore(toDate, days)
       }
 
       const [facet] = await getStore().dailySnapshots.aggregate<TrendsFacet>(

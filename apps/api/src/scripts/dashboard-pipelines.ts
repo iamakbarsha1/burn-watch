@@ -47,7 +47,8 @@ import {
 } from '@burn-watch/db'
 import { toolUsageTotals } from '../routes/dashboard/activity.js'
 import { leaderboardPipeline } from '../routes/dashboard/leaderboard.js'
-import { dayBefore, overviewPipeline } from '../routes/dashboard/overview.js'
+import { dayBefore } from '../routes/dashboard/dates.js'
+import { overviewPipeline } from '../routes/dashboard/overview.js'
 import { projectTotals } from '../routes/dashboard/projects.js'
 import { trendsPipeline } from '../routes/dashboard/trends.js'
 
@@ -60,6 +61,7 @@ const THEIRS = newId<OrgId>()
 const ADA = newId<UserId>()
 const BO = newId<UserId>()
 const CY = newId<UserId>()
+const DI = newId<UserId>()
 const ZED = newId<UserId>()
 
 type AgentSlice = DailySnapshotDoc['byAgent']
@@ -138,6 +140,10 @@ const SNAPSHOTS: DailySnapshotDoc[] = [
   snapshot(ADA, MINE, D1, { claude: slice(1_000, 3) }, 2),
   snapshot(ADA, MINE, D2, { claude: slice(2_000, 5), copilot: slice(500, 1) }, 3),
   snapshot(BO, MINE, D2, { qwen: slice(7_000, 0) }, 4),
+  // Inserted third and outspends everyone in range, so a pipeline that pages
+  // before it sorts returns a different person than one that sorts first.
+  // With insertion order and spend order agreeing, that mutation survives.
+  snapshot(DI, MINE, D2, { gemini: slice(4_000, 40) }, 6),
   // Outside every range under test.
   snapshot(CY, MINE, D3, { codex: slice(300, 11) }, 1),
   snapshot(ZED, THEIRS, D1, { claude: slice(999_999, 777) }, 99),
@@ -163,6 +169,9 @@ const ENRICHMENT: ClaudeEnrichmentDoc[] = [
     mcpUsage: { neon: 1 },
     projectBreakdown: [project('acme/widgets', 2, 1)],
   }),
+  // Empty rather than null, and in range: `{}` and `[]` are the cases the
+  // deleted node-merge tests covered and no fixture reached afterwards.
+  enrichment(DI, MINE, D2, { toolUsage: {}, shellUsage: {}, projectBreakdown: [] }),
   enrichment(CY, MINE, D3, { toolUsage: { bash: 999 } }),
   enrichment(ZED, THEIRS, D1, {
     toolUsage: { bash: 1_000 },
@@ -185,6 +194,7 @@ const USERS = [
   user(ADA, MINE, 'Ada'),
   user(BO, MINE, 'Bo'),
   user(CY, MINE, 'Cy'),
+  user(DI, MINE, 'Di'),
   user(ZED, THEIRS, 'Zed'),
 ]
 
@@ -232,13 +242,20 @@ async function overview(store: Store) {
   )
 
   check('overview sums only the caller org', () => {
-    assert.equal(totals.costMicros, microsFromUsd(9), 'ADA 3 + 5 + 1, BO 0, and nothing of THEIRS')
-    assert.equal(totals.tokens, 10_500)
+    assert.equal(
+      totals.costMicros,
+      microsFromUsd(49),
+      'ADA 3 + 5 + 1, BO 0, DI 40, and nothing of THEIRS',
+    )
+    assert.equal(totals.tokens, 14_500)
   })
 
-  check('overview counts people, not user-days', () => {
-    // ADA holds two snapshots in this range. Counting documents answers 3.
-    assert.equal(totals.activeUsers, 2)
+  check('overview counts people, not user-days or days', () => {
+    // Three people over two dates, and ADA holds two of the four snapshots.
+    // Counting documents answers 4 and counting dates answers 2, so neither
+    // mistake can pass as the right number here — which is the only thing that
+    // makes this assertion mean what its name says.
+    assert.equal(totals.activeUsers, 3)
   })
 
   check('overview splits by agent without naming one', () => {
@@ -254,6 +271,11 @@ async function overview(store: Store) {
     })
     // A free tier still reports its tokens.
     assert.deepEqual(byAgent.get('qwen'), { _id: 'qwen', tokens: 7_000, costMicros: 0 })
+    assert.deepEqual(byAgent.get('gemini'), {
+      _id: 'gemini',
+      tokens: 4_000,
+      costMicros: microsFromUsd(40),
+    })
     assert.equal(byAgent.has('codex'), false, 'CY worked on D3, outside the range')
   })
 
@@ -261,7 +283,7 @@ async function overview(store: Store) {
     overviewPipeline(MINE, D2, D2, dayBefore(D2)),
   )
   check('overview reads the previous day, and only that day', () => {
-    assert.equal(single.totals[0].costMicros, microsFromUsd(6), 'D2: ADA 5 + 1, BO 0')
+    assert.equal(single.totals[0].costMicros, microsFromUsd(46), 'D2: ADA 5 + 1, BO 0, DI 40')
     assert.equal(single.previous[0].costMicros, microsFromUsd(3), 'D1: ADA 3')
     assert.equal(single.previous[0].activeUsers, 1)
   })
@@ -287,15 +309,19 @@ async function leaderboard(store: Store) {
   check('leaderboard ranks by spend and excludes other orgs', () => {
     assert.deepEqual(
       users.map((u) => u._id),
-      [ADA, BO],
-      'ZED outspends everyone and belongs to THEIRS',
+      [DI, ADA, BO],
+      'DI was inserted after ADA and BO and outspends both, so this order is the sort rather than the insertion',
     )
   })
 
   check('leaderboard folds a person days into one row', () => {
-    assert.equal(users[0].totalCostMicros, microsFromUsd(9))
-    assert.equal(users[0].totalTokens, 3_500)
-    assert.equal(users[0].sessions, 5, 'ADA: 2 on D1 plus 3 on D2')
+    const ada = users.find((u) => u._id === ADA)!
+    assert.equal(ada.totalCostMicros, microsFromUsd(9))
+    assert.equal(ada.totalTokens, 3_500, 'tokens, not a second reading of cost')
+    assert.equal(ada.sessions, 5, 'ADA: 2 on D1 plus 3 on D2')
+    // BO spent nothing and still moved seven thousand tokens. A `totalTokens`
+    // that quietly summed cost would read zero here and look plausible.
+    assert.equal(users.find((u) => u._id === BO)!.totalTokens, 7_000)
   })
 
   check('leaderboard keeps per-agent totals attached to the right person', () => {
@@ -310,7 +336,15 @@ async function leaderboard(store: Store) {
       ['claude', 'copilot'],
       'ADA never ran qwen; BO did',
     )
-    assert.equal(ada.find((a) => a._id.agent === 'claude')!.costMicros, microsFromUsd(8))
+    const claude = ada.find((a) => a._id.agent === 'claude')!
+    assert.equal(claude.costMicros, microsFromUsd(8))
+    // Both columns, from one row. Every assertion here used to read costMicros
+    // and none read tokens, so `tokens: {$sum: '$entries.v.costMicros'}`
+    // survived every layer — on the per-agent token column the page prints.
+    assert.equal(claude.tokens, 3_000)
+    const freeTier = agents.find((a) => a._id.userId === BO && a._id.agent === 'qwen')!
+    assert.equal(freeTier.costMicros, 0)
+    assert.equal(freeTier.tokens, 7_000, 'a zero cost must not drag the token count to zero')
     assert.equal(agents.some((a) => a._id.userId === ZED), false)
   })
 
@@ -318,18 +352,29 @@ async function leaderboard(store: Store) {
   check('leaderboard pages in the database, not in node', () => {
     assert.deepEqual(
       (paged.users as { _id: string }[]).map((u) => u._id),
-      [BO],
-      'offset 1 of the spend ranking',
+      [ADA],
+      'offset 1 of the spend ranking: DI, then ADA, then BO',
+    )
+  })
+
+  const [top] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 1, 0))
+  check('leaderboard sorts before it pages', () => {
+    // DI is the last of the three inserted and the highest spender. A pipeline
+    // that skips and limits an unsorted `$group` stream and sorts the page
+    // afterwards returns whoever the server emitted first, which is not DI.
+    assert.deepEqual(
+      (top.users as { _id: string }[]).map((u) => u._id),
+      [DI],
     )
   })
 
   check('leaderboard sees everyone in range on every page, not just that page', () => {
     // The integrity check the route runs is only page-independent if this
-    // branch is. Page 1 holds BO alone and must still carry ADA's id, or an
-    // orphan sorted onto page 0 would be invisible from page 1 and the request
-    // would answer 200 with a silently short ranking.
+    // branch is. Page 1 holds ADA alone and must still carry DI's and BO's
+    // ids, or an orphan sorted onto page 0 would be invisible from page 1 and
+    // the request would answer 200 with a silently short ranking.
     const everyone = (paged.everyone as { ids: string[] }[])[0].ids
-    assert.deepEqual([...everyone].sort(), [ADA, BO].sort())
+    assert.deepEqual([...everyone].sort(), [ADA, BO, DI].sort())
     assert.equal(everyone.includes(ZED), false)
   })
 }
@@ -359,7 +404,7 @@ async function orphans(store: Store) {
     const [facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 1, 0))
     check('leaderboard surfaces an orphan from any page, not only the one it lands on', () => {
       const page = (facet.users as { _id: string }[]).map((u) => u._id)
-      assert.deepEqual(page, [ADA], 'the ghost spent less than ADA, so it is not on page 0')
+      assert.deepEqual(page, [DI], 'the ghost spent less than DI, so it is not on page 0')
       const everyone = (facet.everyone as { ids: string[] }[])[0].ids
       assert.equal(everyone.includes(GHOST), true, 'and the check still sees it')
     })
@@ -398,11 +443,19 @@ async function trends(store: Store) {
       [D1, D2],
     )
     assert.equal(days[0].totalCostMicros, microsFromUsd(3))
-    assert.equal(days[1].totalCostMicros, microsFromUsd(6), 'ADA 5 + 1 and BO 0, across two people')
+    assert.equal(days[1].totalCostMicros, microsFromUsd(46), 'ADA 5 + 1, BO 0, DI 40')
+    // The token series on the same chart. Nothing read it before, and a
+    // `totalTokens` summing callCount or cost survived every layer.
+    assert.equal(days[0].totalTokens, 1_000)
+    assert.equal(days[1].totalTokens, 13_500, 'ADA 2500, BO 7000, DI 4000')
   })
 
   check('trends keeps each day per-agent split on its own day', () => {
-    const agents = facet.agents as { _id: { date: string; agent: string }; costMicros: number }[]
+    const agents = facet.agents as {
+      _id: { date: string; agent: string }
+      tokens: number
+      costMicros: number
+    }[]
     const d1 = agents.filter((a) => a._id.date === D1)
     assert.deepEqual(
       d1.map((a) => a._id.agent),
@@ -410,6 +463,10 @@ async function trends(store: Store) {
       'only ADA worked on D1, on claude alone',
     )
     assert.equal(d1[0].costMicros, microsFromUsd(3))
+    assert.equal(d1[0].tokens, 1_000, 'tokens, not a second reading of cost')
+    const qwen = agents.find((a) => a._id.date === D2 && a._id.agent === 'qwen')!
+    assert.equal(qwen.costMicros, 0)
+    assert.equal(qwen.tokens, 7_000, 'a free tier reports tokens at zero cost')
     assert.equal(agents.some((a) => a._id.date === D3), false)
   })
 
@@ -449,6 +506,15 @@ async function activity(store: Store) {
     // the document is not dropped on account of the other two.
     assert.equal(rows.find((r) => r.tool === 'neon')!.count, 7)
   })
+
+  check('activity treats an empty usage map as contributing nothing either', () => {
+    // DI's toolUsage and shellUsage are `{}` rather than null — a distinction
+    // the node merge's `?? {}` could not make, and the one deleted assertion
+    // from that suite no fixture replaced. Neither adds a row, and neither
+    // drops DI's document on the way past.
+    assert.equal(rows.some((r) => r.count === 0), false)
+    assert.deepEqual(rows.map((r) => r.tool), ['bash', 'neon', 'git', 'edit', 'git'])
+  })
 }
 
 async function projects(store: Store) {
@@ -467,9 +533,20 @@ async function projects(store: Store) {
     ])
   })
 
-  check('projects counts people, not user-days', () => {
-    // ADA touched acme/widgets on both days. Counting documents answers 3.
+  check('projects counts people, not user-days or days', () => {
+    // ADA touched acme/widgets on both days, so counting documents answers 3
+    // and counting distinct dates answers 2. Only counting people answers 2
+    // for a reason, and BO's single day is what tells the last two apart.
     assert.equal(rows[0].userCount, 2)
+    assert.equal(rows[1].userCount, 1, 'acme/gadgets is ADA alone, on one day')
+  })
+
+  check('projects treats an empty breakdown as contributing nothing', () => {
+    // DI's projectBreakdown is `[]`, in range. `$unwind` drops the document
+    // rather than inventing a row with an undefined path — the second deleted
+    // assertion from the node-merge suite.
+    assert.equal(rows.length, 2)
+    assert.equal(rows.some((r) => r.path === undefined || r.path === null), false)
   })
 }
 
