@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { approveDevice, revokeDevice } from '@/lib/api'
-import { getApiToken, getUserRole } from '@/lib/session'
+import { getApiToken, getSession, getUserRole } from '@/lib/session'
 
 const CODE = /^[A-Z0-9]{6}$/
 
@@ -25,7 +25,12 @@ export async function approveDeviceAction(
     const { hostname, platform } = await approveDevice(code)
     return { ok: true, message: `Approved ${hostname} (${platform}). The agent finishes on its own.` }
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : 'Failed to approve device' }
+    // The API answers every failure alike so codes cannot be probed. Naming
+    // the signed-in account is safe, and it is the usual cause: approving a
+    // colleague's code from your own login.
+    const email = (await getSession())?.user?.email
+    const hint = email ? ` Signed in as ${email}; a code only works for the same email it was registered with.` : ''
+    return { ok: false, message: `${err instanceof Error ? err.message : 'Failed to approve device'}.${hint}` }
   }
 }
 

@@ -18,7 +18,9 @@ async function prompt(question: string): Promise<string> {
 
 function detectNpxPath(): string {
   try {
-    return execSync('which npx', { encoding: 'utf8' }).trim()
+    // `which` is not a Windows command; `where` is, and may print several matches.
+    const finder = process.platform === 'win32' ? 'where npx' : 'which npx'
+    return execSync(finder, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\r?\n/)[0]
   } catch {
     return 'npx'
   }
