@@ -3,7 +3,7 @@
 import { useTransition } from 'react'
 import { useSearchParams, usePathname, useRouter } from 'next/navigation'
 import { rangePresets, resolveRange, today as todayStr } from '@/lib/format'
-import { inputClass } from '@/components/ui'
+import { CalendarPopover } from '@/components/CalendarPopover'
 
 export function DateRangePicker() {
   const searchParams = useSearchParams()
@@ -71,32 +71,7 @@ export function DateRangePicker() {
         ))}
       </div>
 
-      <div className="flex items-center gap-1.5">
-        <label className="sr-only" htmlFor="range-from">
-          From date
-        </label>
-        <input
-          id="range-from"
-          type="date"
-          value={from}
-          max={to}
-          onChange={(e) => e.target.value && navigate({ from: e.target.value, to })}
-          className={`${inputClass} h-9 text-xs [color-scheme:dark]`}
-        />
-        <span className="text-xs text-ink-3">to</span>
-        <label className="sr-only" htmlFor="range-to">
-          To date
-        </label>
-        <input
-          id="range-to"
-          type="date"
-          value={to}
-          min={from}
-          max={today}
-          onChange={(e) => e.target.value && navigate({ from, to: e.target.value })}
-          className={`${inputClass} h-9 text-xs [color-scheme:dark]`}
-        />
-      </div>
+      <CalendarPopover from={from} to={to} max={today} onPick={(from, to) => navigate({ from, to })} />
 
       <span
         role="status"
