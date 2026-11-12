@@ -1,13 +1,13 @@
-import { getSession } from '@/lib/session'
-import { PageHeader } from '@/components/ui'
-import { SetupSteps } from '@/components/SetupSteps'
+import { getSession } from "@/lib/session";
+import { PageHeader } from "@/components/ui";
+import { SetupSteps } from "@/components/SetupSteps";
 
 export default async function SetupPage() {
-  const session = await getSession()
-  const email = session?.user?.email ?? 'you@company.com'
+  const session = await getSession();
+  const email = session?.user?.email ?? "you@company.com";
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-4xl">
       <PageHeader
         title="Set up BurnWatch on your laptop"
         subtitle="Five minutes, once. After that the agent reports yesterday's usage every evening on its own."
@@ -18,5 +18,5 @@ export default async function SetupPage() {
           three copies of the page. */}
       <SetupSteps email={email} />
     </div>
-  )
+  );
 }
