@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { dailySnapshots } from '../../../drizzle/schema.js'
 import type { TrendPoint } from '@burn-watch/shared'
 import { dateRangeFields } from './query-schema.js'
+import { viewerScope } from '../../plugins/jwt.js'
 
 const QuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).optional(),
@@ -15,6 +16,7 @@ export async function trendsRoutes(fastify: FastifyInstance) {
     '/trends',
     async (request, reply) => {
       const orgId = request.user.orgId
+      const userId = viewerScope(request.user)
       const parsed = QuerySchema.safeParse(request.query)
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
@@ -50,6 +52,7 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         .where(
           and(
             eq(dailySnapshots.orgId, orgId),
+            userId ? eq(dailySnapshots.userId, userId) : undefined,
             gte(dailySnapshots.date, fromDate),
             lte(dailySnapshots.date, toDate),
           ),

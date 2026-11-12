@@ -5,6 +5,8 @@ import type { DB } from '../../plugins/db.js'
 
 export interface EnrichmentRange {
   orgId: string
+  /** Limit to one user. Unset reads the whole org. */
+  userId?: string
   from: string
   to: string
 }
@@ -33,7 +35,7 @@ export interface EnrichmentRange {
 export function orgEnrichment<T extends Record<string, PgColumn>>(
   db: DB,
   columns: T,
-  { orgId, from, to }: EnrichmentRange,
+  { orgId, userId, from, to }: EnrichmentRange,
 ): WithSubqueryWithSelection<T, 'scoped'> {
   return db.$with('scoped').as(
     db
@@ -43,6 +45,7 @@ export function orgEnrichment<T extends Record<string, PgColumn>>(
       .where(
         and(
           eq(users.orgId, orgId),
+          userId ? eq(claudeEnrichment.userId, userId) : undefined,
           gte(claudeEnrichment.date, from),
           lte(claudeEnrichment.date, to),
         ),

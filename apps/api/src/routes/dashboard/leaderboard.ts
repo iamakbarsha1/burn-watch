@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { dailySnapshots, users } from '../../../drizzle/schema.js'
 import type { LeaderboardEntry } from '@burn-watch/shared'
 import { dateQueryShape } from './query-schema.js'
+import { viewerScope } from '../../plugins/jwt.js'
 
 const QuerySchema = z.object({
   ...dateQueryShape,
@@ -16,6 +17,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
     '/leaderboard',
     async (request, reply) => {
       const orgId = request.user.orgId
+      const userId = viewerScope(request.user)
       const parsed = QuerySchema.safeParse(request.query)
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
@@ -47,7 +49,11 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         .from(dailySnapshots)
         .innerJoin(users, eq(dailySnapshots.userId, users.id))
         .where(
-          and(eq(dailySnapshots.orgId, orgId), gte(dailySnapshots.date, fromDate), lte(dailySnapshots.date, toDate)),
+          and(
+            eq(dailySnapshots.orgId, orgId),
+            userId ? eq(dailySnapshots.userId, userId) : undefined,
+            gte(dailySnapshots.date, fromDate), lte(dailySnapshots.date, toDate),
+          ),
         )
         .groupBy(dailySnapshots.userId, users.name, users.email)
         .orderBy(desc(sum(dailySnapshots.totalCostUsd)))
