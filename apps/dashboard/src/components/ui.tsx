@@ -151,7 +151,7 @@ export function Td({
   return (
     <td
       className={`px-4 py-3 align-middle text-sm ${
-        numeric ? 'text-right tabular-nums' : 'text-left'
+        numeric ? 'text-right tabular-nums whitespace-nowrap' : 'text-left'
       } ${className}`}
     >
       {children}
