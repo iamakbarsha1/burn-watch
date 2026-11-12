@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
-import { formatCost, formatTokens, formatSpend, formatRange, resolveRange, formatCount } from '@/lib/format'
+import { formatCost, formatTokens, formatRange, resolveRange, formatCount } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { agentById } from '@/lib/agents'
@@ -83,7 +83,8 @@ export default async function LeaderboardPage({
                   <div className="text-xs text-ink-3">{formatTokens(u.copilot.tokens)} tokens</div>
                 </Td>
                 <Td numeric className="font-semibold text-ink">
-                  {formatSpend(u.totalCostUsd, u.totalTokens)}
+                  {formatCost(u.totalCostUsd)}
+                  <div className="text-xs font-normal text-ink-3">{formatTokens(u.totalTokens)} tokens</div>
                 </Td>
                 <Td numeric className="text-ink-2">
                   {formatCount(u.sessions)}
