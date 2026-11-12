@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { BudgetAlertInputSchema, BudgetAlertPatchSchema } from '@burn-watch/shared'
 import type { BudgetAlert, AgentName } from '@burn-watch/shared'
 import { budgetAlerts, users } from '../../../drizzle/schema.js'
-import { requireAdmin } from '../../plugins/jwt.js'
+import { requireAdmin, viewerScope } from '../../plugins/jwt.js'
 import { monthToDateSpend, evaluateBudgetAlert } from '../../services/budget-alert.service.js'
 
 const IdParamSchema = z.object({ id: z.string().uuid() })
@@ -20,10 +20,11 @@ function today(): string {
 export async function budgetAlertsRoutes(fastify: FastifyInstance) {
   // GET /budget-alerts — every threshold configured for the caller's org, with
   // live month-to-date spend and whether it is tripped this calendar month.
-  // Open to every dashboard role: a developer should see why a banner is up,
-  // even though only an admin can change the threshold that raised it.
+  // Open to every dashboard role, but a non-admin only gets alerts set on
+  // their own account: an org-wide one carries the whole org's spend.
   fastify.get('/budget-alerts', async (request) => {
     const orgId = request.user.orgId
+    const userId = viewerScope(request.user)
     const date = today()
     const monthKey = date.slice(0, 7)
 
@@ -40,7 +41,9 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
       })
       .from(budgetAlerts)
       .leftJoin(users, eq(users.id, budgetAlerts.userId))
-      .where(eq(budgetAlerts.orgId, orgId))
+      .where(
+        and(eq(budgetAlerts.orgId, orgId), userId ? eq(budgetAlerts.userId, userId) : undefined),
+      )
 
     const result: BudgetAlert[] = await Promise.all(
       rows.map(async (row): Promise<BudgetAlert> => {

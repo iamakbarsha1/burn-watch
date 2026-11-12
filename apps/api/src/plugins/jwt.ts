@@ -96,6 +96,16 @@ export function requireAdmin(fastify: FastifyInstance) {
   }
 }
 
+/**
+ * The one user a dashboard read is limited to, or undefined for the whole org.
+ * Only an admin sees other people's usage; every other role sees its own. Every
+ * dashboard query must apply this, or a developer can read the org's spend by
+ * calling the API directly, whatever the sidebar hides.
+ */
+export function viewerScope(user: JwtPayload): string | undefined {
+  return user.role === 'admin' ? undefined : user.userId
+}
+
 export function requireDashboardAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {

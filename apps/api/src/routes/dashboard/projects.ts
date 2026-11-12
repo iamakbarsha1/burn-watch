@@ -5,6 +5,7 @@ import type { OrgProjectSummary, ProjectEntry } from '@burn-watch/shared'
 import type { DB } from '../../plugins/db.js'
 import { orgEnrichment, type EnrichmentRange } from './enrichment.js'
 import { dateQuerySchema as QuerySchema } from './query-schema.js'
+import { viewerScope } from '../../plugins/jwt.js'
 
 type MergedEntry = Pick<ProjectEntry, 'path' | 'cost' | 'sessions'>
 
@@ -62,7 +63,7 @@ export async function projectsRoutes(fastify: FastifyInstance) {
       const fromDate = parsed.data.date ?? parsed.data.from!
       const toDate = parsed.data.date ?? parsed.data.to!
 
-      const rows = await projectTotalsPerUser(fastify.db, { orgId, from: fromDate, to: toDate })
+      const rows = await projectTotalsPerUser(fastify.db, { orgId, userId: viewerScope(request.user), from: fromDate, to: toDate })
 
       // Fold the per-user rows together. The aggregate already gives one row
       // per user, but contributors stay a set rather than a counter, because

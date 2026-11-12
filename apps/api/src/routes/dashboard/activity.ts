@@ -5,6 +5,7 @@ import type { ToolUsageSummary } from '@burn-watch/shared'
 import type { DB } from '../../plugins/db.js'
 import { orgEnrichment, type EnrichmentRange } from './enrichment.js'
 import { dateQuerySchema as QuerySchema } from './query-schema.js'
+import { viewerScope } from '../../plugins/jwt.js'
 
 type UsageCounts = Record<string, number>
 
@@ -68,7 +69,7 @@ export async function activityRoutes(fastify: FastifyInstance) {
       const fromDate = parsed.data.date ?? parsed.data.from!
       const toDate = parsed.data.date ?? parsed.data.to!
 
-      const rows = await toolUsageTotals(fastify.db, { orgId, from: fromDate, to: toDate })
+      const rows = await toolUsageTotals(fastify.db, { orgId, userId: viewerScope(request.user), from: fromDate, to: toDate })
 
       // Flatten the per-category objects into the list the page renders. The
       // aggregate returns a single row, but the loop still adds across rows:
