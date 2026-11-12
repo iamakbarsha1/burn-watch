@@ -27,6 +27,11 @@ export function formatTokens(n: number): string {
   return String(n)
 }
 
+/** "$100.00 · 100.0M tokens": what was spent and how much was burned for it. */
+export function formatSpend(usd: number, tokens: number): string {
+  return `${formatCost(usd)} · ${formatTokens(tokens)} tokens`
+}
+
 export function formatPct(n: number): string {
   return `${n.toFixed(1)}%`
 }
