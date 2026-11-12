@@ -306,10 +306,10 @@ function C({ children }: { children: React.ReactNode }) {
 function Code({ children }: { children: string }) {
   return (
     <div className="relative">
-      <pre className="overflow-x-auto rounded-lg border border-line bg-surface-0 p-3.5 pr-11 font-mono text-xs leading-relaxed text-ink">
+      <pre className="overflow-x-auto rounded-lg border border-line bg-surface-0 p-3.5 pr-14 font-mono text-xs leading-relaxed text-ink">
         <code>{children}</code>
       </pre>
-      <div className="absolute right-1.5 top-1.5 rounded bg-surface-0">
+      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md bg-surface-0">
         <CopyButton text={children} label="command" />
       </div>
     </div>

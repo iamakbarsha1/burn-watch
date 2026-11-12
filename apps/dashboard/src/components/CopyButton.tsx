@@ -19,7 +19,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
           // clipboard blocked (insecure context); nothing useful to show
         }
       }}
-      className="shrink-0 rounded p-1 text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
+      className="shrink-0 rounded-md p-2 text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
     >
       <svg
         viewBox="0 0 24 24"
