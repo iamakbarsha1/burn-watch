@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Card } from '@/components/ui'
 import { detectOs, OS_LABELS, OS_ORDER, type Os } from '@/lib/os'
+import { CopyButton } from '@/components/CopyButton'
 
 const REPO = 'git@github.com:iamakbarsha1/burn-watch.git'
 const RAW = 'https://raw.githubusercontent.com/iamakbarsha1/burn-watch/main/scripts'
@@ -304,9 +305,14 @@ function C({ children }: { children: React.ReactNode }) {
 
 function Code({ children }: { children: string }) {
   return (
-    <pre className="overflow-x-auto rounded-lg border border-line bg-surface-0 p-3.5 font-mono text-xs leading-relaxed text-ink">
-      <code>{children}</code>
-    </pre>
+    <div className="relative">
+      <pre className="overflow-x-auto rounded-lg border border-line bg-surface-0 p-3.5 pr-11 font-mono text-xs leading-relaxed text-ink">
+        <code>{children}</code>
+      </pre>
+      <div className="absolute right-1.5 top-1.5 rounded bg-surface-0">
+        <CopyButton text={children} label="command" />
+      </div>
+    </div>
   )
 }
 
