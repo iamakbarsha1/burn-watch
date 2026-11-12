@@ -57,46 +57,21 @@ html {
 }
 
 /*
- * Scrollbars. The default dark-mode bar is a thick grey pill that reads as a
- * widget. Every scroller gets a slim, low-contrast thumb on a transparent track
- * (Firefox and Chromium/Safari 18.2+ read scrollbar-*; older WebKit gets the
- * pseudo-elements below). Overflow itself stays: tables need to scroll on
- * narrow screens, only the chrome changes.
+ * Scrollbars: invisible everywhere. Overflow itself stays (tables and tab bars
+ * still scroll by touch, trackpad, wheel or keyboard); only the bar is hidden.
  */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-line-strong) transparent;
-}
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
-*::-webkit-scrollbar-thumb {
-  background: var(--color-line-strong);
-  border-radius: 9999px;
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--color-ink-3);
-  background-clip: content-box;
-}
-
-/*
- * Swipe strips (the mobile tab bar): no bar at all, the content is reachable by
- * touch/trackpad. The right-edge fade is the affordance that says "more".
- */
-@utility scroll-strip {
-  overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+/* Swipe strips (the mobile tab bar): the right-edge fade says "more". */
+@utility scroll-strip {
+  overflow-x: auto;
   mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
-  &::-webkit-scrollbar {
-    display: none;
-  }
 }
 
 body {
