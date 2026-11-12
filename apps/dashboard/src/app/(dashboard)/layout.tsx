@@ -50,7 +50,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
             </Link>
             <SignOutButton />
           </div>
-          <div className="overflow-x-auto px-2 pb-2">
+          <div className="scroll-strip px-2 pb-2">
             <Suspense fallback={null}>
               <SidebarNav orientation="horizontal" role={role} />
             </Suspense>
