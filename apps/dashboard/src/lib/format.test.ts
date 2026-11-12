@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatRange, formatAgo, formatCost, resolveRange, rangePresets, ALL_TIME_FROM } from './format'
+import { formatRange, formatAgo, formatCost, formatSpend, resolveRange, rangePresets, ALL_TIME_FROM } from './format'
 import type { RangeParams } from './format'
 
 describe('formatCost', () => {
@@ -12,6 +12,13 @@ describe('formatCost', () => {
     expect(formatCost(0)).toBe('$0.00')
     expect(formatCost(0.004)).toBe('<$0.01')
     expect(formatCost(12.5)).toBe('$12.50')
+  })
+})
+
+describe('formatSpend', () => {
+  it('pairs cost with token burn', () => {
+    expect(formatSpend(100, 100_000_000)).toBe('$100.00 · 100.0M tokens')
+    expect(formatSpend(0, 1_057_000_000)).toBe('$0.00 · 1.1B tokens')
   })
 })
 
