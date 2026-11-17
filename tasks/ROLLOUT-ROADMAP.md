@@ -98,6 +98,9 @@ thing and managers can see their team.
 
 ### R0.2 Teams + manager scope (includes C5) · M
 
+Status: API and dashboard UI done on `feat/r0.2-teams` (uncommitted). Design and plan in
+[R0.2-TEAMS-DESIGN.md](R0.2-TEAMS-DESIGN.md).
+
 - `teams` and `team_members` collections in `packages/db`.
 - `viewerScope` (`apps/api/src/plugins/jwt.ts:105`) today returns one userId or
   `undefined`. Change it to return a user-id set: own id for developers, team
