@@ -3,6 +3,7 @@
 **Created:** 2026-11-04
 **Goal:** get BurnWatch deployed on Vercel, tested, and feature-complete.
 **Ticket board:** [TICKETS.md](./TICKETS.md)
+**Next plan (2026-11-18):** [ROLLOUT-ROADMAP.md](./ROLLOUT-ROADMAP.md) covers seat billing, teams, adoption and governance for org rollout.
 
 ---
 
