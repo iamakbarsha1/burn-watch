@@ -10,6 +10,11 @@ vi.mock('@/lib/session', () => ({ getUserRole }))
 const connectCopilot = vi.fn()
 const disconnectCopilot = vi.fn()
 const syncCopilot = vi.fn()
+const createTeam = vi.fn()
+const renameTeam = vi.fn()
+const deleteTeam = vi.fn()
+const setTeamMember = vi.fn()
+const removeTeamMember = vi.fn()
 vi.mock('@/lib/api', () => ({
   connectCopilot,
   disconnectCopilot,
@@ -19,11 +24,23 @@ vi.mock('@/lib/api', () => ({
   createBudgetAlert: vi.fn(),
   updateBudgetAlert: vi.fn(),
   deleteBudgetAlert: vi.fn(),
+  createTeam,
+  renameTeam,
+  deleteTeam,
+  setTeamMember,
+  removeTeamMember,
 }))
 
-const { connectCopilotAction, disconnectCopilotAction, syncCopilotAction } = await import(
-  './actions.js'
-)
+const {
+  connectCopilotAction,
+  disconnectCopilotAction,
+  syncCopilotAction,
+  createTeamAction,
+  renameTeamAction,
+  deleteTeamAction,
+  setTeamMemberAction,
+  removeTeamMemberAction,
+} = await import('./actions.js')
 
 function form(fields: Record<string, string> = {}): FormData {
   const data = new FormData()
@@ -210,5 +227,58 @@ describe('syncCopilotAction', () => {
     expect(state.message).toBe('Copilot is not connected for this organization')
     expect(state.result).toBeUndefined()
     expect(revalidatePath).not.toHaveBeenCalled()
+  })
+})
+
+describe('team actions', () => {
+  const TEAM = '11111111-1111-4111-8111-111111111111'
+  const USER = '22222222-2222-4222-8222-222222222222'
+
+  const cases = [
+    ['createTeamAction', createTeamAction, createTeam, { name: 'Platform' }],
+    ['renameTeamAction', renameTeamAction, renameTeam, { teamId: TEAM, name: 'Infra' }],
+    ['deleteTeamAction', deleteTeamAction, deleteTeam, { teamId: TEAM }],
+    ['setTeamMemberAction', setTeamMemberAction, setTeamMember, { teamId: TEAM, userId: USER, role: 'manager' }],
+    ['removeTeamMemberAction', removeTeamMemberAction, removeTeamMember, { teamId: TEAM, userId: USER }],
+  ] as const
+
+  for (const [name, action, apiFn, fields] of cases) {
+    it(`${name} refuses a manager and calls nothing`, async () => {
+      getUserRole.mockResolvedValue('manager')
+      const state = await action(null, form(fields))
+      expect(state).toMatchObject({ ok: false, message: 'Admin role required' })
+      expect(apiFn).not.toHaveBeenCalled()
+      expect(revalidatePath).not.toHaveBeenCalled()
+    })
+
+    it(`${name} calls the API and revalidates every page`, async () => {
+      const state = await action(null, form(fields))
+      expect(state.ok).toBe(true)
+      expect(apiFn).toHaveBeenCalledTimes(1)
+      expect(revalidatePath).toHaveBeenCalledWith('/', 'layout')
+    })
+  }
+
+  it('passes ids and role through to setTeamMember', async () => {
+    await setTeamMemberAction(null, form({ teamId: TEAM, userId: USER, role: 'member' }))
+    expect(setTeamMember).toHaveBeenCalledWith(TEAM, USER, 'member')
+  })
+
+  it('refuses an unknown team role without calling the API', async () => {
+    const state = await setTeamMemberAction(null, form({ teamId: TEAM, userId: USER, role: 'owner' }))
+    expect(state.ok).toBe(false)
+    expect(setTeamMember).not.toHaveBeenCalled()
+  })
+
+  it('refuses a blank name without calling the API', async () => {
+    const state = await createTeamAction(null, form({ name: '   ' }))
+    expect(state).toMatchObject({ ok: false, message: 'Enter a team name' })
+    expect(createTeam).not.toHaveBeenCalled()
+  })
+
+  it("returns the API's own words on failure", async () => {
+    createTeam.mockRejectedValueOnce(new Error('A team with this name already exists'))
+    const state = await createTeamAction(null, form({ name: 'Platform' }))
+    expect(state).toMatchObject({ ok: false, message: 'A team with this name already exists' })
   })
 })

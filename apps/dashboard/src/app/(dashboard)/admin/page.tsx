@@ -6,11 +6,13 @@ import {
   fetchPendingInvites,
   fetchBudgetAlerts,
   fetchCopilotStatus,
+  fetchTeams,
 } from '@/lib/api'
 import { formatCost, formatTokens, formatAgo } from '@/lib/format'
 import { InviteForm } from './InviteForm'
 import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
 import { CopilotPanel } from './CopilotPanel'
+import { CreateTeamForm, TeamsList } from './TeamsPanel'
 import {
   PageHeader,
   StatTile,
@@ -35,11 +37,12 @@ export default async function AdminPage() {
   // Null rather than [] for the status: there is no empty Copilot status, and
   // the panel renders "could not read" rather than quietly claiming the
   // integration is unconfigured when the API is the thing that is down.
-  const [users, invites, budgetAlerts, copilotStatus] = await Promise.all([
+  const [users, invites, budgetAlerts, copilotStatus, teams] = await Promise.all([
     fetchAdminUsers().catch(() => []),
     fetchPendingInvites().catch(() => []),
     fetchBudgetAlerts().catch(() => []),
     fetchCopilotStatus().catch(() => null),
+    fetchTeams().catch(() => []),
   ])
 
   const onboarded = users.filter((u) => u.deviceCount > 0).length
@@ -197,6 +200,16 @@ export default async function AdminPage() {
             </TableFrame>
           </section>
         )}
+
+        <Section
+          title={`Teams (${teams.length})`}
+          description="A manager sees their own usage plus everyone in the teams they manage. Only people whose login role is manager get that view; the Manager badge here does nothing for a developer or admin. A role change applies on their next sign-in."
+        >
+          <div className="space-y-4">
+            <CreateTeamForm />
+            <TeamsList teams={teams} users={users} />
+          </div>
+        </Section>
 
         <Section
           title="Budget alerts"

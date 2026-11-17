@@ -14,6 +14,8 @@ import type {
   CopilotStatus,
   CopilotSyncResult,
   CopilotSeatsResponse,
+  Team,
+  TeamComparison,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -83,16 +85,30 @@ async function apiDelete<T>(path: string): Promise<T> {
   return apiMutate<T>('DELETE', path)
 }
 
-export async function fetchOverview(from: string, to: string, orgId: string): Promise<OverviewResponse> {
-  return apiFetch(`/v1/dashboard/overview?from=${from}&to=${to}&orgId=${orgId}`)
+// `teamId` narrows the read to one team. The API answers 403/404 for a team the
+// viewer cannot read, so pages pass only ids that came back from fetchTeams.
+const teamQuery = (teamId?: string) => (teamId ? `&teamId=${teamId}` : '')
+
+export async function fetchOverview(
+  from: string,
+  to: string,
+  orgId: string,
+  teamId?: string,
+): Promise<OverviewResponse> {
+  return apiFetch(`/v1/dashboard/overview?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}`)
 }
 
 export async function fetchLeaderboard(from: string, to: string, orgId: string): Promise<LeaderboardEntry[]> {
   return apiFetch(`/v1/dashboard/leaderboard?from=${from}&to=${to}&orgId=${orgId}`)
 }
 
-export async function fetchTrends(from: string, to: string, orgId: string): Promise<TrendPoint[]> {
-  return apiFetch(`/v1/dashboard/trends?from=${from}&to=${to}&orgId=${orgId}`)
+export async function fetchTrends(
+  from: string,
+  to: string,
+  orgId: string,
+  teamId?: string,
+): Promise<TrendPoint[]> {
+  return apiFetch(`/v1/dashboard/trends?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}`)
 }
 
 export async function fetchActivity(from: string, to: string, orgId: string): Promise<ToolUsageSummary[]> {
@@ -166,8 +182,8 @@ export async function connectCopilot(
   org: string,
   token: string,
 ): Promise<{ connected: true; org: string }> {
-  // `apiMutate` directly rather than a one-caller `apiPut` wrapper: PUT has
-  // exactly this one use in the dashboard.
+  // `apiMutate` directly rather than an `apiPut` wrapper: PUT has two uses in
+  // the dashboard (this and setTeamMember), not enough to earn one.
   return apiMutate('PUT', '/v1/integrations/copilot/connection', { org, token })
 }
 
@@ -189,4 +205,40 @@ export async function syncCopilot(day?: string): Promise<CopilotSyncResult> {
 export async function fetchCopilotSeats(idleAfterDays?: number): Promise<CopilotSeatsResponse> {
   const query = idleAfterDays === undefined ? '' : `?idleAfterDays=${idleAfterDays}`
   return apiFetch(`/v1/integrations/copilot/seats${query}`)
+}
+
+/* ---------- Teams (R0.2) ---------- */
+
+// Every team for an admin, managed teams for a manager, [] for a developer.
+export async function fetchTeams(): Promise<Team[]> {
+  return apiFetch('/v1/dashboard/teams')
+}
+
+export async function fetchTeamCompare(from: string, to: string): Promise<TeamComparison[]> {
+  return apiFetch(`/v1/dashboard/teams/compare?from=${from}&to=${to}`)
+}
+
+export async function createTeam(name: string): Promise<{ id: string }> {
+  return apiPost('/v1/dashboard/teams', { name })
+}
+
+export async function renameTeam(id: string, name: string): Promise<{ id: string }> {
+  return apiPatch(`/v1/dashboard/teams/${id}`, { name })
+}
+
+export async function deleteTeam(id: string): Promise<{ id: string }> {
+  return apiDelete(`/v1/dashboard/teams/${id}`)
+}
+
+// Adds the user, or changes their role when they are already in the team.
+export async function setTeamMember(
+  teamId: string,
+  userId: string,
+  role: 'manager' | 'member',
+): Promise<{ teamId: string; userId: string; role: string }> {
+  return apiMutate('PUT', `/v1/dashboard/teams/${teamId}/members/${userId}`, { role })
+}
+
+export async function removeTeamMember(teamId: string, userId: string): Promise<{ teamId: string; userId: string }> {
+  return apiDelete(`/v1/dashboard/teams/${teamId}/members/${userId}`)
 }
