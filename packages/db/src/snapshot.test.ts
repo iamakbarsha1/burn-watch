@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { Document } from 'mongodb'
 import { dayKey, type DeviceId, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
-import { buildSnapshot, pickWinningSource, rebuildDailySnapshot, type AgentSourceTotals } from './snapshot.js'
-import type { Txn } from './store.js'
-import { upsertUsageEvents } from './usage.js'
+import type { DailySnapshotDoc } from './documents.js'
+import {
+  buildSnapshot,
+  costFieldFor,
+  monthToDateSpend,
+  pickWinningSource,
+  rebuildDailySnapshot,
+  type AgentSourceTotals,
+} from './snapshot.js'
+import type { Store, Txn } from './store.js'
+import { upsertEnrichment, upsertUsageEvents } from './usage.js'
 
 const row = (
   agent: AgentSourceTotals['agent'],
@@ -68,11 +76,11 @@ describe('buildSnapshot', () => {
 })
 
 /** A Txn that answers the three reads a rebuild makes and records its one write. */
-function fakeTxn(rows: AgentSourceTotals[]) {
+function fakeTxn(rows: AgentSourceTotals[], user: Document | null = { _id: userId, orgId }) {
   const writes: Array<{ filter: Document; update: Document; opts: Document | undefined }> = []
   const tx = {
     usageEvents: { aggregate: async () => rows },
-    users: { findOne: async () => ({ _id: userId, orgId }) },
+    users: { findOne: async () => user },
     dailySnapshots: {
       updateOne: async (filter: Document, update: Document, opts?: Document) => {
         writes.push({ filter, update, opts })
@@ -98,6 +106,22 @@ describe('rebuildDailySnapshot', () => {
       expect(update.$set).not.toHaveProperty(field)
     }
     expect(update.$setOnInsert).toEqual({ callCount: 0, sessionCount: 0, cacheHitRate: null })
+  })
+
+  /**
+   * The one branch of this function that is not about arithmetic.
+   *
+   * Under Postgres the lookup hit the same database the JWT was issued from, so
+   * a miss meant a user deleted mid-request and returning quietly was fine. On
+   * Mongo a miss is also what an unpopulated `users` collection looks like, and
+   * the caller would answer `{accepted: N}` for a day whose snapshot was never
+   * written. Throwing aborts the transaction, which rolls the events back with
+   * it, so the agent re-sends rather than being told a lie.
+   */
+  it('aborts the transaction when the user is missing, instead of writing nothing quietly', async () => {
+    const { tx, writes } = fakeTxn([row('claude', 'agent', 100, ['opus'])], null)
+    await expect(rebuildDailySnapshot(tx, userId, date)).rejects.toThrow(/no user/)
+    expect(writes).toHaveLength(0)
   })
 })
 
@@ -152,5 +176,312 @@ describe('upsertUsageEvents', () => {
     expect(op.update.$setOnInsert).toEqual({ orgId })
     // A no-op re-sync is still an acceptance (matchedCount, not modifiedCount).
     expect(counts).toEqual({ accepted: 1, skipped: 0 })
+  })
+})
+
+/** A Txn that records every updateOne, keyed by the collection it landed on. */
+function fakeWriteTxn() {
+  const writes: Record<string, { filter: Document; update: Document; opts?: Document }[]> = {}
+  const collection = (name: string) => ({
+    updateOne: async (filter: Document, update: Document, opts?: Document) => {
+      ;(writes[name] ??= []).push({ filter, update, opts })
+      return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0, upsertedId: null }
+    },
+  })
+  const tx = {
+    claudeEnrichment: collection('claudeEnrichment'),
+    dailySnapshots: collection('dailySnapshots'),
+  } as unknown as Txn
+  return { tx, writes }
+}
+
+const wireEnrichment = {
+  date: date as string,
+  sessionCount: 4,
+  callCount: 31,
+  cacheHitRate: 92.1,
+  writtenTokens: 1234,
+  activityBreakdown: [{ type: 'Coding', cost: 1, turns: 2, oneShotRate: 50 }],
+  projectBreakdown: [{ path: 'acme/widgets', cost: 1, avgPerSession: 1, sessions: 1, overheadK: 0 }],
+  topSessions: [{ date: date as string, project: 'acme/widgets', cost: 1, calls: 2 }],
+  toolUsage: { bash: 501 },
+  shellUsage: { git: 238 },
+  mcpUsage: { neon: 14 },
+}
+
+describe('upsertEnrichment', () => {
+  it('writes the heavy blobs to claudeEnrichment under the user-day key', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
+    const [{ filter, update, opts }] = writes.claudeEnrichment
+    expect(filter).toEqual({ _id: dayKey(userId, date) })
+    expect(opts).toEqual({ upsert: true })
+    expect(update.$set).toMatchObject({
+      userId,
+      orgId,
+      date,
+      writtenTokens: 1234,
+      toolUsage: { bash: 501 },
+      mcpUsage: { neon: 14 },
+    })
+  })
+
+  /**
+   * The counters only exist on the snapshot now. Postgres kept them on
+   * claude_enrichment and had every rebuild copy them across; the Mongo
+   * rebuild deliberately does not, because it must never overwrite a field it
+   * did not compute. So this write is the only thing that puts them anywhere,
+   * and dropping it leaves the dashboard reading zeros with nothing raised —
+   * zero being a legitimate value for all three.
+   */
+  it('also lands the three counters on the day snapshot, in the same transaction', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
+    expect(writes.dailySnapshots).toHaveLength(1)
+    const [{ filter, update, opts }] = writes.dailySnapshots
+    expect(filter).toEqual({ _id: dayKey(userId, date) })
+    expect(opts).toEqual({ upsert: true })
+    expect(update.$set).toEqual({
+      callCount: 31,
+      sessionCount: 4,
+      cacheHitRate: 92.1,
+      updatedAt: expect.any(Date),
+    })
+  })
+
+  it('writes a genuine zero rather than leaving the field alone', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, date, {
+      ...wireEnrichment,
+      callCount: 0,
+      sessionCount: 0,
+      cacheHitRate: 0,
+    })
+    expect(writes.dailySnapshots[0].update.$set).toEqual({
+      callCount: 0,
+      sessionCount: 0,
+      cacheHitRate: 0,
+      updatedAt: expect.any(Date),
+    })
+  })
+
+  /**
+   * Enrichment and a rebuild both upsert the same _id, in whichever order they
+   * arrive, and each has to be able to create the day on its own. What makes
+   * that safe is that neither one $sets a field the other one owns: each
+   * $setOnInserts the other's fields as defaults and never touches them again.
+   */
+  it('seeds every field the rebuild owns on insert, and sets none of them', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
+    const { $set, $setOnInsert } = writes.dailySnapshots[0].update
+
+    const rebuildOwns = ['byAgent', 'totalTokens', 'totalCostMicros', 'modelsUsed']
+    for (const field of rebuildOwns) {
+      expect($set).not.toHaveProperty(field)
+      expect($setOnInsert).toHaveProperty(field)
+    }
+    // updatedAt is the exception, and the only field both writes $set: it
+    // records when the document was last written, so a write that changes the
+    // counters and leaves it alone would be lying about its own freshness.
+    expect($set).toHaveProperty('updatedAt')
+    expect($setOnInsert).not.toHaveProperty('updatedAt')
+    // A snapshot created by this write is still a whole document: the dashboard
+    // reads orgId and date off it, and a rebuild may never run for this day.
+    expect($setOnInsert).toMatchObject({ userId, orgId, date, totalCostMicros: 0 })
+  })
+})
+
+describe('costFieldFor', () => {
+  it('points at one agent slot of byAgent for a known agent', () => {
+    expect(costFieldFor('claude')).toBe('$byAgent.claude.costMicros')
+    expect(costFieldFor('qwen')).toBe('$byAgent.qwen.costMicros')
+  })
+
+  it('falls back to the all-agent total when no agent is named', () => {
+    expect(costFieldFor(null)).toBe('$totalCostMicros')
+  })
+
+  it('falls back to the all-agent total for a name it does not recognise', () => {
+    // `agent` is read off a stored document, so TypeScript has not vouched for
+    // it. A row written by an older build must still be priced against a real
+    // field, and no stored value may rewrite the path.
+    expect(costFieldFor('made-up-agent')).toBe('$totalCostMicros')
+    expect(costFieldFor('claude.costMicros')).toBe('$totalCostMicros')
+    expect(costFieldFor('$where')).toBe('$totalCostMicros')
+  })
+
+  // A plain index finds these on Object.prototype, and every one of them is
+  // truthy, so an `||` fallback never fires and a function object reaches the
+  // pipeline where a path string belongs.
+  it.each(['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'falls back for the inherited key %s rather than reading through the prototype',
+    (key) => {
+      expect(costFieldFor(key)).toBe('$totalCostMicros')
+    },
+  )
+})
+
+const at = (path: string, doc: Document): unknown =>
+  path.split('.').reduce<unknown>((v, k) => (v as Document | undefined)?.[k], doc)
+
+/**
+ * Just enough of `$match` and `$group` to run the one pipeline
+ * `monthToDateSpend` builds, over documents held in an array.
+ *
+ * Strict on purpose: anything it was not written to understand throws instead
+ * of being skipped. A condition added to the match — `$exists` on the agent
+ * slot is the obvious one — would otherwise be silently ignored here while
+ * quietly dropping whole days in production, which is the defect these cases
+ * exist to catch.
+ */
+function evaluate(docs: Document[], pipeline: Document[]): Document[] {
+  const [first, second, ...rest] = pipeline
+  if (rest.length > 0 || !first?.$match || !second?.$group) {
+    throw new Error(`unsupported pipeline: ${JSON.stringify(pipeline)}`)
+  }
+
+  const kept = docs.filter((doc) =>
+    Object.entries(first.$match as Document).every(([field, want]) => {
+      const have = at(field, doc)
+      if (want === null || typeof want !== 'object') return have === want
+      return Object.entries(want as Document).every(([op, bound]) => {
+        if (op === '$gte') return (have as string) >= (bound as string)
+        if (op === '$lt') return (have as string) < (bound as string)
+        throw new Error(`unsupported $match operator: ${op}`)
+      })
+    }),
+  )
+
+  const { _id, ...accumulators } = second.$group as Document
+  const sum = (accumulators.spend as Document | undefined)?.$sum
+  if (_id !== null || Object.keys(accumulators).length !== 1 || typeof sum !== 'string') {
+    throw new Error(`unsupported $group: ${JSON.stringify(second.$group)}`)
+  }
+  if (kept.length === 0) return []
+  // $sum skips every value that is not a number, and an absent path is one.
+  const spend = kept.reduce((total, doc) => {
+    const value = at(sum.slice(1), doc)
+    return total + (typeof value === 'number' ? value : 0)
+  }, 0)
+  return [{ _id: null, spend }]
+}
+
+const fakeStore = (docs: Document[]) =>
+  ({ dailySnapshots: { aggregate: async (p: Document[]) => evaluate(docs, p) } }) as unknown as Store
+
+const snapshot = (day: string, over: Partial<DailySnapshotDoc> = {}): Document => ({
+  _id: dayKey(userId, day as IsoDate),
+  userId,
+  orgId,
+  date: day,
+  byAgent: {},
+  totalTokens: 0,
+  totalCostMicros: 0,
+  callCount: 0,
+  sessionCount: 0,
+  cacheHitRate: null,
+  modelsUsed: [],
+  updatedAt: new Date(),
+  ...over,
+})
+
+const NOV = '2026-11-20' as IsoDate
+
+describe('monthToDateSpend', () => {
+  it('sums the whole month to date for the org', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-01', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-11-20', { totalCostMicros: 2_500_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(3_500_000)
+  })
+
+  it('takes the month half-open, so the first of the next month is out', async () => {
+    const store = fakeStore([
+      snapshot('2026-10-31', { totalCostMicros: 9_000_000 as Micros }),
+      snapshot('2026-11-01', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-12-01', { totalCostMicros: 9_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(1_000_000)
+  })
+
+  it('rolls the year over at December without consulting a timezone', async () => {
+    const store = fakeStore([
+      snapshot('2026-12-31', { totalCostMicros: 4_000_000 as Micros }),
+      snapshot('2027-01-01', { totalCostMicros: 9_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, '2026-12-05' as IsoDate)).toBe(4_000_000)
+  })
+
+  /**
+   * The scoping that matters most, and the one a single-org fixture cannot
+   * see: with only one org seeded, a `$match` that had dropped `orgId`
+   * entirely still returns the right number. The second org has to be present
+   * and large enough that including it would be unmistakable.
+   */
+  it('counts only the caller org, with another org-s spend sitting beside it', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-11-03', { orgId: 'o2' as OrgId, totalCostMicros: 500_000_000 as Micros }),
+      snapshot('2026-11-04', { orgId: 'o2' as OrgId, totalCostMicros: 500_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(1_000_000)
+  })
+
+  it('counts only the caller org for a per-agent alert too', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { byAgent: { claude: { tokens: 1, costMicros: 700_000 as Micros } } }),
+      snapshot('2026-11-03', {
+        orgId: 'o2' as OrgId,
+        byAgent: { claude: { tokens: 1, costMicros: 900_000_000 as Micros } },
+      }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(700_000)
+  })
+
+  it('narrows to one user when the alert is scoped to one', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { totalCostMicros: 1_000_000 as Micros }),
+      snapshot('2026-11-03', { userId: 'u2' as UserId, totalCostMicros: 8_000_000 as Micros }),
+    ])
+    expect(await monthToDateSpend(store, orgId, userId, null, NOV)).toBe(1_000_000)
+  })
+
+  it('sums one agent slot rather than the total when the alert names an agent', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', {
+        byAgent: { claude: { tokens: 10, costMicros: 700_000 as Micros } },
+        totalCostMicros: 900_000 as Micros,
+      }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(700_000)
+  })
+
+  /**
+   * `byAgent` is a partial map, so a day on which the named agent did nothing
+   * carries no slot for it at all. That day has to read as zero and leave the
+   * rest of the month standing. A match that required the slot to exist, or an
+   * expression that treated a missing path as anything but zero, would drop
+   * every other day with it and under-report the month.
+   */
+  it('reads a day with no slot for that agent as zero, not as a day to exclude', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { byAgent: { claude: { tokens: 10, costMicros: 700_000 as Micros } } }),
+      snapshot('2026-11-03', { byAgent: { qwen: { tokens: 99, costMicros: 0 as Micros } } }),
+      snapshot('2026-11-04', { byAgent: { claude: { tokens: 1, costMicros: 300_000 as Micros } } }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(1_000_000)
+  })
+
+  it('answers zero for an agent that appears on no day in the scope', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', { byAgent: { claude: { tokens: 1, costMicros: 5 as Micros } } }),
+    ])
+    expect(await monthToDateSpend(store, orgId, null, 'gemini', NOV)).toBe(0)
+  })
+
+  it('answers zero rather than undefined when the scope has no days at all', async () => {
+    expect(await monthToDateSpend(fakeStore([]), orgId, null, null, NOV)).toBe(0)
   })
 })

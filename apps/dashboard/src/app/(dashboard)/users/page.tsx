@@ -20,12 +20,7 @@ export default async function LeaderboardPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  let users: Awaited<ReturnType<typeof fetchLeaderboard>> = []
-  try {
-    users = await fetchLeaderboard(from, to, orgId)
-  } catch {
-    // Show empty state if API unavailable
-  }
+  const users = await fetchLeaderboard(from, to, orgId)
 
   return (
     <div>

@@ -1,6 +1,15 @@
-import type { UsageEvent } from '@burn-watch/shared'
+import type { ClaudeEnrichment, UsageEvent } from '@burn-watch/shared'
 import type { UsageSource } from './documents.js'
-import { microsFromUsd, type DeviceId, type IsoDate, type OrgId, type UserId } from './ids.js'
+import type { SnapshotTotals } from './snapshot.js'
+import {
+  dayKey,
+  microsFromUsd,
+  type DeviceId,
+  type IsoDate,
+  type Micros,
+  type OrgId,
+  type UserId,
+} from './ids.js'
 import type { Txn } from './store.js'
 
 /**
@@ -53,4 +62,95 @@ export async function upsertUsageEvents(
   // matchedCount, not modifiedCount: a no-op re-sync still touches submittedAt.
   const accepted = source === 'agent' ? r.upsertedCount : r.upsertedCount + r.matchedCount
   return { accepted, skipped: events.length - accepted }
+}
+
+/**
+ * Writes one user-day of Claude enrichment: the heavy blobs to
+ * claudeEnrichment, and callCount, sessionCount and cacheHitRate to the
+ * day's snapshot.
+ *
+ * Two writes rather than one, and the second is the whole reason this takes a
+ * Txn. ClaudeEnrichmentDoc no longer carries those three counters — they live
+ * only on DailySnapshotDoc, because rebuildDailySnapshot recomputes agent
+ * totals and must not clobber a field it did not compute. Postgres had the
+ * opposite arrangement: the counters lived on claude_enrichment and every
+ * rebuild read them back out and copied them across. Nothing does that copy
+ * now, so if this function only filled claudeEnrichment the dashboard would
+ * read zeros for all three forever, and zero is a legitimate value for every
+ * one of them, so nothing would ever raise.
+ *
+ * Each write $setOnInserts what the other one $sets, except updatedAt, which
+ * both $set because it describes the document rather than either writer's
+ * computation. The two compose in either order, and either one can be the
+ * write that creates the day, so neither has to run first and neither leaves a
+ * half-formed snapshot behind.
+ *
+ * `date` is the caller's, never `enrichment.date`. UsagePayloadSchema
+ * validates the two independently and does not require them to agree, and this
+ * function now creates a dailySnapshots document — so a client sending a
+ * mismatched enrichment date would conjure a snapshot for a day no rebuild
+ * ever runs against, and overwrite that day's counters if one already existed.
+ * Taking the date the rest of the transaction is using removes the question.
+ */
+export async function upsertEnrichment(
+  tx: Txn,
+  userId: UserId,
+  orgId: OrgId,
+  date: IsoDate,
+  enrichment: ClaudeEnrichment,
+): Promise<void> {
+  const _id = dayKey(userId, date)
+  const now = new Date()
+
+  await tx.claudeEnrichment.updateOne(
+    { _id },
+    {
+      $set: {
+        userId,
+        orgId,
+        date,
+        writtenTokens: enrichment.writtenTokens,
+        activityBreakdown: enrichment.activityBreakdown,
+        projectBreakdown: enrichment.projectBreakdown,
+        topSessions: enrichment.topSessions,
+        toolUsage: enrichment.toolUsage,
+        shellUsage: enrichment.shellUsage,
+        mcpUsage: enrichment.mcpUsage,
+        submittedAt: now,
+      },
+    },
+    { upsert: true },
+  )
+
+  // Typed rather than a bare literal, so a field added to DailySnapshotDoc is
+  // a compile error here as well as in buildSnapshot. The compose claim rests
+  // on these two writes covering every field between them, and the rebuild
+  // half is already compiler-enforced through SnapshotTotals; without this the
+  // enrichment half would quietly start creating documents missing the field.
+  const seed: Omit<SnapshotTotals, '_id' | 'updatedAt'> = {
+    userId,
+    orgId,
+    date,
+    byAgent: {},
+    totalTokens: 0,
+    totalCostMicros: 0 as Micros,
+    modelsUsed: [],
+  }
+
+  await tx.dailySnapshots.updateOne(
+    { _id },
+    {
+      $set: {
+        callCount: enrichment.callCount,
+        sessionCount: enrichment.sessionCount,
+        cacheHitRate: enrichment.cacheHitRate,
+        // The one field both writes $set. It records when the document was
+        // last written, so an enrichment that changes three counters and
+        // leaves the timestamp alone is the single thing it must not do.
+        updatedAt: now,
+      },
+      $setOnInsert: seed,
+    },
+    { upsert: true },
+  )
 }

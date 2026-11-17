@@ -15,12 +15,7 @@ export default async function ProjectsPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  let projects: Awaited<ReturnType<typeof fetchProjects>> = []
-  try {
-    projects = await fetchProjects(from, to, orgId)
-  } catch {
-    // Show empty state if API unavailable
-  }
+  const projects = await fetchProjects(from, to, orgId)
 
   projects.sort((a, b) => b.totalCost - a.totalCost)
   const top = projects[0]?.totalCost ?? 0
