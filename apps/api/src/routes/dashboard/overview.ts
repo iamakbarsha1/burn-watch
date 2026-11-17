@@ -3,8 +3,13 @@ import type { Document } from 'mongodb'
 import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
 import { dayBefore } from './dates.js'
-import { dateQuerySchema as QuerySchema } from './query-schema.js'
-import { viewerScope } from '../../plugins/jwt.js'
+import { z } from 'zod'
+import { dateQueryShape, scopeError, teamIdField } from './query-schema.js'
+import { readScope } from '../../plugins/jwt.js'
+
+const QuerySchema = z
+  .object({ ...dateQueryShape, ...teamIdField })
+  .refine((d) => d.date || (d.from && d.to), { message: 'Provide date or from+to' })
 
 /**
  * Every agent the response lists, in render order.
@@ -16,7 +21,7 @@ import { viewerScope } from '../../plugins/jwt.js'
  * two stacked assertions and turned the type checker off across the whole
  * fan-out — renaming a snapshot column compiled fine and returned undefined.
  */
-const AGENTS = Object.keys({
+export const AGENTS = Object.keys({
   claude: 0,
   qwen: 0,
   gemini: 0,
@@ -66,7 +71,7 @@ export function overviewPipeline(
   from: IsoDate,
   to: IsoDate,
   previous: IsoDate | null,
-  userId?: UserId,
+  userIds?: UserId[],
 ): Document[] {
   const span = (lo: IsoDate, hi: IsoDate): Document => ({ $match: { date: { $gte: lo, $lte: hi } } })
 
@@ -108,7 +113,7 @@ export function overviewPipeline(
   if (previous) facet.previous = totals(previous, previous)
 
   const start = previous && previous < from ? previous : from
-  return [{ $match: { orgId, ...(userId && { userId }), date: { $gte: start, $lte: to } } }, { $facet: facet }]
+  return [{ $match: { orgId, ...(userIds && { userId: { $in: userIds } }), date: { $gte: start, $lte: to } } }, { $facet: facet }]
 }
 
 export async function overviewRoutes(fastify: FastifyInstance) {
@@ -126,8 +131,11 @@ export async function overviewRoutes(fastify: FastifyInstance) {
     // "yesterday" that means anything.
     const previous = isRange ? null : dayBefore(fromDate)
 
+    const scope = await readScope(request.user, parsed.data.teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+
     const [facet] = await getStore().dailySnapshots.aggregate<OverviewFacet>(
-      overviewPipeline(orgId, fromDate, toDate, previous, viewerScope(request.user) as UserId | undefined),
+      overviewPipeline(orgId, fromDate, toDate, previous, scope),
     )
 
     const current = facet?.totals[0] ?? EMPTY

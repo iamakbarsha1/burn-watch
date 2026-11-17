@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 // Aliased so the namespace augmentation below can name the type. A bare `JWT`
 // there is the interface being merged, which declaration emit rejects (TS4033).
 import type { JWT as JwtInstance } from '@fastify/jwt'
-import { getStore, type DeviceId } from '@burn-watch/db'
+import { getStore, type DeviceId, type OrgId, type TeamDoc, type TeamId, type UserId } from '@burn-watch/db'
 
 export interface JwtPayload {
   deviceId?: string
@@ -92,13 +92,68 @@ export function requireAdmin(fastify: FastifyInstance) {
 }
 
 /**
- * The one user a dashboard read is limited to, or undefined for the whole org.
- * Only an admin sees other people's usage; every other role sees its own. Every
- * dashboard query must apply this, or a developer can read the org's spend by
- * calling the API directly, whatever the sidebar hides.
+ * The users a dashboard read is limited to, or undefined for the whole org.
+ * Admins see the org, managers see themselves plus every member of each team
+ * they manage, everyone else sees only themselves. Every dashboard query must
+ * apply this, or a developer can read the org's spend by calling the API
+ * directly, whatever the sidebar hides.
+ *
+ * Read per request, so a team change applies on the next call. The JWT role is
+ * the gate: a 'manager' team row on a developer widens nothing.
  */
-export function viewerScope(user: JwtPayload): string | undefined {
-  return user.role === 'admin' ? undefined : user.userId
+export async function viewerScope(user: JwtPayload): Promise<UserId[] | undefined> {
+  if (user.role === 'admin') return undefined
+  const self = user.userId as UserId
+  if (user.role !== 'manager') return [self]
+
+  // orgId on both reads, so a row written against another org can never widen scope.
+  const orgId = user.orgId as OrgId
+  const store = getStore()
+  const managed = await store.teamMembers.find({ orgId, userId: self, role: 'manager' })
+  if (managed.length === 0) return [self]
+  const members = await store.teamMembers.find({ orgId, teamId: { $in: managed.map((m) => m.teamId) } })
+  return [...new Set([self, ...members.map((m) => m.userId)])]
+}
+
+/**
+ * The users a read filtered to one team is limited to.
+ *
+ * 404 when the team is not in the caller's org. 403 when the caller may not
+ * read it: a manager asking for a team they do not manage gets an error, never
+ * an empty intersection that renders as a team with zero spend. A plain member
+ * of the team (developer or manager) still sees only themselves.
+ */
+export async function teamScope(user: JwtPayload, teamId: TeamId): Promise<UserId[] | 403 | 404> {
+  const orgId = user.orgId as OrgId
+  const store = getStore()
+  const team = await store.teams.findOne({ _id: teamId, orgId })
+  if (!team) return 404
+  const members = await store.teamMembers.find({ orgId, teamId })
+  const ids = members.map((m) => m.userId)
+  if (user.role === 'admin') return ids
+
+  const mine = members.find((m) => m.userId === user.userId)
+  if (!mine) return 403
+  return user.role === 'manager' && mine.role === 'manager' ? ids : [mine.userId]
+}
+
+/**
+ * viewerScope, narrowed to one team when the request names one. The two
+ * numbers are the status to answer with; see teamScope.
+ */
+export async function readScope(user: JwtPayload, teamId?: string): Promise<UserId[] | undefined | 403 | 404> {
+  return teamId ? teamScope(user, teamId as TeamId) : viewerScope(user)
+}
+
+/** Teams the viewer may compare: every team for an admin, managed teams for a manager. */
+export async function comparableTeams(user: JwtPayload): Promise<TeamDoc[]> {
+  const orgId = user.orgId as OrgId
+  const store = getStore()
+  if (user.role === 'admin') return store.teams.find({ orgId }, { sort: { name: 1 } })
+  if (user.role !== 'manager') return []
+  const managed = await store.teamMembers.find({ orgId, userId: user.userId as UserId, role: 'manager' })
+  if (managed.length === 0) return []
+  return store.teams.find({ orgId, _id: { $in: managed.map((m) => m.teamId) } }, { sort: { name: 1 } })
 }
 
 export function requireDashboardAuth(fastify: FastifyInstance) {

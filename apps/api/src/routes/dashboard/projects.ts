@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
-import { getStore, type IsoDate, type OrgId, type UserId } from '@burn-watch/db'
+import { getStore, type IsoDate, type OrgId } from '@burn-watch/db'
 import type { OrgProjectSummary } from '@burn-watch/shared'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { dateQuerySchema as QuerySchema } from './query-schema.js'
@@ -68,7 +68,7 @@ export async function projectsRoutes(fastify: FastifyInstance) {
       const to = (parsed.data.date ?? parsed.data.to!) as IsoDate
 
       const rows = await getStore().claudeEnrichment.aggregate<ProjectTotals>(
-        projectTotals({ orgId, userId: viewerScope(request.user) as UserId | undefined, from, to }),
+        projectTotals({ orgId, userIds: await viewerScope(request.user), from, to }),
       )
 
       // The one derived field, left in node because the guard is the point: a

@@ -4,12 +4,13 @@ import { z } from 'zod'
 import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
 import type { AgentName, TrendPoint } from '@burn-watch/shared'
 import { daysBefore, today } from './dates.js'
-import { dateRangeFields } from './query-schema.js'
-import { viewerScope } from '../../plugins/jwt.js'
+import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
+import { readScope } from '../../plugins/jwt.js'
 
 const QuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).optional(),
   ...dateRangeFields,
+  ...teamIdField,
 }).refine(d => d.days || (d.from && d.to), { message: 'Provide days or from+to' })
 
 /** One day's totals across every user in the org. `_id` is the date. */
@@ -42,9 +43,9 @@ interface TrendsFacet {
  * The chart draws the gap rather than a zero, which is the distinction between
  * "nobody worked" and "we have no data".
  */
-export function trendsPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userId?: UserId): Document[] {
+export function trendsPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userIds?: UserId[]): Document[] {
   return [
-    { $match: { orgId, ...(userId && { userId }), date: { $gte: from, $lte: to } } },
+    { $match: { orgId, ...(userIds && { userId: { $in: userIds } }), date: { $gte: from, $lte: to } } },
     {
       $facet: {
         days: [
@@ -105,8 +106,11 @@ export async function trendsRoutes(fastify: FastifyInstance) {
         fromDate = daysBefore(toDate, days)
       }
 
+      const scope = await readScope(request.user, parsed.data.teamId)
+      if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+
       const [facet] = await getStore().dailySnapshots.aggregate<TrendsFacet>(
-        trendsPipeline(orgId, fromDate, toDate, viewerScope(request.user) as UserId | undefined),
+        trendsPipeline(orgId, fromDate, toDate, scope),
       )
 
       const spendByDay = new Map<string, Map<string, AgentTotals>>()

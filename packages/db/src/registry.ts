@@ -10,6 +10,8 @@ import type {
   OrganizationDoc,
   PendingDeviceDoc,
   RateLimitDoc,
+  TeamDoc,
+  TeamMemberDoc,
   UsageEventDoc,
   UserDoc,
 } from './documents.js'
@@ -103,6 +105,15 @@ export const COLLECTIONS = {
   orgIntegrations: spec<OrgIntegrationDoc>([]),
 
   budgetAlerts: spec<BudgetAlertDoc>([]),
+
+  teams: spec<TeamDoc>([{ name: 'teams_org_name', key: { orgId: 1, name: 1 }, unique: true }]),
+
+  teamMembers: spec<TeamMemberDoc>([
+    // viewerScope reads "teams this user manages" on every manager's dashboard request.
+    { name: 'teamMembers_user_role', key: { userId: 1, role: 1 } },
+    // Members of a team: scope expansion, the team filter, and the comparison.
+    { name: 'teamMembers_team', key: { teamId: 1 } },
+  ]),
 
   rateLimits: spec<RateLimitDoc>([
     // Replaces the SWEEP_EVERY counter and its delete in plugins/rate-limit-store.ts.

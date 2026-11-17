@@ -37,8 +37,8 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
     const date = today()
     const monthKey = date.slice(0, 7)
 
-    const userId = viewerScope(request.user) as UserId | undefined
-    const alerts = await store.budgetAlerts.find({ orgId, ...(userId && { userId }) })
+    const userIds = await viewerScope(request.user)
+    const alerts = await store.budgetAlerts.find({ orgId, ...(userIds && { userId: { $in: userIds } }) })
 
     // The left join Postgres did, as one lookup for every scoped alert rather
     // than one per alert. An id that matches no user still renders, with a null

@@ -19,6 +19,14 @@ export const dateQueryShape = {
   ...dateRangeFields,
 }
 
+/** Narrows a read to one team. Overview and trends take it. */
+export const teamIdField = { teamId: z.string().uuid().optional() }
+
+/** The body for a readScope refusal. */
+export const scopeError = (status: 403 | 404) => ({
+  error: status === 404 ? 'Team not found' : 'Not allowed to read this team',
+})
+
 /**
  * `date`/`from`/`to`, refined so a request carries either a single date or a
  * complete range. Overview, activity, and projects take exactly this shape;

@@ -149,6 +149,36 @@ export interface OverviewResponse {
   byAgent: AgentSummary[]
 }
 
+// GET /v1/dashboard/teams. Teams the viewer can pick in the team filter:
+// every team for an admin, managed teams for a manager, none for a developer.
+export interface TeamMember {
+  userId: string
+  /** Null when the user row is gone, so a stale member still renders. */
+  name: string | null
+  role: 'manager' | 'member'
+}
+
+export interface Team {
+  id: string
+  name: string
+  members: TeamMember[]
+}
+
+// GET /v1/dashboard/teams/compare (C5). A user in two teams counts in both,
+// so team totals can add up to more than the org total.
+export interface TeamComparison {
+  teamId: string
+  name: string
+  memberCount: number
+  /** Members with any usage in the range. */
+  activeUsers: number
+  totalCostUsd: number
+  totalTokens: number
+  byAgent: AgentSummary[]
+  /** Days with no usage are absent, as on /trends. */
+  daily: { date: string; totalCost: number }[]
+}
+
 export interface LeaderboardEntry {
   userId: string
   name: string
