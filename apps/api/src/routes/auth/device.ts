@@ -273,16 +273,21 @@ export async function authRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const body = VerifyDeviceSchema.parse(request.body)
 
-    // Find pending device that matches code + pendingId, approved in the
-    // dashboard, not expired, not yet verified
+    // One update decides and records the claim, so two concurrent polls on the
+    // same approved code cannot both mint a device and tokens. A read followed
+    // by a later write left a window where both saw verifiedAt still null.
     const now = new Date()
-    const pending = await getStore().pendingDevices.findOne({
-      _id: body.pendingId,
-      code: body.code,
-      approvedAt: { $ne: null },
-      verifiedAt: null,
-      expiresAt: { $gt: now },
-    })
+    const deviceId = newId<DeviceId>()
+    const pending = await getStore().pendingDevices.findOneAndUpdate(
+      {
+        _id: body.pendingId,
+        code: body.code,
+        approvedAt: { $ne: null },
+        verifiedAt: null,
+        expiresAt: { $gt: now },
+      },
+      { $set: { verifiedAt: now, deviceId } },
+    )
 
     if (!pending) {
       return reply.status(400).send({
@@ -301,7 +306,6 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
 
     // Create device
-    const deviceId = newId<DeviceId>()
     await getStore().devices.insertOne({
       _id: deviceId,
       userId: user._id,
@@ -311,12 +315,6 @@ export async function authRoutes(fastify: FastifyInstance) {
       lastSeenAt: now,
       createdAt: now,
     })
-
-    // Mark pending as verified
-    await getStore().pendingDevices.updateOne(
-      { _id: pending._id },
-      { $set: { verifiedAt: now, deviceId } },
-    )
 
     // Sign JWT tokens
     const tokenPayload = { deviceId, userId: user._id, orgId: user.orgId, role: 'device' as const }

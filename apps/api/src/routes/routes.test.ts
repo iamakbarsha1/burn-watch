@@ -34,6 +34,7 @@ const mongoState = vi.hoisted(() => ({
   calls: [] as { op: string; collection: string; args: unknown[] }[],
   failOn: null as string | null,
   bulk: { upsertedCount: 1, matchedCount: 0 },
+  claimOnce: [] as string[],
 }))
 
 vi.mock('@burn-watch/db', async (importOriginal) => {
@@ -147,6 +148,7 @@ beforeEach(async () => {
   mongoState.calls = []
   mongoState.failOn = null
   mongoState.bulk = { upsertedCount: 1, matchedCount: 0 }
+  mongoState.claimOnce = []
   app = await buildServer()
   await app.ready()
 })
@@ -1674,7 +1676,7 @@ describe('device registration', () => {
     // The fake ignores filters, so an empty result only proves the route
     // handles a miss. What makes the sequence fail is the filter itself:
     // assert verify-device will not look at an unapproved document.
-    expect(mongoCalls('pendingDevices', 'findOne')[0][0]).toMatchObject({
+    expect(mongoCalls('pendingDevices', 'findOneAndUpdate')[0][0]).toMatchObject({
       _id: pendingId,
       code,
       approvedAt: { $ne: null },
@@ -1717,11 +1719,39 @@ describe('device registration', () => {
     // The device, the pending claim and the token all name one new id.
     const [[device]] = mongoCalls('devices', 'insertOne') as [[Record<string, unknown>]]
     expect(device).toMatchObject({ _id: deviceId, userId: USER_A, hostname: 'laptop.local' })
-    const [[claimFilter, claim]] = mongoCalls('pendingDevices', 'updateOne') as [
+    const [[, claim]] = mongoCalls('pendingDevices', 'findOneAndUpdate') as [
       [unknown, { $set: Record<string, unknown> }],
     ]
-    expect(claimFilter).toEqual({ _id: 'pending-1' })
-    expect(claim.$set.deviceId).toBe(deviceId)
+    expect(claim.$set).toMatchObject({ deviceId, verifiedAt: expect.any(Date) })
+    expect(mongoCalls('pendingDevices', 'updateOne')).toHaveLength(0)
+  })
+
+  // Two polls on one approved code used to both pass a findOne on
+  // verifiedAt: null before either wrote it, so each minted a device and a
+  // 30-day token. The claim is now one findOneAndUpdate, and only the poll
+  // whose update matched gets anything.
+  it('mints one device when two polls race on the same approved code', async () => {
+    mongoState.claimOnce = ['pendingDevices']
+    mongoState.docs.pendingDevices = [
+      { _id: 'pending-1', email: 'dev@example.com', hostname: 'laptop.local', platform: 'darwin', agentVersion: '0.1.0' },
+    ]
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
+    const poll = () => app.inject({
+      method: 'POST',
+      url: '/v1/auth/verify-device',
+      payload: { pendingId: '66666666-6666-4666-8666-666666666666', code: 'ABC123' },
+    })
+
+    const results = await Promise.all([poll(), poll()])
+
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 400])
+    expect(mongoCalls('devices', 'insertOne')).toHaveLength(1)
+    expect(mongoCalls('deviceTokens', 'insertOne')).toHaveLength(1)
+    // The single-winner behaviour above is the fake's; this is what buys it
+    // from real MongoDB: the claim filters on the unverified, approved state.
+    for (const [filter] of mongoCalls('pendingDevices', 'findOneAndUpdate')) {
+      expect(filter).toMatchObject({ approvedAt: { $ne: null }, verifiedAt: null })
+    }
   })
 })
 
