@@ -27,6 +27,12 @@ export interface MongoFakeState {
   failOn: string | null
   /** What bulkWrite reports, which is what decides accepted against skipped. */
   bulk: { upsertedCount: number; matchedCount: number }
+  /**
+   * Collections where findOneAndUpdate takes the document it returns out of
+   * the seed, the way a claim's filter stops matching once its $set lands.
+   * Opt-in, for the race cases; everywhere else the seed stays put.
+   */
+  claimOnce?: string[]
 }
 
 /**
@@ -65,8 +71,11 @@ export function fakeStore(state: MongoFakeState, collections: string[]): Store {
         record('updateMany', args),
         { matchedCount: seeded().length, modifiedCount: seeded().length }
       ),
-      findOneAndUpdate: async (...args: unknown[]) =>
-        (record('findOneAndUpdate', args), seeded()[0] ?? null),
+      findOneAndUpdate: async (...args: unknown[]) => {
+        record('findOneAndUpdate', args)
+        if (!state.claimOnce?.includes(collection)) return seeded()[0] ?? null
+        return state.docs[collection]?.shift() ?? null
+      },
       bulkWrite: async (...args: unknown[]) => (record('bulkWrite', args), state.bulk),
       // A seeded document means the row was there to delete, which is what every
       // 404-or-204 case turns on.
