@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto'
 export type OrgId = string & { readonly __brand: 'OrgId' }
 export type UserId = string & { readonly __brand: 'UserId' }
 export type DeviceId = string & { readonly __brand: 'DeviceId' }
+export type TeamId = string & { readonly __brand: 'TeamId' }
+/** `${teamId}:${userId}`, so adding a member twice is one upsert, not two rows. */
+export type TeamMemberKey = string & { readonly __brand: 'TeamMemberKey' }
 /** `${userId}:${date}`, the _id of every one-per-user-day document. */
 export type DayKey = string & { readonly __brand: 'DayKey' }
 /**
@@ -22,6 +25,9 @@ export type Micros = number & { readonly __brand: 'Micros' }
 export const newId = <T extends string>(): T => randomUUID() as T
 
 export const dayKey = (userId: UserId, date: IsoDate): DayKey => `${userId}:${date}` as DayKey
+
+export const teamMemberKey = (teamId: TeamId, userId: UserId): TeamMemberKey =>
+  `${teamId}:${userId}` as TeamMemberKey
 
 export const integrationKey = (orgId: OrgId, provider: string): IntegrationKey =>
   `${orgId}:${provider}` as IntegrationKey

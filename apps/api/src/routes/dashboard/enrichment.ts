@@ -3,8 +3,8 @@ import type { IsoDate, OrgId, UserId } from '@burn-watch/db'
 
 export interface EnrichmentRange {
   orgId: OrgId
-  /** Limit to one user. Unset reads the whole org. */
-  userId?: UserId
+  /** Limit to these users. Unset reads the whole org. */
+  userIds?: UserId[]
   from: IsoDate
   to: IsoDate
 }
@@ -24,6 +24,6 @@ export interface EnrichmentRange {
  * string whose lexicographic order is date order, so the comparison never
  * consults a timezone.
  */
-export function enrichmentMatch({ orgId, userId, from, to }: EnrichmentRange): Document {
-  return { $match: { orgId, ...(userId && { userId }), date: { $gte: from, $lte: to } } }
+export function enrichmentMatch({ orgId, userIds, from, to }: EnrichmentRange): Document {
+  return { $match: { orgId, ...(userIds && { userId: { $in: userIds } }), date: { $gte: from, $lte: to } } }
 }

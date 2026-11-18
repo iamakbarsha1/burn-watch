@@ -7,6 +7,8 @@ import type {
   IsoDate,
   Micros,
   OrgId,
+  TeamId,
+  TeamMemberKey,
   UserId,
 } from './ids.js'
 
@@ -81,6 +83,32 @@ export interface OrgIntegrationDoc {
   provider: 'copilot'
   encryptedToken: string
   lastSyncAt: Date | null
+  createdAt: Date
+}
+
+export interface TeamDoc {
+  _id: TeamId
+  orgId: OrgId
+  /** Unique per org. */
+  name: string
+  createdAt: Date
+}
+
+/**
+ * One user's place in one team. Many-to-many: a user can sit in several teams
+ * and a team can have several managers.
+ *
+ * `role: 'manager'` widens dashboard scope only for a user whose JWT role is
+ * also 'manager'. The JWT role is the gate; this row only says which people.
+ */
+export interface TeamMemberDoc {
+  _id: TeamMemberKey
+  teamId: TeamId
+  // Denormalised so every scope lookup can filter on org and a row written
+  // against another org's user can never widen a viewer's scope.
+  orgId: OrgId
+  userId: UserId
+  role: 'manager' | 'member'
   createdAt: Date
 }
 

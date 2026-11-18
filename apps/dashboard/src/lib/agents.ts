@@ -36,14 +36,14 @@ export function agentById(id: string): Agent | undefined {
   return AGENTS.find((a) => a.id === id)
 }
 
-const DAY_MS = 86_400_000
+export const DAY_MS = 86_400_000
 
-function toUtc(date: string): number {
+export function toUtc(date: string): number {
   const [y, m, d] = date.split('-').map(Number)
   return Date.UTC(y, m - 1, d)
 }
 
-function fromUtc(ms: number): string {
+export function fromUtc(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
 }
 

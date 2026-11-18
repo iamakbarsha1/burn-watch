@@ -6,6 +6,7 @@ import { trendsRoutes } from './trends.js'
 import { activityRoutes } from './activity.js'
 import { projectsRoutes } from './projects.js'
 import { budgetAlertsRoutes } from './budget-alerts.js'
+import { teamsRoutes } from './teams.js'
 
 export async function dashboardRoutes(fastify: FastifyInstance) {
   // All dashboard routes require authenticated user
@@ -17,4 +18,5 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
   await fastify.register(activityRoutes)
   await fastify.register(projectsRoutes)
   await fastify.register(budgetAlertsRoutes)
+  await fastify.register(teamsRoutes)
 }

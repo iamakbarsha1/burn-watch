@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
-import { getStore, type IsoDate, type OrgId, type UserId } from '@burn-watch/db'
+import { getStore, type IsoDate, type OrgId } from '@burn-watch/db'
 import type { ToolUsageSummary } from '@burn-watch/shared'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { dateQuerySchema as QuerySchema } from './query-schema.js'
@@ -80,7 +80,7 @@ export async function activityRoutes(fastify: FastifyInstance) {
       // lived here because Postgres could not reach inside a JSONB column
       // without the lateral unnest in the statement below it.
       return await getStore().claudeEnrichment.aggregate<ToolUsageSummary>(
-        toolUsageTotals({ orgId, userId: viewerScope(request.user) as UserId | undefined, from, to }),
+        toolUsageTotals({ orgId, userIds: await viewerScope(request.user), from, to }),
       )
     },
   )

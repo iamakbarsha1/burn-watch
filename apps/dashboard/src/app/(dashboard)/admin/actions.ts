@@ -10,6 +10,11 @@ import {
   disconnectCopilot,
   syncCopilot,
   fetchCopilotSeats,
+  createTeam,
+  renameTeam,
+  deleteTeam,
+  setTeamMember,
+  removeTeamMember,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
 import type { AgentName, CopilotSeatsResponse, CopilotSyncResult } from '@burn-watch/shared'
@@ -290,4 +295,94 @@ export async function loadCopilotSeatsAction(
       message: err instanceof Error ? err.message : 'Failed to read the Copilot seats',
     }
   }
+}
+
+/* ---------- Teams (R0.2) ---------- */
+
+export interface TeamActionState {
+  ok: boolean
+  message: string
+}
+
+const failed = (err: unknown, fallback: string): TeamActionState => ({
+  ok: false,
+  message: err instanceof Error ? err.message : fallback,
+})
+
+/**
+ * Every team write goes through here: admin gate, then the call, then a
+ * revalidate of every page that shows teams. The API also refuses non-admins;
+ * this gate only saves the round trip and gives a sentence back.
+ */
+async function teamWrite(
+  run: () => Promise<unknown>,
+  success: string,
+  fallback: string,
+): Promise<TeamActionState> {
+  if ((await getUserRole()) !== 'admin') {
+    return { ok: false, message: 'Admin role required' }
+  }
+  try {
+    await run()
+    // The filter and comparison on Overview and Trends read the team list too.
+    revalidatePath('/', 'layout')
+    return { ok: true, message: success }
+  } catch (err) {
+    return failed(err, fallback)
+  }
+}
+
+const field = (formData: FormData, name: string) => String(formData.get(name) ?? '').trim()
+
+export async function createTeamAction(
+  _prev: TeamActionState | null,
+  formData: FormData,
+): Promise<TeamActionState> {
+  const name = field(formData, 'name')
+  if (!name) return { ok: false, message: 'Enter a team name' }
+  return teamWrite(() => createTeam(name), `Team ${name} created.`, 'Failed to create team')
+}
+
+export async function renameTeamAction(
+  _prev: TeamActionState | null,
+  formData: FormData,
+): Promise<TeamActionState> {
+  const id = field(formData, 'teamId')
+  const name = field(formData, 'name')
+  if (!id) return { ok: false, message: 'No team selected' }
+  if (!name) return { ok: false, message: 'Enter a team name' }
+  return teamWrite(() => renameTeam(id, name), 'Team renamed.', 'Failed to rename team')
+}
+
+export async function deleteTeamAction(
+  _prev: TeamActionState | null,
+  formData: FormData,
+): Promise<TeamActionState> {
+  const id = field(formData, 'teamId')
+  if (!id) return { ok: false, message: 'No team selected' }
+  return teamWrite(() => deleteTeam(id), 'Team deleted.', 'Failed to delete team')
+}
+
+/** Add a member, or change an existing member's role. Same API call for both. */
+export async function setTeamMemberAction(
+  _prev: TeamActionState | null,
+  formData: FormData,
+): Promise<TeamActionState> {
+  const teamId = field(formData, 'teamId')
+  const userId = field(formData, 'userId')
+  const role = field(formData, 'role')
+  if (!teamId) return { ok: false, message: 'No team selected' }
+  if (!userId) return { ok: false, message: 'Pick a person' }
+  if (role !== 'manager' && role !== 'member') return { ok: false, message: 'Unknown team role' }
+  return teamWrite(() => setTeamMember(teamId, userId, role), 'Member saved.', 'Failed to save member')
+}
+
+export async function removeTeamMemberAction(
+  _prev: TeamActionState | null,
+  formData: FormData,
+): Promise<TeamActionState> {
+  const teamId = field(formData, 'teamId')
+  const userId = field(formData, 'userId')
+  if (!teamId || !userId) return { ok: false, message: 'No member selected' }
+  return teamWrite(() => removeTeamMember(teamId, userId), 'Member removed.', 'Failed to remove member')
 }

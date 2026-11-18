@@ -3,7 +3,10 @@ import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 import fp from 'fastify-plugin'
 import type { FastifyInstance } from 'fastify'
+import type { Document } from 'mongodb'
+import type { TeamComparison } from '@burn-watch/shared'
 import type { JwtPayload } from '../plugins/jwt.js'
+import { callsTo } from '../mongo-store.fake.js'
 import { daysBefore, today } from './dashboard/dates.js'
 
 process.env.JWT_SECRET ??= 'test-access-secret'
@@ -70,6 +73,9 @@ const { getStore } = await import('@burn-watch/db')
 const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
 const USER_A = '33333333-3333-4333-8333-333333333333'
+const USER_B = '77777777-7777-4777-8777-777777777777'
+const TEAM_A = '88888888-8888-4888-8888-888888888888'
+const TEAM_B = '99999999-9999-4999-8999-999999999999'
 const DEVICE_A = '44444444-4444-4444-8444-444444444444'
 const ALERT_A = '66666666-6666-4666-8666-666666666666'
 const DATE = '2026-11-05'
@@ -104,6 +110,25 @@ const auth = (t: string) => ({ authorization: `Bearer ${t}` })
 // own queries. The fake ignores filters, so seeding one makes the guard pass.
 const liveDeviceToken = () => {
   mongoState.docs.deviceTokens = [{ _id: 'token-1', deviceId: DEVICE_A, revokedAt: null }]
+}
+
+/**
+ * Every `userId` filter the data reads used, skipping the team lookups that
+ * resolve scope. Group keys (`'$userId'`) and projections (`1`) are not filters.
+ */
+function userFilters(): unknown[] {
+  const out: unknown[] = []
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) return n.forEach(walk)
+    if (!n || typeof n !== 'object') return
+    for (const [k, v] of Object.entries(n)) {
+      if (k === 'userId' && typeof v === 'object' && v !== null) out.push(v)
+      else if (k === 'userId' && typeof v === 'string' && !v.startsWith('$')) out.push(v)
+      else walk(v)
+    }
+  }
+  for (const c of mongoState.calls) if (c.collection !== 'teams' && c.collection !== 'teamMembers') walk(c.args)
+  return out
 }
 
 /** Reads of `deviceTokens`. Every device-authenticated request pays for these,
@@ -176,23 +201,260 @@ describe('dashboard routes — authentication', () => {
 })
 
 describe('dashboard routes — viewer scoping', () => {
-  // A non-admin token reads only its own user's rows; an admin reads the org.
-  it.each(['developer', 'manager'] as const)('limits a %s to their own user', async (role) => {
-    for (const url of [...DASHBOARD_ROUTES.map(range), '/v1/dashboard/budget-alerts']) {
-      mongoState.calls.length = 0
-      const res = await app.inject({ method: 'GET', url, headers: auth(token({ role })) })
-      expect(res.statusCode, url).toBe(200)
-      expect(inspect(mongoState.calls, { depth: null }), url).toContain(`userId: '${USER_A}'`)
+  const SCOPED_URLS = [...DASHBOARD_ROUTES.map(range), '/v1/dashboard/budget-alerts']
+
+  // A manager of TEAM_A, which also holds USER_B.
+  const managerOfTeam = () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { _id: `${TEAM_A}:${USER_A}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { _id: `${TEAM_A}:${USER_B}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+  }
+
+  async function expectScope(url: string, role: JwtPayload['role'], ids: string[] | undefined) {
+    mongoState.calls.length = 0
+    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+    expect(res.statusCode, url).toBe(200)
+    const filters = userFilters()
+    if (ids === undefined) expect(filters, url).toEqual([])
+    else {
+      expect(filters.length, url).toBeGreaterThan(0)
+      for (const f of filters) expect(f, url).toEqual({ $in: ids })
     }
+  }
+
+  it.each(SCOPED_URLS)('limits a developer to their own user on %s', async (url) => {
+    managerOfTeam() // team rows must not widen a developer, even one marked manager
+    await expectScope(url, 'developer', [USER_A])
   })
 
-  it('lets an admin read the whole org', async () => {
-    for (const url of [...DASHBOARD_ROUTES.map(range), '/v1/dashboard/budget-alerts']) {
-      mongoState.calls.length = 0
-      const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
-      expect(res.statusCode, url).toBe(200)
-      expect(inspect(mongoState.calls, { depth: null }), url).not.toContain(USER_A)
-    }
+  it.each(SCOPED_URLS)('limits a manager with no team to their own user on %s', async (url) => {
+    await expectScope(url, 'manager', [USER_A])
+  })
+
+  it.each(SCOPED_URLS)('widens a manager to their team on %s', async (url) => {
+    managerOfTeam()
+    await expectScope(url, 'manager', [USER_A, USER_B])
+  })
+
+  it('reads team rows only within the caller org, and only managed teams', async () => {
+    managerOfTeam()
+    await app.inject({ method: 'GET', url: range('/v1/dashboard/overview'), headers: auth(token({ role: 'manager' })) })
+    const [first, second] = callsTo(mongoState, 'teamMembers', 'find')
+    expect(first[0]).toEqual({ orgId: ORG_A, userId: USER_A, role: 'manager' })
+    // The fake ignores filters, so which teams the $in names is a fake artifact; the org is not.
+    expect(second[0]).toMatchObject({ orgId: ORG_A })
+  })
+
+  it.each(SCOPED_URLS)('lets an admin read the whole org on %s', async (url) => {
+    managerOfTeam()
+    await expectScope(url, 'admin', undefined)
+    expect(inspect(mongoState.calls, { depth: null }), url).not.toContain(USER_A)
+  })
+})
+
+describe('dashboard routes — team filter', () => {
+  const TEAM_ROUTES = ['/v1/dashboard/overview', '/v1/dashboard/trends']
+  const withTeam = (url: string, team = TEAM_A) => `${range(url)}&teamId=${team}`
+  const get = (url: string, role: JwtPayload['role']) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+
+  it.each(TEAM_ROUTES)('%s narrows an admin to the team members', async (url) => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const res = await get(withTeam(url), 'admin')
+    expect(res.statusCode).toBe(200)
+    expect(userFilters()).toEqual([{ $in: [USER_B] }])
+    // The team lookup is org-scoped, so another org's team id answers 404.
+    expect(callsTo(mongoState, 'teams', 'findOne')[0][0]).toEqual({ _id: TEAM_A, orgId: ORG_A })
+  })
+
+  it.each(TEAM_ROUTES)('%s gives a manager their whole managed team', async (url) => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const res = await get(withTeam(url), 'manager')
+    expect(res.statusCode).toBe(200)
+    expect(userFilters()).toEqual([{ $in: [USER_A, USER_B] }])
+  })
+
+  it.each(TEAM_ROUTES)('%s answers 403 to a manager filtering a team they do not manage', async (url) => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'manager' }]
+    const res = await get(withTeam(url), 'manager')
+    expect(res.statusCode).toBe(403)
+    expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
+  })
+
+  it.each(TEAM_ROUTES)('%s keeps a developer in their own team to themselves', async (url) => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const res = await get(withTeam(url), 'developer')
+    expect(res.statusCode).toBe(200)
+    expect(userFilters()).toEqual([{ $in: [USER_A] }])
+  })
+
+  it.each(TEAM_ROUTES)('%s answers 404 for a team not in the org', async (url) => {
+    const res = await get(withTeam(url), 'admin')
+    expect(res.statusCode).toBe(404)
+  })
+
+  it.each(TEAM_ROUTES)('%s rejects a teamId that is not a uuid', async (url) => {
+    const res = await get(withTeam(url, 'not-a-team'), 'admin')
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('GET /v1/dashboard/teams/compare', () => {
+  const url = range('/v1/dashboard/teams/compare')
+  const get = (role: JwtPayload['role']) => app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+
+  it('refuses a developer', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+  })
+
+  it('returns nothing when the viewer can compare no team', async () => {
+    const res = await get('manager')
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([])
+    expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
+  })
+
+  it('sums each team from its members, counting a shared member in both', async () => {
+    mongoState.docs.teams = [
+      { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
+      { _id: TEAM_B, orgId: ORG_A, name: 'Mobile' },
+    ]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    mongoState.aggregates.dailySnapshots = [
+      {
+        users: [
+          { _id: USER_A, costMicros: 1_500_000, tokens: 10 },
+          { _id: USER_B, costMicros: 2_000_000, tokens: 20 },
+        ],
+        agents: [
+          { _id: { userId: USER_A, agent: 'claude' }, tokens: 10, costMicros: 1_500_000 },
+          { _id: { userId: USER_B, agent: 'claude' }, tokens: 5, costMicros: 500_000 },
+          { _id: { userId: USER_B, agent: 'codex' }, tokens: 15, costMicros: 1_500_000 },
+        ],
+        daily: [
+          { userId: USER_A, date: DATE, totalCostMicros: 1_500_000 },
+          { userId: USER_B, date: DATE, totalCostMicros: 2_000_000 },
+        ],
+      },
+    ]
+
+    const res = await get('admin')
+    expect(res.statusCode).toBe(200)
+    const [platform, mobile] = res.json() as TeamComparison[]
+    expect(platform).toMatchObject({ teamId: TEAM_A, memberCount: 2, activeUsers: 2, totalCostUsd: 3.5, totalTokens: 30 })
+    expect(platform.daily).toEqual([{ date: DATE, totalCost: 3.5 }])
+    expect(platform.byAgent.find((a) => a.agent === 'claude')).toMatchObject({ tokens: 15, costUsd: 2 })
+    expect(mobile).toMatchObject({ teamId: TEAM_B, memberCount: 1, activeUsers: 1, totalCostUsd: 2, totalTokens: 20 })
+    expect(mobile.byAgent.find((a) => a.agent === 'claude')).toMatchObject({ tokens: 5, costUsd: 0.5 })
+
+    // One read, over the union of members, inside the caller's org.
+    const [[pipeline]] = callsTo(mongoState, 'dailySnapshots', 'aggregate') as Document[][][]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+  })
+
+  it('limits a manager to the teams they manage', async () => {
+    await get('manager')
+    expect(callsTo(mongoState, 'teamMembers', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: USER_A, role: 'manager' })
+  })
+})
+
+describe('team management routes', () => {
+  const send = (method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, payload?: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method, url, payload, headers: auth(token({ role })) })
+  const member = `/v1/dashboard/teams/${TEAM_A}/members/${USER_B}`
+
+  it.each([
+    ['POST', '/v1/dashboard/teams', { name: 'x' }],
+    ['PATCH', `/v1/dashboard/teams/${TEAM_A}`, { name: 'x' }],
+    ['DELETE', `/v1/dashboard/teams/${TEAM_A}`, undefined],
+    ['PUT', member, { role: 'member' }],
+    ['DELETE', member, undefined],
+  ] as const)('%s %s is admin only', async (method, url, payload) => {
+    const res = await send(method, url, payload, 'manager')
+    expect(res.statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('creates a team in the caller org', async () => {
+    const res = await send('POST', '/v1/dashboard/teams', { name: '  Platform ' })
+    expect(res.statusCode).toBe(201)
+    expect(callsTo(mongoState, 'teams', 'insertOne')[0][0]).toMatchObject({ orgId: ORG_A, name: 'Platform' })
+  })
+
+  it('rejects an empty team name', async () => {
+    const res = await send('POST', '/v1/dashboard/teams', { name: '  ' })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('renames only a team in the caller org', async () => {
+    const res = await send('PATCH', `/v1/dashboard/teams/${TEAM_A}`, { name: 'Core' })
+    expect(res.statusCode).toBe(404)
+    expect(callsTo(mongoState, 'teams', 'findOneAndUpdate')[0][0]).toEqual({ _id: TEAM_A, orgId: ORG_A })
+  })
+
+  it('deletes members before the team, both inside the caller org', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    const res = await send('DELETE', `/v1/dashboard/teams/${TEAM_A}`)
+    expect(res.statusCode).toBe(200)
+    const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+    expect(ops).toEqual(['teamMembers.deleteMany', 'teams.deleteOne'])
+    expect(callsTo(mongoState, 'teamMembers', 'deleteMany')[0][0]).toEqual({ teamId: TEAM_A, orgId: ORG_A })
+  })
+
+  it('refuses to add a user from another org', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    const res = await send('PUT', member, { role: 'member' })
+    expect(res.statusCode).toBe(400)
+    expect(callsTo(mongoState, 'users', 'findOne')[0][0]).toEqual({ _id: USER_B, orgId: ORG_A })
+    expect(callsTo(mongoState, 'teamMembers', 'updateOne')).toEqual([])
+  })
+
+  it('answers 404 when adding to a team not in the org', async () => {
+    const res = await send('PUT', member, { role: 'member' })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('upserts a membership keyed by team and user', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A }]
+    const res = await send('PUT', member, { role: 'manager' })
+    expect(res.statusCode).toBe(200)
+    const [[filter, update, opts]] = callsTo(mongoState, 'teamMembers', 'updateOne') as Document[][]
+    expect(filter).toEqual({ _id: `${TEAM_A}:${USER_B}` })
+    expect(update).toMatchObject({
+      $set: { role: 'manager' },
+      $setOnInsert: { teamId: TEAM_A, orgId: ORG_A, userId: USER_B },
+    })
+    expect(opts).toEqual({ upsert: true })
+  })
+
+  it('rejects an unknown role', async () => {
+    const res = await send('PUT', member, { role: 'owner' })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('removes a membership only inside the caller org', async () => {
+    const res = await send('DELETE', member)
+    expect(res.statusCode).toBe(404)
+    expect(callsTo(mongoState, 'teamMembers', 'deleteOne')[0][0]).toEqual({ _id: `${TEAM_A}:${USER_B}`, orgId: ORG_A })
   })
 })
 

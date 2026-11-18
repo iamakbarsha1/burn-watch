@@ -64,10 +64,10 @@ export function leaderboardPipeline(
   to: IsoDate,
   limit: number,
   offset: number,
-  userId?: UserId,
+  userIds?: UserId[],
 ): Document[] {
   return [
-    { $match: { orgId, ...(userId && { userId }), date: { $gte: from, $lte: to } } },
+    { $match: { orgId, ...(userIds && { userId: { $in: userIds } }), date: { $gte: from, $lte: to } } },
     {
       $facet: {
         users: [
@@ -124,7 +124,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
 
       const store = getStore()
       const [facet] = await store.dailySnapshots.aggregate<LeaderboardFacet>(
-        leaderboardPipeline(orgId, fromDate, toDate, limit, offset, viewerScope(request.user) as UserId | undefined),
+        leaderboardPipeline(orgId, fromDate, toDate, limit, offset, await viewerScope(request.user)),
       )
       const page = facet?.users ?? []
       if (page.length === 0) return []
