@@ -2,111 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 import fp from 'fastify-plugin'
-import { getTableName, is, Table } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
-import { EXPECTED_SCHEMA_VERSION } from '../schema-version.js'
 import { daysBefore, today } from './dashboard/dates.js'
 
 process.env.JWT_SECRET ??= 'test-access-secret'
 process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret'
-
-/**
- * Queue of rows the fake database hands back, consumed in order. Each route has
- * a fixed sequence of queries, so ordering is deterministic; `dbCalls` records
- * what was asked for so a test can assert on the write it triggered.
- */
-const dbState = vi.hoisted(() => ({
-  results: [] as unknown[][],
-  calls: [] as { op: string; arg: unknown }[],
-  failOn: null as string | null,
-  failExecute: false,
-}))
-
-vi.mock('../plugins/db.js', async () => {
-  const fastifyPlugin = (await import('fastify-plugin')).default
-
-  // A proxy makes every builder method chainable without naming them, and makes
-  // the builder awaitable. Awaiting it takes the next queued result, which is
-  // how a `.where().groupBy().limit()` chain and a bare `.returning()` can share
-  // one implementation.
-  const chain = (): unknown =>
-    new Proxy(
-      {},
-      {
-        get(_target, prop) {
-          if (prop === 'then') {
-            return (onOk: (v: unknown) => unknown, onErr?: (e: unknown) => unknown) => {
-              const next = dbState.results.shift() ?? []
-              return Promise.resolve(next).then(onOk, onErr)
-            }
-          }
-          return (...args: unknown[]) => {
-            dbState.calls.push({ op: String(prop), arg: args[0] })
-            if (dbState.failOn === String(prop)) {
-              throw Object.assign(new Error('duplicate key value'), { code: '23505' })
-            }
-            return chain()
-          }
-        },
-      },
-    )
-
-  // Only the methods the routes actually call. A catch-all `get` is wrong here:
-  // `fastify.decorate` probes the value for `getter` and `setter`, and a proxy
-  // that answers every key with a function makes Fastify read the whole thing
-  // as a getter/setter descriptor. `fastify.db` then resolves to whatever that
-  // fake getter returned instead of this proxy, and `failExecute` never fires.
-  // `$with` and `with` are here because the activity and projects aggregates
-  // open with a CTE. The chain swallows them like any other builder call.
-  const DB_METHODS = new Set([
-    'select',
-    'insert',
-    'update',
-    'delete',
-    'execute',
-    'transaction',
-    '$with',
-    'with',
-  ])
-
-  const db = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        const name = String(prop)
-        if (!DB_METHODS.has(name)) return undefined
-        if (name === 'execute' && dbState.failExecute) {
-          return () => Promise.reject(new Error('connection to server at "db.example" failed'))
-        }
-        if (name === 'transaction') {
-          // Real postgres rolls back when the callback rejects. Here the only
-          // observable is that the rejection propagates out of `transaction`
-          // rather than being swallowed inside the route.
-          return async (fn: (tx: unknown) => Promise<unknown>) => {
-            dbState.calls.push({ op: 'transaction', arg: undefined })
-            try {
-              return await fn(db)
-            } catch (err) {
-              dbState.calls.push({ op: 'rollback', arg: undefined })
-              throw err
-            }
-          }
-        }
-        return (...args: unknown[]) => {
-          dbState.calls.push({ op: name, arg: args[0] })
-          return chain()
-        }
-      },
-    },
-  )
-
-  return {
-    dbPlugin: fastifyPlugin(async (fastify: FastifyInstance) => {
-      fastify.decorate('db', db as never)
-    }),
-  }
-})
 
 /**
  * The MongoDB side: documents a test seeds per collection, and the two health
@@ -119,9 +20,8 @@ vi.mock('../plugins/db.js', async () => {
  *
  * The health checks are replaced because the real ones resolve a client from
  * MONGODB_URI, which is unset here. Both would then reject in every test that
- * touches `/health`, turning the healthy case into a 503 and padding `failed`
- * on the postgres cases, which is exactly the kind of coupling that makes a
- * health assertion stop meaning anything.
+ * touches `/health`, turning the healthy case into a 503, which is exactly the
+ * kind of coupling that makes a health assertion stop meaning anything.
  */
 const mongoState = vi.hoisted(() => ({
   pingFails: false,
@@ -165,6 +65,7 @@ vi.mock('@burn-watch/db', async (importOriginal) => {
 vi.mock('@fastify/rate-limit', () => ({ default: fp(async () => {}) }))
 
 const { buildServer } = await import('../build-server.js')
+const { getStore } = await import('@burn-watch/db')
 
 const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
@@ -198,47 +99,22 @@ const token = (over: Partial<JwtPayload> = {}) =>
 
 const auth = (t: string) => ({ authorization: `Bearer ${t}` })
 
-// A device-role token is only good while its device_tokens row is unrevoked,
-// so every device-authenticated request reads that row before the route's own
-// queries. Queue the hit first or the route's results arrive one slot early.
-const liveDeviceToken = () => dbState.results.push([{ id: 'token-1' }])
-
-/**
- * A drizzle predicate rendered as the SQL it stands for, roughly
- * `device_id = <uuid> and revoked_at is null`.
- *
- * The older tests reach for `inspect` at full depth, which is fine for asking
- * whether a value reached the query. It cannot answer which columns a
- * predicate filters on: at that depth every chunk drags in its whole table
- * definition, so `expires_at` prints whether or not anything compares against
- * it. Walking the chunks is the difference between "the query mentions this
- * column" and "the query filters on it".
- */
-function renderSql(node: unknown): string {
-  if (node === null || typeof node !== 'object') return String(node)
-  const n = node as Record<string, unknown>
-  if (Array.isArray(n.queryChunks)) return n.queryChunks.map(renderSql).join('')
-  if (Array.isArray(n.value)) return n.value.join('')
-  if (typeof n.name === 'string') return n.name
-  if ('value' in n) return String(n.value)
-  return ''
+// A device-role token is only good while its deviceTokens document is
+// unrevoked, so every device-authenticated request reads it before the route's
+// own queries. The fake ignores filters, so seeding one makes the guard pass.
+const liveDeviceToken = () => {
+  mongoState.docs.deviceTokens = [{ _id: 'token-1', deviceId: DEVICE_A, revokedAt: null }]
 }
 
-const lastWhere = () => renderSql(dbState.calls.filter((c) => c.op === 'where').at(-1)?.arg)
-
-/** Reads of `device_tokens`, counted by table identity rather than by matching
- * a string against an inspected object. Every device-authenticated request
- * pays for these, so the count is the guard's price on the hot path. */
+/** Reads of `deviceTokens`. Every device-authenticated request pays for these,
+ * so the count is the guard's price on the hot path. */
 const deviceTokenReads = () =>
-  dbState.calls.filter(
-    (c) => c.op === 'from' && is(c.arg, Table) && getTableName(c.arg) === 'device_tokens',
-  )
+  mongoState.calls.filter((c) => c.collection === 'deviceTokens' && c.op === 'findOne')
+
+/** The filter of the guard's lookup. */
+const guardFilter = () => deviceTokenReads()[0]?.args[0] as Record<string, unknown> | undefined
 
 beforeEach(async () => {
-  dbState.results = []
-  dbState.calls = []
-  dbState.failOn = null
-  dbState.failExecute = false
   mongoState.pingFails = false
   mongoState.schemaFails = false
   mongoState.docs = {}
@@ -344,16 +220,11 @@ describe('dashboard routes — org scoping', () => {
     expect(queried).not.toContain(ORG_B)
   })
 
-  it.each(DASHBOARD_ROUTES)('%s reads nothing from postgres', async (url) => {
-    // The point of the phase. A route left half-ported reads its totals from
-    // one store and its names from the other, and the two disagree silently
-    // from the Phase 7 backfill onwards.
-    await app.inject({
-      method: 'GET',
-      url: range(url),
-      headers: auth(token()),
-    })
-    expect(dbState.calls).toEqual([])
+  it('runs on a server with no Postgres handle at all', () => {
+    // The point of the migration. A route left half-ported reads its totals
+    // from one store and its names from the other, and the two disagree
+    // silently. With no `db` decorator there is no second store to read.
+    expect(app.hasDecorator('db')).toBe(false)
   })
 })
 
@@ -1189,22 +1060,20 @@ describe('POST /v1/usage', () => {
     expect(mongoCalls('usageEvents', 'find')).toHaveLength(0)
   })
 
-  /**
-   * Held on Postgres on purpose. routes/auth/device.ts reads `last_seen_at`
-   * back for the admin and devices pages and does not move until Phase 5, so
-   * writing it to Mongo now would put it in a store nothing reads and freeze
-   * both pages at whatever Postgres last recorded.
-   */
-  it('touches the device on Postgres, where the pages that read it still look', async () => {
+  it('touches the device after the transaction commits', async () => {
     liveDeviceToken()
     knownUser()
     await submit()
 
-    const touch = dbState.calls.find(
-      (c) => c.op === 'set' && c.arg !== null && typeof c.arg === 'object' && 'lastSeenAt' in c.arg,
-    )
-    expect((touch?.arg as { lastSeenAt: unknown })?.lastSeenAt).toBeInstanceOf(Date)
-    expect(mongoCalls('devices', 'updateOne')).toHaveLength(0)
+    const [touch] = mongoCalls('devices', 'updateOne') as [
+      { _id: string },
+      { $set: { lastSeenAt: unknown } },
+    ][]
+    expect(touch[0]).toEqual({ _id: DEVICE_A })
+    expect(touch[1].$set.lastSeenAt).toBeInstanceOf(Date)
+    // Last, after every write the transaction body issues, so a rolled-back
+    // submission never advances it.
+    expect(mongoState.calls.map((c) => `${c.collection}.${c.op}`).at(-1)).toBe('devices.updateOne')
   })
 
   it('runs every write inside one transaction', async () => {
@@ -1322,7 +1191,7 @@ describe('POST /v1/usage', () => {
 })
 
 describe('POST /v1/auth/admin/users', () => {
-  const body = { email: 'new@example.com', name: 'New Dev' }
+  const body = { email: 'New@Example.com', name: 'New Dev' }
 
   it('returns 401 without a token', async () => {
     const res = await app.inject({ method: 'POST', url: '/v1/auth/admin/users', payload: body })
@@ -1348,10 +1217,10 @@ describe('POST /v1/auth/admin/users', () => {
     })
     expect(res.statusCode).toBe(403)
     expect(res.json().error).toBe('Cannot create users in another organization')
+    expect(mongoCalls('users', 'insertOne')).toHaveLength(0)
   })
 
-  it('creates a user in the admin own organization', async () => {
-    dbState.results.push([{ id: 'user-new' }])
+  it('creates a user in the admin own organization, with the email lowercased', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/admin/users',
@@ -1359,13 +1228,18 @@ describe('POST /v1/auth/admin/users', () => {
       payload: body,
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ userId: 'user-new' })
-    const insert = dbState.calls.find((c) => c.op === 'values')
-    expect(insert?.arg).toMatchObject({ orgId: ORG_A, email: body.email })
+    const [[written]] = mongoCalls('users', 'insertOne') as [[Record<string, unknown>]]
+    expect(res.json()).toEqual({ userId: written._id })
+    expect(written).toMatchObject({ orgId: ORG_A, email: 'new@example.com', role: 'developer' })
+    expect(written._id).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('returns 409 on a duplicate email rather than leaking the constraint error', async () => {
-    dbState.failOn = 'returning'
+    vi.spyOn(getStore().users, 'insertOne').mockRejectedValueOnce(
+      Object.assign(new Error('E11000 duplicate key error collection: users index: users_email'), {
+        code: 11000,
+      }),
+    )
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/admin/users',
@@ -1374,7 +1248,7 @@ describe('POST /v1/auth/admin/users', () => {
     })
     expect(res.statusCode).toBe(409)
     expect(res.json().error).toBe('A user with this email already exists')
-    expect(res.payload).not.toContain('23505')
+    expect(res.payload).not.toContain('E11000')
   })
 })
 
@@ -1389,14 +1263,16 @@ describe('GET /v1/auth/admin/users', () => {
     isActive: true,
     createdAt: '2026-10-01T00:00:00.000Z',
     deviceCount: 1,
-    hostnames: 'laptop-1',
-    lastSeenAt: '2026-11-05T12:00:00.000Z',
+    hostnames: ['laptop-1'],
+    lastSeenAt: '2026-11-05T12:00:00Z',
     lastSyncDate: '2026-11-04',
     totalCostUsd: 12.5,
     totalTokens: 1000,
     activeDays: 3,
     ...over,
   })
+
+  const pipeline = () => mongoCalls('users', 'aggregate')[0][0] as Record<string, Record<string, unknown>>[]
 
   it('returns 401 without a token', async () => {
     const res = await app.inject({ method: 'GET', url })
@@ -1406,10 +1282,11 @@ describe('GET /v1/auth/admin/users', () => {
   it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role })) })
     expect(res.statusCode).toBe(403)
+    expect(mongoCalls('users', 'aggregate')).toHaveLength(0)
   })
 
-  it('scopes the query to the caller own organization', async () => {
-    dbState.results.push([row()])
+  it('scopes the query to the caller own organization, before anything else', async () => {
+    mongoState.aggregates.users = [row()]
     const res = await app.inject({
       method: 'GET',
       url,
@@ -1417,61 +1294,71 @@ describe('GET /v1/auth/admin/users', () => {
     })
     expect(res.statusCode).toBe(200)
     // The org filter is the only thing standing between one company's admin
-    // and another company's roster, so assert it reached the query. Looks
-    // across every `where` rather than the first: the per-user subqueries each
-    // add one of their own before the org filter is ever applied.
-    const wheres = dbState.calls.filter((c) => c.op === 'where')
-    expect(wheres.some((c) => inspect(c.arg, { depth: 10 }).includes(ORG_B))).toBe(true)
+    // and another company's roster. First stage, so no lookup runs on a user
+    // from another org.
+    expect(pipeline()[0]).toEqual({ $match: { orgId: ORG_B } })
   })
 
-  it('includes a user who has never synced, with zeroed usage', async () => {
-    dbState.results.push([
-      row({ deviceCount: 0, hostnames: null, lastSeenAt: null, lastSyncDate: null, totalCostUsd: 0, totalTokens: 0, activeDays: 0 }),
+  it('joins devices and snapshots on the user, each grouped in its own lookup', async () => {
+    await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+    // The SQL version broke by correlating on the wrong table, which zeroed
+    // every total. Here the join key is spelled out per lookup.
+    const lookups = pipeline()
+      .filter((s) => '$lookup' in s)
+      .map((s) => s.$lookup as Record<string, unknown>)
+    expect(lookups.map((l) => [l.from, l.localField, l.foreignField])).toEqual([
+      ['devices', '_id', 'userId'],
+      ['dailySnapshots', '_id', 'userId'],
     ])
+  })
+
+  it('hands back the roster rows unchanged, never an _id', async () => {
+    mongoState.aggregates.users = [
+      row({ deviceCount: 0, hostnames: [], lastSeenAt: null, lastSyncDate: null, totalCostUsd: 0, totalTokens: 0, activeDays: 0 }),
+    ]
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toHaveLength(1)
-    expect(res.json()[0]).toMatchObject({
-      deviceCount: 0,
-      hostnames: [],
-      lastSeenAt: null,
-      lastSyncDate: null,
-      totalCostUsd: 0,
-    })
+    expect(res.json()).toEqual([
+      row({ deviceCount: 0, hostnames: [], lastSeenAt: null, lastSyncDate: null, totalCostUsd: 0, totalTokens: 0, activeDays: 0 }),
+    ])
+    const project = pipeline().at(-1)!.$project as Record<string, unknown>
+    expect(project._id).toBe(0)
+    expect(project.id).toBe('$_id')
   })
 
-  it('keeps the calendar day when the driver parses a date into local midnight', async () => {
-    // node-postgres builds this for a `date` column: midnight in the server's
-    // own zone. Serialising it through toISOString in IST reports the 4th.
-    dbState.results.push([row({ lastSyncDate: new Date(2026, 10, 5, 0, 0, 0) })])
-    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
-    expect(res.json()[0].lastSyncDate).toBe('2026-11-05')
+  it('formats timestamps in the database, not through a local-time Date', async () => {
+    await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+    const project = pipeline().at(-1)!.$project as Record<string, Record<string, Record<string, unknown>>>
+    expect(project.lastSeenAt.$dateToString.format).toBe('%Y-%m-%dT%H:%M:%SZ')
+    // `date` is already a YYYY-MM-DD string, so the max of it is too.
+    expect(project.lastSyncDate).toEqual({ $ifNull: ['$usage.lastSyncDate', null] })
   })
 
   it('ranks by spend, highest first', async () => {
-    dbState.results.push([
+    mongoState.aggregates.users = [
       row({ id: 'a', name: 'Low', totalCostUsd: 1 }),
       row({ id: 'b', name: 'High', totalCostUsd: 99 }),
-    ])
+    ]
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
     expect(res.json().map((u: { name: string }) => u.name)).toEqual(['High', 'Low'])
   })
 })
 
 describe('device registration', () => {
+  const registration = {
+    email: 'Dev@Example.com',
+    hostname: 'laptop.local',
+    platform: 'darwin',
+    agentVersion: '0.1.0',
+  }
+
   it('does not issue tokens at registration, only a pending code', async () => {
-    dbState.results.push([{ id: USER_A, orgId: ORG_A }]) // user lookup
-    dbState.results.push([{ id: 'pending-1' }]) // pending insert
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
 
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/register-device',
-      payload: {
-        email: 'dev@example.com',
-        hostname: 'laptop.local',
-        platform: 'darwin',
-        agentVersion: '0.1.0',
-      },
+      payload: registration,
     })
 
     expect(res.statusCode).toBe(200)
@@ -1480,78 +1367,75 @@ describe('device registration', () => {
     expect(json).toHaveProperty('code')
     expect(json).not.toHaveProperty('accessToken')
     expect(json).not.toHaveProperty('refreshToken')
+
+    const [[written]] = mongoCalls('pendingDevices', 'insertOne') as [[Record<string, unknown>]]
+    expect(written._id).toBe(json.pendingId)
+    expect(written).toMatchObject({ approvedAt: null, verifiedAt: null, deviceId: null })
+    // Stored and looked up lowercase, the one casing every write uses.
+    expect(written.email).toBe('dev@example.com')
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ email: 'dev@example.com' })
   })
 
   it('returns 404 for an email that was never invited', async () => {
-    dbState.results.push([]) // user lookup finds nothing
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/register-device',
-      payload: {
-        email: 'stranger@example.com',
-        hostname: 'laptop.local',
-        platform: 'darwin',
-        agentVersion: '0.1.0',
-      },
+      payload: { ...registration, email: 'stranger@example.com' },
     })
     expect(res.statusCode).toBe(404)
+    expect(mongoCalls('pendingDevices', 'insertOne')).toHaveLength(0)
   })
 
   // BW-30. register-device hands the caller both halves of what verify-device
   // asks for, so before approval existed those two unauthenticated calls were a
   // complete path from "knows a colleague's work email" to a 30-day token.
   it('cannot be completed by the two unauthenticated calls alone', async () => {
-    dbState.results.push([{ id: USER_A, orgId: ORG_A }]) // register: user lookup
-    dbState.results.push([{ id: 'pending-1' }]) // register: pending insert
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
 
     const registered = await app.inject({
       method: 'POST',
       url: '/v1/auth/register-device',
-      payload: {
-        email: 'dev@example.com',
-        hostname: 'laptop.local',
-        platform: 'darwin',
-        agentVersion: '0.1.0',
-      },
+      payload: registration,
     })
     const { pendingId, code } = registered.json()
 
-    // Nothing approved the row, so the lookup matches nothing.
-    dbState.results.push([])
+    // Nothing approved the document, so the lookup matches nothing.
     const verified = await app.inject({
       method: 'POST',
       url: '/v1/auth/verify-device',
-      payload: { pendingId: '66666666-6666-4666-8666-666666666666', code },
+      payload: { pendingId, code },
     })
 
-    expect(pendingId).toBe('pending-1')
     expect(verified.statusCode).toBe(400)
     expect(verified.json()).not.toHaveProperty('accessToken')
 
-    // The fake database ignores predicates, so an empty result only proves the
-    // route handles a miss. What makes the sequence fail is the predicate
-    // itself: assert verify-device will not look at an unapproved row.
-    const lookup = dbState.calls.filter((c) => c.op === 'where').at(-1)
-    expect(inspect(lookup?.arg, { depth: null })).toMatch(/approved_at[\s\S]*is not null/)
+    // The fake ignores filters, so an empty result only proves the route
+    // handles a miss. What makes the sequence fail is the filter itself:
+    // assert verify-device will not look at an unapproved document.
+    expect(mongoCalls('pendingDevices', 'findOne')[0][0]).toMatchObject({
+      _id: pendingId,
+      code,
+      approvedAt: { $ne: null },
+      verifiedAt: null,
+      expiresAt: { $gt: expect.any(Date) },
+    })
   })
 
   it('rejects an unverifiable code without creating a device', async () => {
-    dbState.results.push([]) // no matching unexpired, unverified pending row
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/verify-device',
       payload: { pendingId: '66666666-6666-4666-8666-666666666666', code: 'ABC123' },
     })
     expect(res.statusCode).toBe(400)
-    expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+    expect(mongoState.calls.some((c) => c.op === 'insertOne')).toBe(false)
   })
 
   it('stores a hash of the access token, never the token itself', async () => {
-    dbState.results.push([
-      { id: 'pending-1', email: 'dev@example.com', hostname: 'laptop.local', platform: 'darwin', agentVersion: '0.1.0' },
-    ])
-    dbState.results.push([{ id: USER_A, orgId: ORG_A }])
-    dbState.results.push([{ id: DEVICE_A }])
+    mongoState.docs.pendingDevices = [
+      { _id: 'pending-1', email: 'dev@example.com', hostname: 'laptop.local', platform: 'darwin', agentVersion: '0.1.0' },
+    ]
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
 
     const res = await app.inject({
       method: 'POST',
@@ -1560,15 +1444,22 @@ describe('device registration', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    const { accessToken } = res.json()
-    const stored = dbState.calls
-      .filter((c) => c.op === 'values')
-      .map((c) => c.arg as Record<string, unknown>)
-      .find((v) => 'tokenHash' in v)
+    const { accessToken, deviceId } = res.json()
+    const [[stored]] = mongoCalls('deviceTokens', 'insertOne') as [[Record<string, unknown>]]
 
-    expect(stored?.tokenHash).toBeTypeOf('string')
-    expect(stored?.tokenHash).not.toBe(accessToken)
-    expect(String(stored?.tokenHash)).toHaveLength(64)
+    expect(stored.tokenHash).toBeTypeOf('string')
+    expect(stored.tokenHash).not.toBe(accessToken)
+    expect(String(stored.tokenHash)).toHaveLength(64)
+    expect(stored).toMatchObject({ deviceId, revokedAt: null })
+
+    // The device, the pending claim and the token all name one new id.
+    const [[device]] = mongoCalls('devices', 'insertOne') as [[Record<string, unknown>]]
+    expect(device).toMatchObject({ _id: deviceId, userId: USER_A, hostname: 'laptop.local' })
+    const [[claimFilter, claim]] = mongoCalls('pendingDevices', 'updateOne') as [
+      [unknown, { $set: Record<string, unknown> }],
+    ]
+    expect(claimFilter).toEqual({ _id: 'pending-1' })
+    expect(claim.$set.deviceId).toBe(deviceId)
   })
 })
 
@@ -1593,26 +1484,36 @@ describe('POST /v1/auth/approve-device', () => {
     expect(res.statusCode).toBe(400)
   })
 
-  it('approves only a row carrying the signed-in user own email', async () => {
-    dbState.results.push([{ email: 'dev@example.com' }]) // user lookup by JWT userId
-    dbState.results.push([{ hostname: 'laptop.local', platform: 'darwin' }]) // update ... returning
+  it('approves only a pending device carrying the signed-in user own email', async () => {
+    mongoState.docs.users = [{ _id: USER_A, email: 'dev@example.com' }]
+    mongoState.docs.pendingDevices = [{ hostname: 'laptop.local', platform: 'darwin' }]
 
     const res = await approve(auth(token()))
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ hostname: 'laptop.local', platform: 'darwin' })
 
-    const claim = dbState.calls.filter((c) => c.op === 'where').at(-1)
-    const predicate = inspect(claim?.arg, { depth: null })
-    // The email comes from the database row for the token's userId, never from
-    // the request, so a caller cannot approve someone else's pending device.
-    expect(predicate).toContain('dev@example.com')
-    expect(dbState.calls.find((c) => c.op === 'set')?.arg).toHaveProperty('approvedAt')
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_A })
+    const [[filter, update]] = mongoCalls('pendingDevices', 'findOneAndUpdate') as [
+      [Record<string, unknown>, { $set: Record<string, unknown> }],
+    ]
+    // The email comes from the database document for the token's userId,
+    // never from the request, so a caller cannot approve someone else's
+    // pending device. One operation finds and claims, so two clicks cannot
+    // both win.
+    expect(filter).toMatchObject({
+      code: 'ABC123',
+      email: 'dev@example.com',
+      approvedAt: null,
+      verifiedAt: null,
+      expiresAt: { $gt: expect.any(Date) },
+    })
+    expect(update.$set.approvedAt).toBeInstanceOf(Date)
   })
 
   it('answers an unknown, expired or already-claimed code identically', async () => {
-    dbState.results.push([{ email: 'dev@example.com' }])
-    dbState.results.push([]) // the claiming update matched nothing
+    mongoState.docs.users = [{ _id: USER_A, email: 'dev@example.com' }]
+    // No pending document: the claiming update matched nothing.
 
     const res = await approve(auth(token()))
 
@@ -1645,22 +1546,20 @@ describe('invites', () => {
     })
 
     it('returns 409 when a user with that email already exists', async () => {
-      dbState.results.push([{ id: USER_A }]) // user lookup hits
+      mongoState.docs.users = [{ _id: USER_A }] // user lookup hits
       const res = await app.inject({
         method: 'POST',
         url: '/v1/auth/admin/invites',
         headers: auth(adminToken()),
-        payload: { email: 'taken@example.com' },
+        payload: { email: 'Taken@Example.com' },
       })
       expect(res.statusCode).toBe(409)
+      expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ email: 'taken@example.com' })
       // Nothing was written.
-      expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+      expect(mongoCalls('invites', 'insertOne')).toHaveLength(0)
     })
 
     it('stores only a hash, and scopes the invite to the admin own org', async () => {
-      dbState.results.push([]) // no existing user
-      dbState.results.push([{ id: 'invite-1' }]) // insert ... returning
-
       const res = await app.inject({
         method: 'POST',
         url: '/v1/auth/admin/invites',
@@ -1669,11 +1568,8 @@ describe('invites', () => {
       })
 
       expect(res.statusCode).toBe(200)
-      const { token: plaintext } = res.json()
-      const written = dbState.calls
-        .filter((c) => c.op === 'values')
-        .map((c) => c.arg as Record<string, unknown>)
-        .find((v) => 'code' in v)!
+      const { token: plaintext, inviteId } = res.json()
+      const [[written]] = mongoCalls('invites', 'insertOne') as [[Record<string, unknown>]]
 
       expect(written.code).toBe(createHash('sha256').update(plaintext).digest('hex'))
       expect(written.code).not.toBe(plaintext)
@@ -1681,11 +1577,11 @@ describe('invites', () => {
       // Email is normalised, so an invite cannot be duplicated by casing.
       expect(written.email).toBe('new@example.com')
       expect(written.role).toBe('developer')
+      expect(written.usedAt).toBeNull()
+      expect(written._id).toBe(inviteId)
     })
 
     it('defaults the invite to a 7 day expiry in the future', async () => {
-      dbState.results.push([])
-      dbState.results.push([{ id: 'invite-1' }])
       const before = Date.now()
 
       const res = await app.inject({
@@ -1721,15 +1617,39 @@ describe('invites', () => {
       expect(res.statusCode).toBe(403)
     })
 
-    it('never selects the stored hash', async () => {
-      dbState.results.push([])
+    it('never reads the stored hash, and scopes the list to the caller org', async () => {
       await app.inject({
+        method: 'GET',
+        url: '/v1/auth/admin/invites',
+        headers: auth(token({ role: 'admin', orgId: ORG_B })),
+      })
+      const [[filter, opts]] = mongoCalls('invites', 'find') as [[unknown, Record<string, unknown>]]
+      expect(filter).toEqual({ orgId: ORG_B })
+      expect(opts).toEqual({ projection: { code: 0 }, sort: { createdAt: -1 }, limit: 200 })
+    })
+
+    it('answers with id, not _id, and leaves no hash in the body', async () => {
+      const at = new Date('2026-11-01T10:00:00.000Z')
+      // `code` is here as if the projection had failed; the route must not
+      // pass it on either way.
+      mongoState.docs.invites = [
+        { _id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer', code: 'deadbeef', expiresAt: at, usedAt: null, createdAt: at },
+      ]
+      const res = await app.inject({
         method: 'GET',
         url: '/v1/auth/admin/invites',
         headers: auth(adminToken()),
       })
-      const selected = dbState.calls.find((c) => c.op === 'select')?.arg as Record<string, unknown>
-      expect(Object.keys(selected)).not.toContain('code')
+      expect(res.json()).toEqual([
+        {
+          id: 'invite-1',
+          email: 'a@b.c',
+          role: 'developer',
+          expiresAt: '2026-11-01T10:00:00.000Z',
+          usedAt: null,
+          createdAt: '2026-11-01T10:00:00.000Z',
+        },
+      ])
     })
   })
 
@@ -1738,18 +1658,26 @@ describe('invites', () => {
       app.inject({ method: 'POST', url: '/v1/auth/invites/accept', payload })
 
     it('needs no authentication', async () => {
-      dbState.results.push([])
       const res = await accept({ token: 'whatever', name: 'New Dev' })
       expect(res.statusCode).not.toBe(401)
     })
 
     it('rejects an unknown, expired or already-used invite with one message', async () => {
-      // The route filters on unused and unexpired in the query, so all three
-      // failures arrive here as an empty result and must look identical.
-      dbState.results.push([])
+      // The claim filters on unused and unexpired, so all three failures
+      // arrive here as no document and must look identical.
       const res = await accept({ token: 'nope', name: 'New Dev' })
       expect(res.statusCode).toBe(400)
       expect(res.json().error).toBe('Invalid or expired invite')
+
+      const [[filter, update]] = mongoCalls('invites', 'findOneAndUpdate') as [
+        [Record<string, unknown>, { $set: Record<string, unknown> }],
+      ]
+      expect(filter).toEqual({
+        code: createHash('sha256').update('nope').digest('hex'),
+        usedAt: null,
+        expiresAt: { $gt: expect.any(Date) },
+      })
+      expect(update.$set.usedAt).toBeInstanceOf(Date)
     })
 
     it('rejects a request with no name', async () => {
@@ -1758,55 +1686,54 @@ describe('invites', () => {
     })
 
     it('creates the user with the invite own org and role, not anything the caller sent', async () => {
-      dbState.results.push([
-        { id: 'invite-1', orgId: ORG_B, email: 'invited@example.com', role: 'manager' },
-      ])
-      dbState.results.push([{ id: 'invite-1' }]) // claim succeeded
-      dbState.results.push([{ id: 'user-new' }]) // user insert
+      mongoState.docs.invites = [
+        { _id: 'invite-1', orgId: ORG_B, email: 'invited@example.com', role: 'manager' },
+      ]
 
-      const res = await accept({ token: 'good-token', name: '  New Dev  ' })
+      const res = await accept({ token: 'good-token', name: '  New Dev  ', orgId: ORG_A, role: 'admin' })
 
       expect(res.statusCode).toBe(200)
+      const [[written]] = mongoCalls('users', 'insertOne') as [[Record<string, unknown>]]
       expect(res.json()).toEqual({
-        userId: 'user-new',
+        userId: written._id,
         orgId: ORG_B,
         email: 'invited@example.com',
         role: 'manager',
       })
-      const written = dbState.calls
-        .filter((c) => c.op === 'values')
-        .map((c) => c.arg as Record<string, unknown>)
-        .find((v) => 'email' in v)!
       expect(written.orgId).toBe(ORG_B)
       expect(written.role).toBe('manager')
       expect(written.name).toBe('New Dev')
     })
 
-    it('marks the invite used before creating the user', async () => {
-      dbState.results.push([{ id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer' }])
-      dbState.results.push([{ id: 'invite-1' }])
-      dbState.results.push([{ id: 'user-new' }])
+    it('claims the invite before creating the user, both inside one transaction', async () => {
+      mongoState.docs.invites = [{ _id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer' }]
 
       await accept({ token: 'good-token', name: 'New Dev' })
 
-      const ops = dbState.calls.map((c) => c.op)
-      // The lookup runs first, outside the transaction. The claim and the user
-      // insert are both inside it, and the claim has to come first.
-      expect(ops.indexOf('transaction')).toBeLessThan(ops.indexOf('update'))
-      expect(ops.indexOf('update')).toBeLessThan(ops.indexOf('insert'))
+      const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+      expect(ops).toEqual(['.transaction', 'invites.findOneAndUpdate', 'users.insertOne'])
     })
 
     it('cannot be replayed: the losing racer gets 400 and creates no user', async () => {
-      // Both requests pass the select; the claiming UPDATE matches no row for
-      // the second one because used_at is no longer null.
-      dbState.results.push([{ id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer' }])
-      dbState.results.push([]) // claim matched nothing
-
+      // Both racers send the same claim; only one can match a still-null
+      // usedAt, and the other gets no document back.
       const res = await accept({ token: 'good-token', name: 'New Dev' })
 
       expect(res.statusCode).toBe(400)
       expect(res.json().error).toBe('Invalid or expired invite')
-      expect(dbState.calls.some((c) => c.op === 'insert')).toBe(false)
+      expect(mongoCalls('users', 'insertOne')).toHaveLength(0)
+    })
+
+    it('rolls the claim back when the user cannot be created', async () => {
+      // A user with the invited email already exists. The invite must not be
+      // spent by a request that created nobody.
+      mongoState.docs.invites = [{ _id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer' }]
+      mongoState.failOn = 'users.insertOne'
+
+      const res = await accept({ token: 'good-token', name: 'New Dev' })
+
+      expect(res.statusCode).toBe(500)
+      expect(mongoState.calls.map((c) => c.op)).toContain('rollback')
     })
   })
 })
@@ -1869,34 +1796,40 @@ describe('device token revocation', () => {
       payload,
     })
 
-  const guardPredicate = () =>
-    renderSql(dbState.calls.filter((c) => c.op === 'where').at(0)?.arg)
-
-  it('refuses a device whose token row has been revoked', async () => {
-    dbState.results.push([]) // no unrevoked row for this device
-
+  it('refuses a device whose token has been revoked', async () => {
+    // Nothing seeded: no unrevoked token for this device.
     const res = await submit()
 
     expect(res.statusCode).toBe(401)
-    // The fake database ignores predicates, so an empty result only shows the
-    // guard handles a miss. What makes a revoked laptop fail is the predicate
-    // itself, so assert the lookup asks for a row that is still unrevoked.
-    expect(guardPredicate()).toMatch(/revoked_at[\s\S]*is null/)
-    expect(dbState.calls.some((c) => c.op === 'transaction')).toBe(false)
+    // The fake ignores filters, so an empty result only shows the guard
+    // handles a miss. What makes a revoked laptop fail is the filter itself,
+    // so assert the lookup asks for a token that is still unrevoked.
+    expect(guardFilter()).toEqual({ deviceId: DEVICE_A, revokedAt: null })
+    expect(mongoState.calls.some((c) => c.op === 'transaction')).toBe(false)
   })
 
-  it('refuses a device that has no token row at all', async () => {
-    dbState.results.push([])
-
+  it('refuses a device that has no token at all', async () => {
     const res = await submit()
 
     expect(res.statusCode).toBe(401)
-    // Scoped to the device the token names, so another laptop's live row
+    // Scoped to the device the token names, so another laptop's live token
     // cannot authorise this one.
-    expect(guardPredicate()).toContain(DEVICE_A)
+    expect(guardFilter()?.deviceId).toBe(DEVICE_A)
   })
 
-  it('lets a device with a live token row through', async () => {
+  it('fails closed with 401 when the token lookup itself fails', async () => {
+    // A database outage must not wave a device through, and must not surface
+    // as a 500 from the global handler either.
+    liveDeviceToken()
+    mongoState.failOn = 'deviceTokens.findOne'
+
+    const res = await submit()
+
+    expect(res.statusCode).toBe(401)
+    expect(mongoState.calls.some((c) => c.op === 'transaction')).toBe(false)
+  })
+
+  it('lets a device with a live token through', async () => {
     liveDeviceToken()
     // The rebuild reads the user to learn the org and aborts the transaction
     // when it is absent, so a submission that is meant to reach 200 needs one.
@@ -1906,20 +1839,19 @@ describe('device token revocation', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ accepted: 1, skipped: 0, date: DATE })
-    // Without this the test passes on a build that never looks the device up,
-    // because the queued row is simply consumed by the event insert instead.
     // One read, not two: this is the whole cost the guard adds to every
-    // usage submission, and it should stay one statement.
+    // usage submission, and it should stay one operation.
     expect(deviceTokenReads()).toHaveLength(1)
   })
 
-  it('still authorises a device whose row is past expires_at but not revoked', async () => {
-    // Looks wrong until you follow the refresh path. `expires_at` is written
+  it('still authorises a device whose token is past expiresAt but not revoked', async () => {
+    // Looks wrong until you follow the refresh path. `expiresAt` is written
     // once at registration as now + 30 days and never updated, while
     // /v1/auth/refresh mints a fresh 30-day access token without inserting a
-    // new row. An `expires_at > now()` term here would 401 every legitimately
-    // refreshing device on day 31. Expiry is the JWT `exp` claim's job, and
-    // accessJwtVerify has already checked it by the time this runs.
+    // new document. An `expiresAt > now` term here would 401 every
+    // legitimately refreshing device on day 31. Expiry is the JWT `exp`
+    // claim's job, and accessJwtVerify has already checked it by the time
+    // this runs.
     liveDeviceToken()
     mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
 
@@ -1927,13 +1859,13 @@ describe('device token revocation', () => {
 
     expect(res.statusCode).toBe(200)
     expect(deviceTokenReads()).toHaveLength(1)
-    expect(guardPredicate()).not.toContain('expires_at')
+    expect(guardFilter()).not.toHaveProperty('expiresAt')
   })
 
-  it('never reads device_tokens for a dashboard role, which has no row', async () => {
-    // Nothing is queued, so an unconditional lookup would read an empty result
-    // and 401 every dashboard request. Dashboard users come through the same
-    // accessJwtVerify and have no device_tokens row at all.
+  it('never reads deviceTokens for a dashboard role, which has none', async () => {
+    // Nothing is seeded, so an unconditional lookup would find nothing and
+    // 401 every dashboard request. Dashboard users come through the same
+    // accessJwtVerify and have no deviceTokens document at all.
     const res = await app.inject({
       method: 'GET',
       url: range('/v1/dashboard/overview'),
@@ -1947,7 +1879,6 @@ describe('device token revocation', () => {
   it('refuses to refresh a revoked device', async () => {
     // Without this the ticket undoes itself: a revoked laptop trades its
     // refresh token for another 30 days of access.
-    dbState.results.push([]) // no unrevoked row
     const refresh = app.jwt.refresh.sign({
       userId: USER_A,
       orgId: ORG_A,
@@ -1963,6 +1894,7 @@ describe('device token revocation', () => {
 
     expect(res.statusCode).toBe(401)
     expect(res.json()).not.toHaveProperty('accessToken')
+    expect(guardFilter()).toEqual({ deviceId: DEVICE_A, revokedAt: null })
   })
 })
 
@@ -1972,6 +1904,12 @@ describe('POST /v1/auth/admin/devices/revoke', () => {
 
   const revoke = (headers?: Record<string, string>, payload: Record<string, string> = body) =>
     app.inject({ method: 'POST', url, headers, payload })
+
+  /** The device exists and hangs off a user in the caller's org. */
+  const ownedDevice = () => {
+    mongoState.docs.devices = [{ _id: DEVICE_A, userId: USER_A }]
+    mongoState.docs.users = [{ _id: USER_A }]
+  }
 
   it('returns 401 without a token', async () => {
     const res = await revoke(undefined)
@@ -1988,27 +1926,26 @@ describe('POST /v1/auth/admin/devices/revoke', () => {
     expect(res.statusCode).toBe(400)
   })
 
-  it('revokes every live row for the device', async () => {
-    dbState.results.push([{ id: DEVICE_A }]) // device sits under a user in the caller's org
-    dbState.results.push([{ id: 'token-1' }, { id: 'token-2' }]) // update ... returning
+  it('revokes every live token for the device', async () => {
+    ownedDevice()
+    mongoState.docs.deviceTokens = [{ _id: 'token-1' }, { _id: 'token-2' }]
 
     const res = await revoke(auth(token({ role: 'admin' })))
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ deviceId: DEVICE_A, revoked: 2 })
-    expect(dbState.calls.find((c) => c.op === 'set')?.arg).toHaveProperty('revokedAt')
-    // No limit, and scoped to rows that are still live, so one call ends every
-    // token the laptop holds and a second call is a no-op rather than a lie
-    // about how many it just ended.
-    const claim = lastWhere()
-    expect(claim).toContain(DEVICE_A)
-    expect(claim).toMatch(/revoked_at[\s\S]*is null/)
-    expect(dbState.calls.some((c) => c.op === 'limit')).toBe(false)
+    // updateMany and scoped to tokens that are still live, so one call ends
+    // every token the laptop holds and a second call is a no-op rather than a
+    // lie about how many it just ended.
+    const [[filter, update]] = mongoCalls('deviceTokens', 'updateMany') as [
+      [unknown, { $set: Record<string, unknown> }],
+    ]
+    expect(filter).toEqual({ deviceId: DEVICE_A, revokedAt: null })
+    expect(update.$set.revokedAt).toBeInstanceOf(Date)
   })
 
   it('reports zero rather than failing when the device holds no live token', async () => {
-    dbState.results.push([{ id: DEVICE_A }])
-    dbState.results.push([]) // nothing left to revoke
+    ownedDevice()
 
     const res = await revoke(auth(token({ role: 'admin' })))
 
@@ -2017,15 +1954,24 @@ describe('POST /v1/auth/admin/devices/revoke', () => {
   })
 
   it('refuses a device in another organization and writes nothing', async () => {
-    dbState.results.push([]) // the org-scoped lookup matches nothing
+    // The device exists, but the org-scoped owner lookup matches nothing.
+    mongoState.docs.devices = [{ _id: DEVICE_A, userId: USER_A }]
 
     const res = await revoke(auth(token({ role: 'admin', orgId: ORG_B })))
 
     expect(res.statusCode).toBe(404)
-    expect(dbState.calls.some((c) => c.op === 'update')).toBe(false)
+    expect(mongoCalls('deviceTokens', 'updateMany')).toHaveLength(0)
     // The lookup is the whole control: the device has to hang off a user in
     // the caller's own org before anything is written.
-    expect(lastWhere()).toContain(ORG_B)
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_A, orgId: ORG_B })
+  })
+
+  it('answers an unknown device the same way as another org device', async () => {
+    const res = await revoke(auth(token({ role: 'admin' })))
+
+    expect(res.statusCode).toBe(404)
+    expect(res.json().error).toBe('Device not found')
+    expect(mongoCalls('deviceTokens', 'updateMany')).toHaveLength(0)
   })
 })
 
@@ -2044,9 +1990,9 @@ describe('POST /v1/auth/revoke-device', () => {
 
   it('revokes the caller own device and nothing else', async () => {
     // `burnwatch uninstall` is the only caller. The admin endpoint cannot
-    // serve it: a device token is not an admin token.
-    liveDeviceToken() // requireAuth's own guard
-    dbState.results.push([{ id: 'token-1' }]) // update ... returning
+    // serve it: a device token is not an admin token. The one seeded token
+    // serves requireAuth's own guard and is then the one revoked.
+    liveDeviceToken()
 
     const res = await app.inject({
       method: 'POST',
@@ -2056,12 +2002,26 @@ describe('POST /v1/auth/revoke-device', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ deviceId: DEVICE_A, revoked: 1 })
-    expect(lastWhere()).toContain(DEVICE_A)
+    expect(mongoCalls('deviceTokens', 'updateMany')[0][0]).toEqual({
+      deviceId: DEVICE_A,
+      revokedAt: null,
+    })
   })
 })
 
 describe('GET /v1/auth/admin/devices', () => {
   const url = '/v1/auth/admin/devices'
+  const pipeline = () => mongoCalls('users', 'aggregate')[0][0] as Record<string, Record<string, unknown>>[]
+
+  const device = {
+    id: DEVICE_A,
+    hostname: 'laptop-1',
+    platform: 'darwin',
+    lastSeenAt: '2026-11-05T12:00:00Z',
+    userName: 'Dev One',
+    userEmail: 'dev1@example.com',
+    revoked: false,
+  }
 
   it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role })) })
@@ -2069,42 +2029,19 @@ describe('GET /v1/auth/admin/devices', () => {
   })
 
   it('lists only devices in the caller own organization', async () => {
-    dbState.results.push([
-      {
-        id: DEVICE_A,
-        hostname: 'laptop-1',
-        platform: 'darwin',
-        lastSeenAt: '2026-11-05T12:00:00.000Z',
-        userName: 'Dev One',
-        userEmail: 'dev1@example.com',
-        liveTokens: 1,
-      },
-    ])
+    mongoState.aggregates.users = [device]
 
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin', orgId: ORG_B })) })
 
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual([
-      {
-        id: DEVICE_A,
-        hostname: 'laptop-1',
-        platform: 'darwin',
-        lastSeenAt: '2026-11-05T12:00:00.000Z',
-        userName: 'Dev One',
-        userEmail: 'dev1@example.com',
-        revoked: false,
-      },
-    ])
-    const wheres = dbState.calls.filter((c) => c.op === 'where')
-    expect(wheres.some((c) => inspect(c.arg, { depth: 10 }).includes(ORG_B))).toBe(true)
+    expect(res.json()).toEqual([device])
+    expect(pipeline()[0]).toEqual({ $match: { orgId: ORG_B } })
   })
 
   it('takes the org from the token and ignores one supplied in the query', async () => {
     // A read that leaks the fleet is a smaller hole than a write, not a
     // non-hole: this route hands back every hostname and owner email in an
     // org, so the filter has to come from the JWT and nowhere else.
-    dbState.results.push([])
-
     const res = await app.inject({
       method: 'GET',
       url: `${url}?orgId=${ORG_B}`,
@@ -2112,45 +2049,29 @@ describe('GET /v1/auth/admin/devices', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    const queried = inspect(dbState.calls, { depth: null })
+    const queried = inspect(mongoState.calls, { depth: null })
     expect(queried).toContain(ORG_A)
     expect(queried).not.toContain(ORG_B)
   })
 
-  it('marks a device with no live token as revoked', async () => {
-    dbState.results.push([
-      {
-        id: DEVICE_A,
-        hostname: 'laptop-1',
-        platform: 'darwin',
-        lastSeenAt: null,
-        userName: 'Dev One',
-        userEmail: 'dev1@example.com',
-        liveTokens: 0,
-      },
-    ])
+  it('derives revoked from the absence of an unrevoked token', async () => {
+    await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
 
-    const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
-
-    expect(res.json()[0]).toMatchObject({ revoked: true, lastSeenAt: null })
+    const lookup = pipeline().find(
+      (s) => '$lookup' in s && (s.$lookup as Record<string, unknown>).from === 'deviceTokens',
+    )!.$lookup as Record<string, unknown>
+    expect(lookup).toMatchObject({ localField: 'device._id', foreignField: 'deviceId' })
+    expect(lookup.pipeline).toContainEqual({ $match: { revokedAt: null } })
+    const project = pipeline().at(-1)!.$project as Record<string, unknown>
+    expect(project.revoked).toEqual({ $eq: [{ $size: '$live' }, 0] })
+    expect(project._id).toBe(0)
   })
 })
 
 describe('GET /health', () => {
-  // Both checks draw from the fake's one result queue, and the schema check
-  // takes the first slot even though it is second in the list: it awaits its
-  // query while being evaluated as an argument, whereas the `select 1` proxy
-  // does not shift until allSettled attaches a handler. Queue order follows
-  // who awaits first, not who is written first.
-  const schemaThenLiveness = (latest: number) => {
-    dbState.results.push([{ latest }])
-    dbState.results.push([]) // select 1 — the value is never read
-  }
-
-  // build-server skips both MongoDB checks when MONGODB_URI is unset, and
-  // vitest never sets it. Every case below except the last is about what
-  // happens once Mongo IS configured, so the variable is present for all of
-  // them. The value is never dialled — @burn-watch/db is mocked wholesale.
+  // The value is never dialled — @burn-watch/db is mocked wholesale. Every
+  // case below except the last is about what happens once Mongo IS
+  // configured.
   beforeEach(() => {
     process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/burnwatch_test'
   })
@@ -2160,55 +2081,17 @@ describe('GET /health', () => {
   })
 
   it('needs no authentication and returns 200 when the database answers', async () => {
-    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
   })
 
-  it('returns 503 naming the database when the database is down', async () => {
-    dbState.failExecute = true
-    const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(503)
-    // Both checks go through execute, so a dead database fails both. The point
-    // of the list is that it names every failure rather than the first.
-    expect(res.json().ok).toBe(false)
-    expect(res.json().failed).toContain('database')
-  })
-
-  /**
-   * BW-37. A reachable database running a schema older than the code used to
-   * answer `{ok:true}` here, and did for 22 hours while every usage
-   * submission failed on a column that was never applied. Reverting the
-   * second check in build-server turns this green-on-broken again.
-   */
-  it('returns 503 naming the schema when the database is behind the code', async () => {
-    schemaThenLiveness(EXPECTED_SCHEMA_VERSION - 1)
-    const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(503)
-    expect(res.json()).toEqual({ ok: false, failed: ['schema'] })
-  })
-
-  it('names a never-migrated database too, not just one a version behind', async () => {
-    schemaThenLiveness(0)
-    const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.statusCode).toBe(503)
-    expect(res.json().failed).toContain('schema')
-  })
-
-  it('leaks no connection details into the response body', async () => {
-    // The driver error carries the host it failed to reach.
-    dbState.failExecute = true
-    const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.payload).not.toContain('db.example')
-  })
-
   it('returns 503 naming mongo when the MongoDB ping fails', async () => {
-    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
     mongoState.pingFails = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(503)
     expect(res.json()).toEqual({ ok: false, failed: ['mongo'] })
+    // The driver error carries the host it failed to reach.
     expect(res.payload).not.toContain('mongo.example')
   })
 
@@ -2219,7 +2102,6 @@ describe('GET /health', () => {
    * index list would answer 200 while every re-sync inserted duplicates.
    */
   it('returns 503 naming mongoSchema when the MongoDB shape has drifted', async () => {
-    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
     mongoState.schemaFails = true
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(503)
@@ -2229,30 +2111,23 @@ describe('GET /health', () => {
   })
 
   it('names every failed dependency rather than the first', async () => {
-    schemaThenLiveness(EXPECTED_SCHEMA_VERSION - 1)
     mongoState.pingFails = true
     mongoState.schemaFails = true
     const res = await app.inject({ method: 'GET', url: '/health' })
-    expect(res.json()).toEqual({ ok: false, failed: ['schema', 'mongo', 'mongoSchema'] })
+    expect(res.json()).toEqual({ ok: false, failed: ['mongo', 'mongoSchema'] })
   })
 
   /**
-   * The inverse of the case that stood here through Phases 2 and 3, which
-   * asserted that both MongoDB checks are skipped when MONGODB_URI is unset.
-   *
-   * That was right while nothing in a request path read Mongo. It stopped
-   * being right at Phase 3, and Phase 4 made it acute: fifteen handlers call
-   * getStore(), which throws outright when the variable is unset. Checked
-   * against the branch preview, where the variable is set in no environment —
-   * /health answered 200 {"ok":true} while all five dashboard routes answered
-   * 500. The endpoint was certifying a deployment that could not serve a page.
+   * Every handler calls getStore(), which throws outright when the variable
+   * is unset. The branch preview once answered 200 {"ok":true} here while
+   * all five dashboard routes answered 500, because the checks were skipped
+   * when the variable was missing.
    *
    * Both mocks are left healthy, so the only thing that can fail this case is
    * the missing variable itself.
    */
   it('reports mongo down when MONGODB_URI is unset, because handlers need it', async () => {
     delete process.env.MONGODB_URI
-    schemaThenLiveness(EXPECTED_SCHEMA_VERSION)
 
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(503)
@@ -2277,8 +2152,8 @@ describe('unhandled errors', () => {
   }
 
   it('answers 500 with a fixed sentence and keeps the thrown message for the log', async () => {
-    // What a Drizzle or Postgres failure looks like: table names at least,
-    // and sometimes row values.
+    // What a driver failure looks like: collection or table names at least,
+    // and sometimes values.
     const thrown = new Error('relation "usage_events" does not exist')
 
     const { res, logged } = await serve(thrown)

@@ -8,84 +8,6 @@ process.env.JWT_SECRET ??= 'test-access-secret'
 process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret'
 
 /**
- * Same fake database as `routes/routes.test.ts`: a queue of rows handed back
- * in the order the route asks for them, and a log of what it asked.
- */
-const dbState = vi.hoisted(() => ({
-  results: [] as unknown[][],
-  calls: [] as { op: string; arg: unknown }[],
-  failOn: null as string | null,
-}))
-
-vi.mock('../../plugins/db.js', async () => {
-  const fastifyPlugin = (await import('fastify-plugin')).default
-
-  const chain = (): unknown =>
-    new Proxy(
-      {},
-      {
-        get(_target, prop) {
-          if (prop === 'then') {
-            return (onOk: (v: unknown) => unknown, onErr?: (e: unknown) => unknown) => {
-              const next = dbState.results.shift() ?? []
-              return Promise.resolve(next).then(onOk, onErr)
-            }
-          }
-          return (...args: unknown[]) => {
-            dbState.calls.push({ op: String(prop), arg: args[0] })
-            if (dbState.failOn === String(prop)) {
-              throw Object.assign(new Error('duplicate key value'), { code: '23505' })
-            }
-            return chain()
-          }
-        },
-      },
-    )
-
-  const DB_METHODS = new Set([
-    'select',
-    'insert',
-    'update',
-    'delete',
-    'execute',
-    'transaction',
-    '$with',
-    'with',
-  ])
-
-  const db = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        const name = String(prop)
-        if (!DB_METHODS.has(name)) return undefined
-        if (name === 'transaction') {
-          return async (fn: (tx: unknown) => Promise<unknown>) => {
-            dbState.calls.push({ op: 'transaction', arg: undefined })
-            try {
-              return await fn(db)
-            } catch (err) {
-              dbState.calls.push({ op: 'rollback', arg: undefined })
-              throw err
-            }
-          }
-        }
-        return (...args: unknown[]) => {
-          dbState.calls.push({ op: name, arg: args[0] })
-          return chain()
-        }
-      },
-    },
-  )
-
-  return {
-    dbPlugin: fastifyPlugin(async (fastify: FastifyInstance) => {
-      fastify.decorate('db', db as never)
-    }),
-  }
-})
-
-/**
  * The MongoDB side. `getStore` and `runInTxn` are replaced; everything else in
  * the package is the real thing, so the usage upsert and the snapshot rebuild
  * under this route are the code that ships.
@@ -271,9 +193,6 @@ const mongoCalls = (collection: string, op: string) =>
   mongoState.calls.filter((c) => c.collection === collection && c.op === op).map((c) => c.args)
 
 beforeEach(async () => {
-  dbState.results = []
-  dbState.calls = []
-  dbState.failOn = null
 
   // The caller holds an admin JWT for an organization that exists, and is
   // itself a member of it. Both are invariants the routes now lean on — the
@@ -1325,7 +1244,6 @@ describe('copilot integration routes — authorization', () => {
 
     expect(res.statusCode).toBe(403)
     // Rejected before anything was read or written, and before GitHub was asked.
-    expect(dbState.calls).toHaveLength(0)
     expect(mongoState.calls).toHaveLength(0)
     expect(fetchStub).not.toHaveBeenCalled()
   })

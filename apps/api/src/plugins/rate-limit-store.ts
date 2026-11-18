@@ -1,32 +1,42 @@
-import { sql } from 'drizzle-orm'
+import type { Document } from 'mongodb'
 import type { RouteOptions } from 'fastify'
-import type { DB } from './db.js'
+import { getStore } from '@burn-watch/db'
 
 type IncrResult = { current: number; ttl: number }
 type IncrCallback = (error: Error | null, result?: IncrResult) => void
 
-// Rows are only rewritten when the same key comes back, so a caller that never
-// returns leaves its last row behind. The sweep is an index range scan that
-// usually deletes nothing, so it runs on a counter rather than on every request.
-// ponytail: fixed count, switch to a time check if traffic ever puts 500
-// requests inside one window.
-const SWEEP_EVERY = 500
+/**
+ * The update for one hit. A missing document or a closed window starts a fresh
+ * window at 1; otherwise the count goes up and the window keeps its end.
+ * Every field in one `$set` reads the document as it was before this update,
+ * so both `$cond`s see the old `expiresAt`. A missing `expiresAt` sorts below
+ * any date, so `$lte` also covers the first hit.
+ */
+export function hitPipeline(timeWindow: number): Document[] {
+  const closed = { $lte: ['$expiresAt', '$$NOW'] }
+  return [
+    {
+      $set: {
+        count: { $cond: [closed, 1, { $add: ['$count', 1] }] },
+        expiresAt: { $cond: [closed, { $add: ['$$NOW', timeWindow] }, '$expiresAt'] },
+      },
+    },
+  ]
+}
 
 /**
- * A `@fastify/rate-limit` store backed by the `rate_limits` table.
+ * A `@fastify/rate-limit` store backed by the `rateLimits` collection.
  *
  * The default store keeps counters in process memory. That is wrong on
  * serverless: N warm instances give every route N independent counters, so a
- * 3/hour device-registration cap is really 3N/hour. One row per route+caller in
- * Postgres gives the whole deployment a single counter.
+ * 3/hour device-registration cap is really 3N/hour. One document per
+ * route+caller gives the whole deployment a single counter.
  *
- * Takes a getter rather than the handle so the store can be built while
- * `server.db` is still being decorated by `dbPlugin`.
+ * Old documents need no sweep: the `rateLimits_ttl` index drops them once
+ * `expiresAt` passes.
  */
-export function pgRateLimitStore(getDb: () => DB) {
-  let sinceSweep = 0
-
-  return class PgRateLimitStore {
+export function mongoRateLimitStore() {
+  return class MongoRateLimitStore {
     // The plugin calls `new Store(globalParams)`; `prefix` is only ever passed
     // by `child` below.
     constructor(
@@ -39,48 +49,32 @@ export function pgRateLimitStore(getDb: () => DB) {
     // ships, which declares `incr(key, callback)` and omits the two arguments
     // the runtime actually passes.
     incr(key: string, cb: IncrCallback, timeWindow = 60_000): void {
-      const db = getDb()
-      // One statement: insert the first hit, or bump the existing count unless
-      // its window has already closed, in which case start a fresh one. Doing
-      // the expiry check in the UPDATE rather than deleting first keeps this
-      // atomic against a concurrent request for the same key.
-      db.execute(sql`
-        insert into rate_limits (key, count, expires_at)
-        values (
-          ${this.prefix + key},
-          1,
-          now() + ${timeWindow}::double precision * interval '1 millisecond'
+      // One atomic upsert, so two requests for the same key cannot both start
+      // a fresh window.
+      getStore()
+        .rateLimits.findOneAndUpdate({ _id: this.prefix + key }, hitPipeline(timeWindow), {
+          upsert: true,
+        })
+        .then(
+          (doc) => {
+            if (!doc) return cb(new Error('rateLimits upsert returned no document'))
+            // App clock against the server's $$NOW; skew only shifts the
+            // Retry-After hint, not the count.
+            const ttl = Math.max(0, Math.ceil(doc.expiresAt.getTime() - Date.now()))
+            cb(null, { current: doc.count, ttl })
+          },
+          (err: Error) => cb(err),
         )
-        on conflict (key) do update set
-          count = case when rate_limits.expires_at <= now() then 1 else rate_limits.count + 1 end,
-          expires_at = case when rate_limits.expires_at <= now() then excluded.expires_at else rate_limits.expires_at end
-        returning count, ceil(extract(epoch from (expires_at - now())) * 1000)::int as ttl
-      `).then(
-        (result) => {
-          const row = result.rows[0] as { count: number; ttl: number } | undefined
-          if (!row) return cb(new Error('rate_limits upsert returned no row'))
-
-          if (++sinceSweep >= SWEEP_EVERY) {
-            sinceSweep = 0
-            // Best effort. A failed sweep leaves dead rows, which costs disk
-            // and nothing else, and it must not fail the request it rode in on.
-            void db.execute(sql`delete from rate_limits where expires_at < now()`).catch(() => {})
-          }
-
-          cb(null, { current: Number(row.count), ttl: Number(row.ttl) })
-        },
-        (err: Error) => cb(err),
-      )
     }
 
     // One counter per route, the way the package's own Redis store scopes keys.
-    // Without this every rate-limited route would share a single row per caller.
-    // `routeInfo` is optional here because the shipped types describe the
-    // argument as a plain route options object and omit it; losing it would
-    // merge every route onto one counter, which only tightens the limits.
+    // Without this every rate-limited route would share a single document per
+    // caller. `routeInfo` is optional here because the shipped types describe
+    // the argument as a plain route options object and omit it; losing it
+    // would merge every route onto one counter, which only tightens the limits.
     child(routeOptions: Partial<RouteOptions> & { routeInfo?: { method: string; url: string } }) {
       const route = routeOptions.routeInfo
-      return new PgRateLimitStore(undefined, route ? `${route.method}${route.url}-` : '')
+      return new MongoRateLimitStore(undefined, route ? `${route.method}${route.url}-` : '')
     }
   }
 }

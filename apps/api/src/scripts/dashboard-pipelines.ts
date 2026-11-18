@@ -1,5 +1,6 @@
 /**
- * The five dashboard aggregations, run against a real MongoDB, checked against
+ * The five dashboard aggregations, plus the admin roster, admin devices and
+ * rate-limit pipelines, run against a real MongoDB, checked against
  * figures worked out by hand.
  *
  * Deliberately not part of `npm test`. The route tests seed the fake store with
@@ -31,7 +32,7 @@
  */
 import { strict as assert } from 'node:assert'
 import { MongoClient } from 'mongodb'
-import type { ProjectEntry } from '@burn-watch/shared'
+import type { AdminDeviceRow, AdminUserRow, ProjectEntry } from '@burn-watch/shared'
 import {
   dayKey,
   microsFromUsd,
@@ -40,6 +41,9 @@ import {
   syncSchema,
   type ClaudeEnrichmentDoc,
   type DailySnapshotDoc,
+  type DeviceDoc,
+  type DeviceId,
+  type DeviceTokenDoc,
   type IsoDate,
   type OrgId,
   type Store,
@@ -51,6 +55,8 @@ import { dayBefore } from '../routes/dashboard/dates.js'
 import { overviewPipeline } from '../routes/dashboard/overview.js'
 import { projectTotals } from '../routes/dashboard/projects.js'
 import { trendsPipeline } from '../routes/dashboard/trends.js'
+import { adminDevicesPipeline, adminUsersPipeline } from '../routes/auth/device.js'
+import { hitPipeline } from '../plugins/rate-limit-store.js'
 
 const D1 = '2026-06-01' as IsoDate
 const D2 = '2026-06-02' as IsoDate
@@ -198,6 +204,50 @@ const USERS = [
   user(ZED, THEIRS, 'Zed'),
 ]
 
+const ALPHA = newId<DeviceId>()
+const ZETA = newId<DeviceId>()
+const DI_BOX = newId<DeviceId>()
+const ZED_BOX = newId<DeviceId>()
+
+const device = (_id: DeviceId, userId: UserId, hostname: string, lastSeenAt: string): DeviceDoc => ({
+  _id,
+  userId,
+  hostname,
+  platform: 'darwin',
+  agentVersion: '0.1.0',
+  lastSeenAt: new Date(lastSeenAt),
+  createdAt: new Date(),
+})
+
+// ADA owns two devices, inserted out of name order, so the hostname sort and
+// the per-user max both have something to do. BO owns none.
+const DEVICES = [
+  device(ZETA, ADA, 'zeta', '2026-06-02T10:00:00.789Z'),
+  device(ALPHA, ADA, 'alpha', '2026-06-01T08:00:00.000Z'),
+  device(DI_BOX, DI, 'di-box', '2026-06-03T00:00:00.000Z'),
+  device(ZED_BOX, ZED, 'zed-box', '2026-06-09T00:00:00.000Z'),
+]
+
+const token = (deviceId: DeviceId, revokedAt: Date | null): DeviceTokenDoc => ({
+  _id: newId(),
+  deviceId,
+  tokenHash: 'x'.repeat(64),
+  expiresAt: new Date('2026-01-01'),
+  revokedAt,
+  createdAt: new Date(),
+})
+
+// ALPHA holds one live and one revoked token: live wins. ZETA holds only a
+// revoked one, DI_BOX none at all. ZED_BOX is live in the other org.
+const TOKENS = [
+  token(ALPHA, new Date()),
+  token(ALPHA, null),
+  token(ZETA, new Date()),
+  token(ZED_BOX, null),
+]
+
+const RATE_KEY = `dashboard-pipelines-${MINE}`
+
 async function seed(store: Store) {
   await store.organizations.insertOne({
     _id: MINE,
@@ -216,12 +266,17 @@ async function seed(store: Store) {
   for (const u of USERS) await store.users.insertOne(u)
   for (const s of SNAPSHOTS) await store.dailySnapshots.insertOne(s)
   for (const e of ENRICHMENT) await store.claudeEnrichment.insertOne(e)
+  for (const d of DEVICES) await store.devices.insertOne(d)
+  for (const t of TOKENS) await store.deviceTokens.insertOne(t)
 }
 
 async function clean(store: Store) {
   const orgs = { orgId: { $in: [MINE, THEIRS] } }
   await store.dailySnapshots.deleteMany(orgs)
   await store.claudeEnrichment.deleteMany(orgs)
+  await store.deviceTokens.deleteMany({ deviceId: { $in: DEVICES.map((d) => d._id) } })
+  await store.devices.deleteMany({ userId: { $in: USERS.map((u) => u._id) } })
+  await store.rateLimits.deleteMany({ _id: RATE_KEY })
   await store.users.deleteMany(orgs)
   await store.organizations.deleteMany({ _id: { $in: [MINE, THEIRS] } })
 }
@@ -550,6 +605,113 @@ async function projects(store: Store) {
   })
 }
 
+async function adminUsers(store: Store) {
+  const rows = await store.users.aggregate<AdminUserRow>(adminUsersPipeline(MINE))
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const createdAt = (id: UserId) => USERS.find((u) => u._id === id)!.createdAt.toISOString()
+
+  check('admin users lists the org, never the other one', () => {
+    assert.deepEqual([...byId.keys()].sort(), [ADA, BO, CY, DI].sort())
+  })
+
+  check('admin users returns exactly the AdminUserRow keys, in order', () => {
+    for (const r of rows) {
+      assert.deepEqual(Object.keys(r), [
+        'id', 'name', 'email', 'role', 'isActive', 'createdAt', 'deviceCount', 'hostnames',
+        'lastSeenAt', 'lastSyncDate', 'totalCostUsd', 'totalTokens', 'activeDays',
+      ])
+    }
+  })
+
+  check('admin users sums snapshots without multiplying by devices', () => {
+    // ADA owns two devices; a join that multiplied rows would double these.
+    assert.deepEqual(byId.get(ADA), {
+      id: ADA,
+      name: 'Ada',
+      email: 'ada@example.invalid',
+      role: 'developer',
+      isActive: true,
+      createdAt: createdAt(ADA),
+      deviceCount: 2,
+      hostnames: ['alpha', 'zeta'],
+      // The later device, to the second, like Postgres' to_char.
+      lastSeenAt: '2026-06-02T10:00:00Z',
+      lastSyncDate: D2,
+      totalCostUsd: 9,
+      totalTokens: 3_500,
+      activeDays: 2,
+    })
+  })
+
+  check('admin users zero-fills a user with no devices', () => {
+    assert.deepEqual(byId.get(BO), {
+      id: BO,
+      name: 'Bo',
+      email: 'bo@example.invalid',
+      role: 'developer',
+      isActive: true,
+      createdAt: createdAt(BO),
+      deviceCount: 0,
+      hostnames: [],
+      lastSeenAt: null,
+      lastSyncDate: D2,
+      totalCostUsd: 0,
+      totalTokens: 7_000,
+      activeDays: 1,
+    })
+    assert.equal(byId.get(CY)!.lastSyncDate, D3)
+    assert.equal(byId.get(DI)!.totalCostUsd, 40)
+  })
+
+  // A user with no snapshots at all, the "has not onboarded" case.
+  const NEW = newId<UserId>()
+  await store.users.insertOne(user(NEW, MINE, 'Neo'))
+  const [fresh] = (await store.users.aggregate<AdminUserRow>(adminUsersPipeline(MINE))).filter(
+    (r) => r.id === NEW,
+  )
+  await store.users.deleteOne({ _id: NEW })
+  check('admin users zero-fills a user who never synced', () => {
+    assert.equal(fresh.deviceCount, 0)
+    assert.equal(fresh.lastSyncDate, null)
+    assert.equal(fresh.totalCostUsd, 0)
+    assert.equal(fresh.totalTokens, 0)
+    assert.equal(fresh.activeDays, 0)
+  })
+}
+
+async function adminDevices(store: Store) {
+  const rows = await store.users.aggregate<AdminDeviceRow>(adminDevicesPipeline(MINE))
+
+  check('admin devices lists the org newest first, with revoked derived from tokens', () => {
+    assert.deepEqual(rows, [
+      { id: DI_BOX, hostname: 'di-box', platform: 'darwin', lastSeenAt: '2026-06-03T00:00:00Z', userName: 'Di', userEmail: 'di@example.invalid', revoked: true },
+      { id: ZETA, hostname: 'zeta', platform: 'darwin', lastSeenAt: '2026-06-02T10:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: true },
+      { id: ALPHA, hostname: 'alpha', platform: 'darwin', lastSeenAt: '2026-06-01T08:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: false },
+    ])
+  })
+}
+
+async function rateLimit(store: Store) {
+  const hit = () => store.rateLimits.findOneAndUpdate({ _id: RATE_KEY }, hitPipeline(60_000), { upsert: true })
+
+  const first = await hit()
+  const second = await hit()
+  check('rate limit starts a window at 1 and counts within it', () => {
+    assert.equal(first!.count, 1)
+    assert.equal(second!.count, 2)
+    assert.equal(second!.expiresAt.getTime(), first!.expiresAt.getTime(), 'the window keeps its end')
+    const left = first!.expiresAt.getTime() - Date.now()
+    assert.ok(left > 50_000 && left <= 60_000, `window of ${left}ms`)
+  })
+
+  await store.rateLimits.updateOne({ _id: RATE_KEY }, { $set: { expiresAt: new Date(Date.now() - 1) } })
+  const reset = await hit()
+  check('rate limit starts a fresh window once the old one closed', () => {
+    assert.equal(reset!.count, 1)
+    assert.ok(reset!.expiresAt.getTime() > Date.now())
+  })
+}
+
 async function main() {
   const uri = process.env.MONGODB_URI
   if (!uri) throw new Error('MONGODB_URI is not set')
@@ -573,6 +735,9 @@ async function main() {
     await activity(store)
     await projects(store)
     await orphans(store)
+    await adminUsers(store)
+    await adminDevices(store)
+    await rateLimit(store)
   } finally {
     await clean(store)
     await client.close()

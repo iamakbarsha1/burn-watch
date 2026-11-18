@@ -11,8 +11,8 @@
   },
   "dependencies": {
     "@burn-watch/shared": "*",
-    "@neondatabase/serverless": "^0.10.0",
     "better-auth": "^1.2.5",
+    "mongodb": "^7.8.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

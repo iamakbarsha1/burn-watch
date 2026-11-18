@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import { eq } from 'drizzle-orm'
 import { UsagePayloadSchema } from '@burn-watch/shared'
 import {
   getStore,
@@ -12,7 +11,6 @@ import {
   type OrgId,
   type UserId,
 } from '@burn-watch/db'
-import { devices } from '../../../drizzle/schema.js'
 import { requireAuth, type JwtPayload } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
 import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
@@ -117,23 +115,8 @@ export async function usageRoutes(fastify: FastifyInstance) {
         return counts
       })
 
-      // Held on Postgres, and deliberately outside the transaction above.
-      //
-      // `last_seen_at` is read back by routes/auth/device.ts — the per-user
-      // max at :105-106, and the device lists at :464,484 — which feed the
-      // admin and devices pages. Those are auth routes, not the dashboard
-      // aggregation Phase 4 covers, so they stay on Postgres until Phase 5.
-      // Writing this field to Mongo now would put it in a store nothing reads:
-      // the update would match no document today, and after the Phase 7
-      // backfill both pages would still render the frozen Postgres value and
-      // age without bound, which reads as a dead device and invites an admin
-      // to revoke a working one.
-      //
-      // After the commit rather than before, so it advances only for a
-      // submission that actually landed — the same point the Postgres version
-      // reached, where a rollback undid it. It is the last write in the
-      // handler, so there is nothing after it to leave torn.
-      await fastify.db.update(devices).set({ lastSeenAt: new Date() }).where(eq(devices.id, device))
+      // After the commit, so it advances only for a submission that landed.
+      await getStore().devices.updateOne({ _id: device }, { $set: { lastSeenAt: new Date() } })
 
       return { accepted, skipped, date: payload.date }
     },
