@@ -1,12 +1,12 @@
 import { createHmac } from 'crypto'
 import { cookies, headers } from 'next/headers'
-import { Pool } from '@neondatabase/serverless'
 import { auth } from './auth'
+import { getDb } from './mongo'
 
 const API_JWT_COOKIE = 'bw-api-token'
 
-interface BurnWatchUser {
-  id: string
+interface UserRow {
+  _id: string
   orgId: string
   role: string
 }
@@ -67,37 +67,31 @@ interface ApiTokenResult {
 }
 
 export async function createApiTokenForEmail(email: string): Promise<ApiTokenResult | null> {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
-  try {
-    // Case-insensitive on purpose. An admin typing "Dev@acme.com" into the
-    // invite form and the developer typing "dev@acme.com" at the login box is
-    // the same person, and an exact match here fails sign-in after better-auth
-    // has already accepted the password.
-    const result = await pool.query<BurnWatchUser>(
-      'SELECT id, org_id AS "orgId", role FROM users WHERE lower(email) = lower($1) LIMIT 1',
-      [email],
-    )
-    if (result.rows.length === 0) return null
+  // Case-insensitive on purpose. An admin typing "Dev@acme.com" into the
+  // invite form and the developer typing "dev@acme.com" at the login box is
+  // the same person, and an exact match here fails sign-in after better-auth
+  // has already accepted the password.
+  // shortcut: matches stored lowercase emails only (invites lowercase them), use a collated index if mixed-case rows appear.
+  const user = await getDb()
+    .collection<UserRow>('users')
+    .findOne({ email: email.toLowerCase() }, { projection: { orgId: 1, role: 1 } })
+  if (!user) return null
 
-    const user = result.rows[0]
-    const secret = process.env.JWT_SECRET
-    if (!secret) throw new Error('JWT_SECRET not configured')
+  const secret = process.env.JWT_SECRET
+  if (!secret) throw new Error('JWT_SECRET not configured')
 
-    const token = signJwt(
-      {
-        userId: user.id,
-        orgId: user.orgId,
-        role: user.role,
-        sub: user.id,
-      },
-      secret,
-      30 * 24 * 60 * 60, // 30 days
-    )
+  const token = signJwt(
+    {
+      userId: user._id,
+      orgId: user.orgId,
+      role: user.role,
+      sub: user._id,
+    },
+    secret,
+    30 * 24 * 60 * 60, // 30 days
+  )
 
-    return { token, orgId: user.orgId, role: user.role }
-  } finally {
-    await pool.end()
-  }
+  return { token, orgId: user.orgId, role: user.role }
 }
 
 /**
@@ -106,16 +100,10 @@ export async function createApiTokenForEmail(email: string): Promise<ApiTokenRes
  * keeps the public better-auth endpoint from minting accounts for strangers.
  */
 export async function isKnownUserEmail(email: string): Promise<boolean> {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
-  try {
-    const result = await pool.query(
-      'SELECT 1 FROM users WHERE lower(email) = lower($1) AND is_active LIMIT 1',
-      [email],
-    )
-    return result.rows.length > 0
-  } finally {
-    await pool.end()
-  }
+  const user = await getDb()
+    .collection('users')
+    .findOne({ email: email.toLowerCase(), isActive: true }, { projection: { _id: 1 } })
+  return user !== null
 }
 
 export async function setApiTokenCookie(token: string) {

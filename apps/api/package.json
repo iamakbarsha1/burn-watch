@@ -12,7 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "dashboard-pipelines": "tsx src/scripts/dashboard-pipelines.ts"
+    "dashboard-pipelines": "tsx src/scripts/dashboard-pipelines.ts",
+    "copy-to-mongo": "tsx src/scripts/copy-to-mongo.ts"
   },
   "dependencies": {
     "@burn-watch/db": "*",

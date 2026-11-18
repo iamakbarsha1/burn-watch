@@ -2,9 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 // Aliased so the namespace augmentation below can name the type. A bare `JWT`
 // there is the interface being merged, which declaration emit rejects (TS4033).
 import type { JWT as JwtInstance } from '@fastify/jwt'
-import { and, eq, isNull } from 'drizzle-orm'
-import { deviceTokens } from '../../drizzle/schema.js'
-import type { DB } from './db.js'
+import { getStore, type DeviceId } from '@burn-watch/db'
 
 export interface JwtPayload {
   deviceId?: string
@@ -40,39 +38,36 @@ declare module 'fastify' {
 }
 
 /**
- * Whether the device still holds an unrevoked `device_tokens` row.
+ * Whether the device still holds an unrevoked `deviceTokens` document.
  *
- * `revoked_at is null` is the whole predicate, and the missing half matters.
- * There is deliberately no `expires_at > now()` term: that column is written
+ * `revokedAt: null` is the whole filter, and the missing half matters.
+ * There is deliberately no `expiresAt > now` term: that field is written
  * once at registration as now + 30 days and never updated, while
  * POST /v1/auth/refresh mints a fresh 30-day access token without inserting a
- * new row. An expiry term here would 401 every legitimately refreshing device
- * on day 31. Expiry is the JWT `exp` claim's job, and accessJwtVerify has
- * already checked it by the time this runs.
+ * new document. An expiry term here would 401 every legitimately refreshing
+ * device on day 31. Expiry is the JWT `exp` claim's job, and accessJwtVerify
+ * has already checked it by the time this runs.
  */
-export async function deviceTokenIsLive(db: DB, deviceId: string | undefined): Promise<boolean> {
+export async function deviceTokenIsLive(deviceId: string | undefined): Promise<boolean> {
   if (!deviceId) return false
-
-  const rows = await db
-    .select({ id: deviceTokens.id })
-    .from(deviceTokens)
-    .where(and(eq(deviceTokens.deviceId, deviceId), isNull(deviceTokens.revokedAt)))
-    .limit(1)
-
-  return rows.length > 0
+  const live = await getStore().deviceTokens.findOne(
+    { deviceId: deviceId as DeviceId, revokedAt: null },
+    { projection: { _id: 1 } },
+  )
+  return live !== null
 }
 
 export function requireAuth(fastify: FastifyInstance) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const payload = await request.accessJwtVerify<JwtPayload>()
-      // Only a device token has a `device_tokens` row. An unconditional lookup
+      // Only a device token has a `deviceTokens` document. An unconditional lookup
       // would 401 every dashboard request. Inside the try so a database
       // failure answers 401 rather than a 500 from the global error handler.
       // That makes an outage fail closed, and the cost is bounded: the agent
       // throws on any non-ok response and never re-registers, so a dead
       // database costs the fleet one skipped sync that the next run resends.
-      if (payload.role === 'device' && !(await deviceTokenIsLive(fastify.db, payload.deviceId))) {
+      if (payload.role === 'device' && !(await deviceTokenIsLive(payload.deviceId))) {
         return reply.status(401).send({ error: 'Unauthorized' })
       }
     } catch {

@@ -1,3 +1,58 @@
+# Phase 5: auth and admin routes onto the Mongo Store
+
+Goal: no request path reads or writes Postgres. Unblocks PR #7.
+
+## Call sites found (all move)
+
+| Where | Today | Mongo |
+|---|---|---|
+| `routes/auth/invites.ts` create, list, accept | drizzle; accept claims in a pg txn | `runInTxn`: `invites.findOneAndUpdate({code, usedAt: null, expiresAt > now})` claims, then `users.insertOne` |
+| `routes/auth/device.ts` register, approve, verify | users/pendingDevices/devices/deviceTokens | same steps on the Store, ids from `newId()` |
+| `device.ts` bootstrap | count orgs, insert org + user | `runInTxn`, same guard |
+| `device.ts` GET/POST admin users | correlated subqueries (`adminUserFields`) | one `users.aggregate` with `$lookup` on devices and dailySnapshots; cost via `usdFromMicros` |
+| `device.ts` GET admin devices, revoke, revoke-device | drizzle | aggregate / `deviceTokens.updateMany` (`modifiedCount` = revoked) |
+| `plugins/jwt.ts` `deviceTokenIsLive` | `device_tokens` select | `deviceTokens.findOne({deviceId, revokedAt: null})`, drops the `db` arg |
+| `plugins/rate-limit-store.ts` | `insert ... on conflict` | `rateLimits.findOneAndUpdate` with a pipeline upsert; TTL index replaces the sweep |
+| `routes/usage/submit.ts:136` | `devices.lastSeenAt` on Postgres (held back for Phase 5 on purpose) | `devices.updateOne` |
+| dashboard `lib/auth.ts` | better-auth on Neon pool | `mongodbAdapter(db)` + `advanced.database.generateId` function |
+| dashboard `lib/session.ts:70,109` | raw `SELECT ... FROM users` | Mongo `users.findOne` (email match must stay case-insensitive) |
+
+## Tasks
+
+- [x] Branch for Phase 5 (see open question 1)
+- [x] `jwt.ts` deviceTokenIsLive on Store
+- [x] `rate-limit-store.ts` on Store + rewrite its test
+- [x] `invites.ts` on Store
+- [x] `device.ts` on Store; admin users pipeline replaces `adminUserFields` (delete `admin-users-query.test.ts`, add pipeline to `scripts/dashboard-pipelines.ts` so CI runs it on real Mongo)
+- [x] `submit.ts` lastSeenAt to Mongo
+- [x] Postgres wiring in `build-server.ts` (see open question 2)
+- [x] `routes.test.ts` auth sections (~650 lines) assert Mongo calls via `callsTo`
+- [x] Dashboard better-auth + session.ts on Mongo; add `mongodb` dep, drop `@neondatabase/serverless` if unused
+- [x] Verify: typecheck, vitest, dashboard-pipelines on local Mongo, local login + device register/approve/verify against a local copy
+- [ ] Commit, PR (waiting on go-ahead)
+
+## Cutover (manual, after merge)
+
+1. Rerun `npm run copy-to-mongo -w apps/api -- --write` just before deploy.
+2. `MONGODB_URI` ending in `/burnwatch` set on both Vercel projects (API and dashboard).
+3. Deploy, then smoke test login and one agent sync.
+
+## Risks
+
+- Email case: Postgres matched `lower(email)`. Mongo `users_email` is a plain unique index. Need to confirm stored emails are lowercase, or normalise on the copy.
+- Rows written to Postgres between the copy and the deploy are lost unless the copy reruns last.
+
+## Review (2026-11-18)
+
+- Branch: all on `feat/mongo-data-copy` (user choice). Postgres plumbing removed from the API (user choice).
+- Verified: api tsc clean, 413 tests; packages/db 46; dashboard tsc clean, 107 tests; dashboard-pipelines 32/32 on local mongod 8.0.1 replica set; local better-auth sign-in with a copied 32-char id.
+- Copy mapper now lowercases emails (users, pendingDevices, invites). API lowercases on every write and lookup.
+- Deps kept in apps/api: copy-to-mongo still imports drizzle and Neon.
+- Follow-up: verify-device reads then updates pending device in two steps (same race as Postgres).
+- Dashboard build now needs MONGODB_URI set (a dummy works).
+
+---
+
 # Dashboard: range persistence, chart fix, perceived latency, Tailwind rewrite
 
 ## Root causes found (traced, not guessed)

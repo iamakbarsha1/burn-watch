@@ -59,8 +59,12 @@ export function fakeStore(state: MongoFakeState, collections: string[]): Store {
       // to catch.
       updateOne: async (...args: unknown[]) =>
         (record('updateOne', args), { matchedCount: seeded().length > 0 ? 1 : 0 }),
-      updateMany: async (...args: unknown[]) =>
-        (record('updateMany', args), { matchedCount: seeded().length }),
+      // Every seeded document counts as changed, which is what a revoke that
+      // only matches unrevoked tokens reports.
+      updateMany: async (...args: unknown[]) => (
+        record('updateMany', args),
+        { matchedCount: seeded().length, modifiedCount: seeded().length }
+      ),
       findOneAndUpdate: async (...args: unknown[]) =>
         (record('findOneAndUpdate', args), seeded()[0] ?? null),
       bulkWrite: async (...args: unknown[]) => (record('bulkWrite', args), state.bulk),

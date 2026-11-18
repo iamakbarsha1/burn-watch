@@ -1,8 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { and, eq, gt, isNull, desc } from 'drizzle-orm'
-import { invites, users } from '../../../drizzle/schema.js'
+import { getStore, newId, runInTxn, type OrgId, type UserId } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -45,11 +44,7 @@ export async function inviteRoutes(fastify: FastifyInstance) {
       const jwt = request.user
       const email = body.email.trim().toLowerCase()
 
-      const [existing] = await fastify.db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.email, email))
-        .limit(1)
+      const existing = await getStore().users.findOne({ email }, { projection: { _id: 1 } })
 
       if (existing) {
         return reply.status(409).send({ error: 'A user with this email already exists' })
@@ -57,21 +52,22 @@ export async function inviteRoutes(fastify: FastifyInstance) {
 
       const token = randomBytes(32).toString('base64url')
       const expiresAt = new Date(Date.now() + INVITE_TTL_MS)
+      const inviteId = newId()
 
-      const [invite] = await fastify.db
-        .insert(invites)
-        .values({
-          orgId: jwt.orgId,
-          email,
-          role: body.role,
-          code: hashToken(token),
-          expiresAt,
-        })
-        .returning({ id: invites.id })
+      await getStore().invites.insertOne({
+        _id: inviteId,
+        orgId: jwt.orgId as OrgId,
+        email,
+        role: body.role,
+        code: hashToken(token),
+        expiresAt,
+        usedAt: null,
+        createdAt: new Date(),
+      })
 
       // The only time the plaintext token exists outside the invitee's link.
       return {
-        inviteId: invite.id,
+        inviteId,
         email,
         role: body.role,
         token,
@@ -86,21 +82,20 @@ export async function inviteRoutes(fastify: FastifyInstance) {
     { preHandler: requireAdmin(fastify) },
     async (request) => {
       const jwt = request.user
-      // No `code` in the selection. Even hashed, it has no reason to leave the
+      // `code` is projected out. Even hashed, it has no reason to leave the
       // database.
-      return fastify.db
-        .select({
-          id: invites.id,
-          email: invites.email,
-          role: invites.role,
-          expiresAt: invites.expiresAt,
-          usedAt: invites.usedAt,
-          createdAt: invites.createdAt,
-        })
-        .from(invites)
-        .where(eq(invites.orgId, jwt.orgId))
-        .orderBy(desc(invites.createdAt))
-        .limit(200)
+      const rows = await getStore().invites.find(
+        { orgId: jwt.orgId as OrgId },
+        { projection: { code: 0 }, sort: { createdAt: -1 }, limit: 200 },
+      )
+      return rows.map((r) => ({
+        id: r._id,
+        email: r.email,
+        role: r.role,
+        expiresAt: r.expiresAt,
+        usedAt: r.usedAt,
+        createdAt: r.createdAt,
+      }))
     },
   )
 
@@ -111,52 +106,37 @@ export async function inviteRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const body = AcceptInviteSchema.parse(request.body)
 
-      // Unused and unexpired are enforced in the query, not in a later branch,
-      // so an expired or spent invite cannot be redeemed by a code path that
-      // forgets to check.
-      const [invite] = await fastify.db
-        .select()
-        .from(invites)
-        .where(
-          and(
-            eq(invites.code, hashToken(body.token)),
-            isNull(invites.usedAt),
-            gt(invites.expiresAt, new Date()),
-          ),
+      const now = new Date()
+      const result = await runInTxn(getStore(), async (tx) => {
+        // Find and claim in one operation. Unused and unexpired are part of
+        // the filter, not a later branch, so an expired or spent invite cannot
+        // be redeemed by a code path that forgets to check. Two requests racing
+        // with one token cannot both match a still-null `usedAt`.
+        const invite = await tx.invites.findOneAndUpdate(
+          { code: hashToken(body.token), usedAt: null, expiresAt: { $gt: now } },
+          { $set: { usedAt: now } },
         )
-        .limit(1)
+
+        if (!invite) return null
+
+        const userId = newId<UserId>()
+        const email = invite.email.toLowerCase()
+        await tx.users.insertOne({
+          _id: userId,
+          orgId: invite.orgId,
+          email,
+          name: body.name.trim(),
+          githubUsername: null,
+          role: invite.role,
+          isActive: true,
+          createdAt: now,
+        })
+
+        return { userId, orgId: invite.orgId, email, role: invite.role }
+      })
 
       // One message for every failure. Distinguishing "expired" from "already
       // used" from "no such invite" tells a guesser which tokens were ever real.
-      if (!invite) {
-        return reply.status(400).send({ error: 'Invalid or expired invite' })
-      }
-
-      const result = await fastify.db.transaction(async (tx) => {
-        // Re-check and claim in the same statement. Two requests racing with
-        // one token both pass the select above; only the one whose UPDATE
-        // matches a still-null `used_at` gets a row back.
-        const claimed = await tx
-          .update(invites)
-          .set({ usedAt: new Date() })
-          .where(and(eq(invites.id, invite.id), isNull(invites.usedAt)))
-          .returning({ id: invites.id })
-
-        if (claimed.length === 0) return null
-
-        const [user] = await tx
-          .insert(users)
-          .values({
-            orgId: invite.orgId,
-            email: invite.email,
-            name: body.name.trim(),
-            role: invite.role,
-          })
-          .returning({ id: users.id })
-
-        return { userId: user.id, orgId: invite.orgId, email: invite.email, role: invite.role }
-      })
-
       if (!result) {
         return reply.status(400).send({ error: 'Invalid or expired invite' })
       }

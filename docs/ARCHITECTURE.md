@@ -9,14 +9,14 @@ Target: companies with 50+ developers using AI coding assistants.
 ## System Overview
 
 ```
-Developer machine                    Vercel                       Neon
+Developer machine                    Vercel                       Atlas
 ┌──────────────────┐                ┌──────────────────────┐
 │ burnwatch agent  │───────────────▶│ burn-watch-api       │
 │  ccusage   Tier 1│ POST /v1/usage │ Fastify 5 behind     │──┐
 │  codeburn  Tier 2│                │ api/index.mjs        │  │
 └──────────────────┘                └──────────────────────┘  │
                                               ▲                │  ┌─────────────┐
-                                              │ GET /v1/       ├─▶│ PostgreSQL  │
+                                              │ GET /v1/       ├─▶│ MongoDB     │
 ┌──────────────────┐                ┌──────────────────────┐  │  └─────────────┘
 │ Browser          │───────────────▶│ burn-watch           │──┘
 └──────────────────┘                │ Next.js 15 dashboard │
@@ -24,9 +24,9 @@ Developer machine                    Vercel                       Neon
 ```
 
 Two Vercel projects, one repository. The dashboard's server components call
-the API for usage data and reach Neon directly for better-auth sessions.
+the API for usage data and reach MongoDB directly for better-auth sessions.
 There is no cache tier: Redis was removed in `57d9d0b`, and every dashboard
-read goes to Postgres on every request.
+read goes to MongoDB on every request.
 
 ## Data Flow
 
@@ -43,9 +43,9 @@ read goes to Postgres on every request.
 3. **Aggregation** — API serves dashboard queries from `daily_snapshots` table
    - All dashboard routes support date ranges (`from`/`to` params), validated
      by the shared schema in `routes/dashboard/query-schema.ts`
-   - Activity and Projects aggregate the `claude_enrichment` JSONB in Postgres
+   - Activity and Projects aggregate `claudeEnrichment` documents in MongoDB
      via `routes/dashboard/enrichment.ts`, not in Node
-   - Nothing is cached. Each request reads Postgres.
+   - Nothing is cached. Each request reads MongoDB.
 
 4. **Display** — Next.js dashboard renders overview, leaderboard, trends, activity, and project breakdowns
 
@@ -71,13 +71,11 @@ read goes to Postgres on every request.
 | `src/server.ts` | Local entry point that calls `listen` |
 | `api/index.mjs` | Vercel entry point, repo root, wraps Fastify in a plain `@vercel/node` function |
 | `src/plugins/jwt.ts` | Dual JWT setup (access + refresh namespaces) |
-| `src/plugins/db.ts` | Drizzle + Neon connection pool |
-| `src/plugins/rate-limit-store.ts` | Rate limit counters in Postgres, shared across instances |
+| `src/plugins/rate-limit-store.ts` | Rate limit counters in MongoDB (`rateLimits`), shared across instances |
 | `src/routes/auth/device.ts` | Device registration, verification, admin user management |
 | `src/routes/usage/submit.ts` | Usage event ingestion + snapshot rebuild, one transaction |
 | `src/routes/dashboard/*.ts` | 5 query endpoints, plus `query-schema.ts` and `enrichment.ts` shared by them |
-| `drizzle/schema.ts` | Full database schema (11 tables) |
-| `drizzle/migrations/` | Generated migrations. `db:push` is not used against deployed databases |
+| `drizzle/` | Old Postgres schema. Only `src/scripts/copy-to-mongo.ts` reads it |
 
 ### `apps/dashboard` — Next.js 15
 
@@ -166,8 +164,8 @@ Environment variables actually read by the code:
 
 | Project | Variables |
 |---------|-----------|
-| `burn-watch-api` | `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `PORT`, `NODE_ENV` |
-| `burn-watch` | `API_URL`, `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV` |
+| `burn-watch-api` | `MONGODB_URI`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `PORT`, `NODE_ENV` |
+| `burn-watch` | `API_URL`, `MONGODB_URI`, `JWT_SECRET`, `NODE_ENV` |
 
 There is no `REDIS_URL`. Deployment protection is off for `burn-watch-api` so
 the agent CLI can reach it without a bypass token.
@@ -175,8 +173,8 @@ the agent CLI can reach it without a bypass token.
 ## Setup (Quickstart)
 
 Walked end to end on a clean clone against an empty database on 2026-11-06.
-Three steps below exist because that walk failed without them: building
-`shared`, configuring the dashboard, and creating better-auth's tables. All
+Two steps below exist because that walk failed without them: building
+`shared` and configuring the dashboard. All
 commands run from the repo root unless they say otherwise, and the two servers
 each need their own terminal.
 
@@ -192,44 +190,42 @@ npx turbo build --filter=@burn-watch/shared
 
 # 3. Configure API
 cp apps/api/.env.example apps/api/.env
-# Fill: DATABASE_URL, JWT_SECRET, JWT_REFRESH_SECRET
+# Fill: MONGODB_URI, JWT_SECRET, JWT_REFRESH_SECRET
+# MONGODB_URI must name the database (`.../burnwatch`). Without one the driver
+# uses `test`.
 # Ignore REDIS_URL, CORS_ORIGIN and COPILOT_ENCRYPTION_KEY — nothing reads
 # them. See BW-07 and BW-21.
 
 # 4. Configure dashboard
-# The dashboard talks to Neon directly for better-auth, so it needs its own
+# The dashboard talks to MongoDB directly for better-auth, so it needs its own
 # env. Skip this and the app starts, serves /login, and answers 500 on every
 # sign-in attempt.
 cp apps/dashboard/.env.local.example apps/dashboard/.env.local
-# Fill: API_URL (http://localhost:3001), DATABASE_URL (same as the API),
+# Fill: API_URL (http://localhost:3001), MONGODB_URI (same as the API),
 # JWT_SECRET (must match the API's), BETTER_AUTH_SECRET (any random string)
 
-# 5. Apply database migrations
-npm run db:migrate
+# 5. Create collections and indexes
+# better-auth needs no setup step: its MongoDB adapter creates user, session,
+# account and verification on first write.
+MONGODB_URI=... npm run sync -w packages/db
 
-# 6. Create better-auth's tables
-# better-auth owns user, session, account and verification. They are not in
-# drizzle's migrations, so step 5 does not create them and sign-in fails with
-# `relation "user" does not exist`.
-cd apps/dashboard && npx @better-auth/cli@latest migrate --yes && cd ../..
-
-# 7. Start API (own terminal, stays running)
+# 6. Start API (own terminal, stays running)
 cd apps/api && npm run dev
 
-# 8. Bootstrap first org + admin
+# 7. Bootstrap first org + admin
 curl -X POST http://localhost:3001/v1/auth/admin/bootstrap \
   -H 'Content-Type: application/json' \
   -d '{"orgName":"Acme","orgSlug":"acme","email":"admin@acme.com","name":"Admin"}'
 
-# 9. Start dashboard (own terminal, stays running)
+# 8. Start dashboard (own terminal, stays running)
 cd apps/dashboard && npm run dev
 
-# 10. Set the admin's password
+# 9. Set the admin's password
 # Step 8 creates the users row; it does not create a login. Open
 # http://localhost:3000/signup and submit the same email with a password.
 # /login will not work before this — there is nothing to authenticate against.
 
-# 11. Register agent on dev machine
+# 10. Register agent on dev machine
 # This blocks. It prints a six-character code and waits for a human to approve
 # it at the dashboard's Devices page — signed in as the same email. The device
 # is never issued tokens until someone does. See BW-30.
@@ -238,7 +234,7 @@ cd apps/dashboard && npm run dev
 # already reports to another BurnWatch, copy that file somewhere first.
 cd apps/agent && bun run src/index.ts register --api-url http://localhost:3001
 
-# 12. Sync usage data
+# 11. Sync usage data
 # A bare `sync` writes yesterday, so the dashboard will not show today until
 # tomorrow. Use --days to backfill a window.
 bun run src/index.ts sync --days 7

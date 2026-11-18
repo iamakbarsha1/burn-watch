@@ -40,8 +40,8 @@ const TAG_BYTES = 16
  * BW-21 puts a GitHub Copilot org token in `org_integrations.encrypted_token`,
  * and a deployment may not have `COPILOT_ENCRYPTION_KEY` set. The answer to a
  * missing key is that the integration stays off, not that the API fails to
- * boot. So the environment is read here, on call, the way `plugins/db.ts`
- * defers building its pool. Importing this file with an empty environment does
+ * boot. So the environment is read here, on call, the way `getStore()`
+ * defers building its client. Importing this file with an empty environment does
  * nothing and throws nothing, which is what keeps an unconfigured deployment
  * serving every route that has no business knowing about Copilot.
  *

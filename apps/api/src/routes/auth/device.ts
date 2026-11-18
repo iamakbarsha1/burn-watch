@@ -1,9 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { eq, and, isNull, isNotNull, gt, desc, count, sql } from 'drizzle-orm'
-import type { SQL } from 'drizzle-orm'
-import { users, devices, deviceTokens, organizations, pendingDevices, dailySnapshots } from '../../../drizzle/schema.js'
+import type { Document } from 'mongodb'
+import { getStore, newId, runInTxn, type DeviceId, type OrgId, type UserId } from '@burn-watch/db'
 import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema } from '@burn-watch/shared'
 import type { AdminDeviceRow, AdminUserRow } from '@burn-watch/shared'
 import {
@@ -13,7 +12,6 @@ import {
   deviceTokenIsLive,
   type JwtPayload,
 } from '../../plugins/jwt.js'
-import type { DB } from '../../plugins/db.js'
 import { callerAddress } from '../../caller-address.js'
 
 const BootstrapSchema = z.object({
@@ -34,86 +32,122 @@ const RevokeDeviceSchema = z.object({
 })
 
 /**
- * Ends every token the device still holds. Scoped to rows that are not already
- * revoked, so a second call is a no-op rather than stamping a fresh timestamp
- * over an older revocation, and `revoked` counts what this call actually ended.
+ * Ends every token the device still holds. Scoped to tokens that are not
+ * already revoked, so a second call is a no-op rather than stamping a fresh
+ * timestamp over an older revocation, and `revoked` counts what this call
+ * actually ended.
  */
-async function revokeTokensFor(db: DB, deviceId: string) {
-  const rows = await db
-    .update(deviceTokens)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(deviceTokens.deviceId, deviceId), isNull(deviceTokens.revokedAt)))
-    .returning({ id: deviceTokens.id })
-
-  return { deviceId, revoked: rows.length }
+async function revokeTokensFor(deviceId: string) {
+  const result = await getStore().deviceTokens.updateMany(
+    { deviceId: deviceId as DeviceId, revokedAt: null },
+    { $set: { revokedAt: new Date() } },
+  )
+  return { deviceId, revoked: result.modifiedCount }
 }
 
-/**
- * A calendar day as `YYYY-MM-DD`. The query casts to text so this normally gets
- * a string, but a driver that parses `date` itself hands back local midnight,
- * and `toISOString` on that lands on the previous day anywhere east of UTC.
- * Reading the local parts keeps the day the database meant.
- */
-function toDateString(value: unknown): string | null {
-  if (!value) return null
-  if (value instanceof Date) {
-    const month = String(value.getMonth() + 1).padStart(2, '0')
-    const day = String(value.getDate()).padStart(2, '0')
-    return `${value.getFullYear()}-${month}-${day}`
-  }
-  return String(value).slice(0, 10)
-}
+// Timestamps go out as text formatted by the database, the way Postgres
+// formatted them with to_char, so the API hands over exactly what is stored.
+// Dates are UTC, hence the Z. A null date formats to null.
+const isoSeconds = (date: unknown) => ({ $dateToString: { date, format: '%Y-%m-%dT%H:%M:%SZ' } })
 
 /**
- * Per-user totals for the admin roster, as correlated subqueries rather than
- * joins. Joining devices and snapshots in one statement multiplies rows, and
- * every SUM would come back wrong by the number of devices the user owns.
+ * The admin roster: one AdminUserRow per user in the org, including users who
+ * have never synced. Each $lookup groups inside its own sub-pipeline, so
+ * devices and snapshots never multiply each other's rows and no sum comes
+ * back scaled by the number of devices a user owns.
  *
- * Every correlation goes through the query builder instead of being written
- * out inside a `sql` template, and that is the whole point of this function
- * existing. Drizzle strips the table prefix off every column it renders in a
- * single-table select list, so an inline `where ${devices.userId} =
- * ${users.id}` came out as `where "user_id" = "id"` — and `"id"` binds to the
- * subquery's own table, not to `users`. `devices.user_id = devices.id` is
- * never true, so every device count, spend total and sync date on the admin
- * screen read zero while nothing anywhere failed. The builder keeps the table
- * names, and `admin-users-query.test.ts` renders this to check they are still
- * there.
+ * `_id` stays the `id` the dashboard reads. Cost is micros over 1e6, the same
+ * sum `usdFromMicros` would do at the boundary.
  */
-export function adminUserFields(db: DB) {
-  const perDevice = <T>(aggregate: SQL) =>
-    sql<T>`(${db.select({ v: aggregate }).from(devices).where(eq(devices.userId, users.id))})`
-  const perSnapshot = <T>(aggregate: SQL) =>
-    sql<T>`(${db.select({ v: aggregate }).from(dailySnapshots).where(eq(dailySnapshots.userId, users.id))})`
+export function adminUsersPipeline(orgId: OrgId): Document[] {
+  return [
+    { $match: { orgId } },
+    { $limit: 500 },
+    {
+      $lookup: {
+        from: 'devices',
+        localField: '_id',
+        foreignField: 'userId',
+        pipeline: [{ $project: { _id: 0, hostname: 1, lastSeenAt: 1 } }],
+        as: 'devices',
+      },
+    },
+    {
+      $lookup: {
+        from: 'dailySnapshots',
+        localField: '_id',
+        foreignField: 'userId',
+        pipeline: [
+          {
+            $group: {
+              _id: null,
+              lastSyncDate: { $max: '$date' },
+              costMicros: { $sum: '$totalCostMicros' },
+              totalTokens: { $sum: '$totalTokens' },
+              activeDays: { $sum: 1 },
+            },
+          },
+        ],
+        as: 'usage',
+      },
+    },
+    { $set: { usage: { $first: '$usage' } } },
+    {
+      // Every field is an expression so the output keeps this key order.
+      $project: {
+        _id: 0,
+        id: '$_id',
+        name: '$name',
+        email: '$email',
+        role: '$role',
+        isActive: '$isActive',
+        createdAt: { $dateToString: { date: '$createdAt', format: '%Y-%m-%dT%H:%M:%S.%LZ' } },
+        deviceCount: { $size: '$devices' },
+        hostnames: { $sortArray: { input: '$devices.hostname', sortBy: 1 } },
+        lastSeenAt: isoSeconds({ $max: '$devices.lastSeenAt' }),
+        lastSyncDate: { $ifNull: ['$usage.lastSyncDate', null] },
+        totalCostUsd: { $divide: [{ $ifNull: ['$usage.costMicros', 0] }, 1e6] },
+        totalTokens: { $ifNull: ['$usage.totalTokens', 0] },
+        activeDays: { $ifNull: ['$usage.activeDays', 0] },
+      },
+    },
+  ]
+}
 
-  return {
-    id: users.id,
-    name: users.name,
-    email: users.email,
-    role: users.role,
-    isActive: users.isActive,
-    createdAt: users.createdAt,
-    deviceCount: perDevice<number>(sql`count(*)`).mapWith(Number),
-    hostnames: perDevice<string | null>(
-      sql`string_agg(${devices.hostname}, ', ' order by ${devices.hostname})`,
-    ),
-    // Both come back through the driver's date parsing, which turns a `date`
-    // into local midnight and a `timestamp` into a local-time Date.
-    // Serialising either of those shifts the value by the server's offset, so
-    // Postgres formats them as text and the API hands over exactly what the
-    // database holds. The columns are UTC, hence the Z.
-    lastSeenAt: perDevice<string | null>(
-      sql`to_char(max(${devices.lastSeenAt}), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
-    ),
-    lastSyncDate: perSnapshot<string | null>(sql`max(${dailySnapshots.date})::text`),
-    totalCostUsd: sql<number>`coalesce(${perSnapshot(
-      sql`sum(${dailySnapshots.totalCostUsd})`,
-    )}, 0)`.mapWith(Number),
-    totalTokens: sql<number>`coalesce(${perSnapshot(
-      sql`sum(${dailySnapshots.totalTokens})`,
-    )}, 0)`.mapWith(Number),
-    activeDays: perSnapshot<number>(sql`count(*)`).mapWith(Number),
-  }
+/**
+ * Every device in the org as an AdminDeviceRow, newest activity first.
+ * Starts from users because a device carries no orgId. `revoked` is true when
+ * the device holds no unrevoked token, the same condition the auth guard checks.
+ */
+export function adminDevicesPipeline(orgId: OrgId): Document[] {
+  return [
+    { $match: { orgId } },
+    { $lookup: { from: 'devices', localField: '_id', foreignField: 'userId', as: 'device' } },
+    { $unwind: '$device' },
+    { $sort: { 'device.lastSeenAt': -1 } },
+    { $limit: 500 },
+    {
+      $lookup: {
+        from: 'deviceTokens',
+        localField: 'device._id',
+        foreignField: 'deviceId',
+        pipeline: [{ $match: { revokedAt: null } }, { $limit: 1 }, { $project: { _id: 1 } }],
+        as: 'live',
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        id: '$device._id',
+        hostname: '$device.hostname',
+        platform: '$device.platform',
+        lastSeenAt: isoSeconds('$device.lastSeenAt'),
+        userName: '$name',
+        userEmail: '$email',
+        revoked: { $eq: [{ $size: '$live' }, 0] },
+      },
+    },
+  ]
 }
 
 function generateCode(): string {
@@ -130,12 +164,9 @@ export async function authRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const body = RegisterDeviceSchema.parse(request.body)
 
-    // Look up user by email
-    const [user] = await fastify.db
-      .select({ id: users.id, orgId: users.orgId })
-      .from(users)
-      .where(eq(users.email, body.email))
-      .limit(1)
+    // Emails are stored lowercase, so every lookup lowercases too.
+    const email = body.email.trim().toLowerCase()
+    const user = await getStore().users.findOne({ email }, { projection: { _id: 1 } })
 
     if (!user) {
       return reply.status(404).send({
@@ -145,22 +176,26 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     // Create pending device with 15-minute expiry
     const code = generateCode()
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000)
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + 15 * 60 * 1000)
+    const pendingId = newId()
 
-    const [pending] = await fastify.db
-      .insert(pendingDevices)
-      .values({
-        code,
-        email: body.email,
-        hostname: body.hostname,
-        platform: body.platform,
-        agentVersion: body.agentVersion,
-        expiresAt,
-      })
-      .returning({ id: pendingDevices.id })
+    await getStore().pendingDevices.insertOne({
+      _id: pendingId,
+      code,
+      email,
+      hostname: body.hostname,
+      platform: body.platform,
+      agentVersion: body.agentVersion,
+      expiresAt,
+      approvedAt: null,
+      verifiedAt: null,
+      deviceId: null,
+      createdAt: now,
+    })
 
     return {
-      pendingId: pending.id,
+      pendingId,
       code,
       expiresAt: expiresAt.toISOString(),
     }
@@ -176,32 +211,29 @@ export async function authRoutes(fastify: FastifyInstance) {
     const body = ApproveDeviceSchema.parse(request.body)
     const jwt = request.user as JwtPayload
 
-    const [user] = await fastify.db
-      .select({ email: users.email })
-      .from(users)
-      .where(eq(users.id, jwt.userId))
-      .limit(1)
+    const user = await getStore().users.findOne(
+      { _id: jwt.userId as UserId },
+      { projection: { email: 1 } },
+    )
 
     if (!user) {
       return reply.status(401).send({ error: 'Unauthorized' })
     }
 
-    // One UPDATE decides and records the approval, so two clicks on the same
+    // One update decides and records the approval, so two clicks on the same
     // code cannot both win. Matching on the signed-in user's own email is the
     // actual control: approving is only ever possible for your own device.
-    const [approved] = await fastify.db
-      .update(pendingDevices)
-      .set({ approvedAt: new Date() })
-      .where(
-        and(
-          eq(pendingDevices.code, body.code),
-          eq(pendingDevices.email, user.email),
-          isNull(pendingDevices.approvedAt),
-          isNull(pendingDevices.verifiedAt),
-          gt(pendingDevices.expiresAt, new Date()),
-        ),
-      )
-      .returning({ hostname: pendingDevices.hostname, platform: pendingDevices.platform })
+    const now = new Date()
+    const approved = await getStore().pendingDevices.findOneAndUpdate(
+      {
+        code: body.code,
+        email: user.email.toLowerCase(),
+        approvedAt: null,
+        verifiedAt: null,
+        expiresAt: { $gt: now },
+      },
+      { $set: { approvedAt: now } },
+    )
 
     // Unknown, expired, already approved, already used, or someone else's code
     // all answer the same way, so this cannot be used to probe for live codes.
@@ -243,19 +275,14 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     // Find pending device that matches code + pendingId, approved in the
     // dashboard, not expired, not yet verified
-    const [pending] = await fastify.db
-      .select()
-      .from(pendingDevices)
-      .where(
-        and(
-          eq(pendingDevices.id, body.pendingId),
-          eq(pendingDevices.code, body.code),
-          isNotNull(pendingDevices.approvedAt),
-          isNull(pendingDevices.verifiedAt),
-          gt(pendingDevices.expiresAt, new Date()),
-        ),
-      )
-      .limit(1)
+    const now = new Date()
+    const pending = await getStore().pendingDevices.findOne({
+      _id: body.pendingId,
+      code: body.code,
+      approvedAt: { $ne: null },
+      verifiedAt: null,
+      expiresAt: { $gt: now },
+    })
 
     if (!pending) {
       return reply.status(400).send({
@@ -264,51 +291,54 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
 
     // Look up user
-    const [user] = await fastify.db
-      .select({ id: users.id, orgId: users.orgId })
-      .from(users)
-      .where(eq(users.email, pending.email))
-      .limit(1)
+    const user = await getStore().users.findOne(
+      { email: pending.email.toLowerCase() },
+      { projection: { _id: 1, orgId: 1 } },
+    )
 
     if (!user) {
       return reply.status(404).send({ error: 'User no longer exists' })
     }
 
     // Create device
-    const [device] = await fastify.db
-      .insert(devices)
-      .values({
-        userId: user.id,
-        hostname: pending.hostname,
-        platform: pending.platform,
-        agentVersion: pending.agentVersion,
-      })
-      .returning({ id: devices.id })
+    const deviceId = newId<DeviceId>()
+    await getStore().devices.insertOne({
+      _id: deviceId,
+      userId: user._id,
+      hostname: pending.hostname,
+      platform: pending.platform,
+      agentVersion: pending.agentVersion,
+      lastSeenAt: now,
+      createdAt: now,
+    })
 
     // Mark pending as verified
-    await fastify.db
-      .update(pendingDevices)
-      .set({ verifiedAt: new Date(), deviceId: device.id })
-      .where(eq(pendingDevices.id, pending.id))
+    await getStore().pendingDevices.updateOne(
+      { _id: pending._id },
+      { $set: { verifiedAt: now, deviceId } },
+    )
 
     // Sign JWT tokens
-    const tokenPayload = { deviceId: device.id, userId: user.id, orgId: user.orgId, role: 'device' as const }
+    const tokenPayload = { deviceId, userId: user._id, orgId: user.orgId, role: 'device' as const }
     const accessToken = fastify.jwt.access.sign(tokenPayload, { expiresIn: '30d' })
     const refreshToken = fastify.jwt.refresh.sign(tokenPayload, { expiresIn: '90d' })
 
     // Store token hash for revocation
     const tokenHash = createHash('sha256').update(accessToken).digest('hex')
-    await fastify.db.insert(deviceTokens).values({
-      deviceId: device.id,
+    await getStore().deviceTokens.insertOne({
+      _id: newId(),
+      deviceId,
       tokenHash,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+      revokedAt: null,
+      createdAt: now,
     })
 
     return {
       accessToken,
       refreshToken,
-      deviceId: device.id,
-      userId: user.id,
+      deviceId,
+      userId: user._id,
       orgId: user.orgId,
     }
   })
@@ -319,10 +349,10 @@ export async function authRoutes(fastify: FastifyInstance) {
       const payload = await request.refreshJwtVerify<JwtPayload>()
 
       // The same guard requireAuth applies, for the same reason and on the
-      // same condition: only a device token has a `device_tokens` row.
+      // same condition: only a device token has a `deviceTokens` document.
       // Without it the revocation undoes itself, because a revoked laptop
       // trades its refresh token for another 30 days of access.
-      if (payload.role === 'device' && !(await deviceTokenIsLive(fastify.db, payload.deviceId))) {
+      if (payload.role === 'device' && !(await deviceTokenIsLive(payload.deviceId))) {
         return reply.status(401).send({ error: 'Invalid refresh token' })
       }
 
@@ -345,36 +375,41 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/admin/bootstrap', {
     config: { rateLimit: { max: 3, timeWindow: '1 hour' } },
   }, async (request, reply) => {
-    const existingOrgs = await fastify.db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .limit(1)
+    // The guard and both inserts share one transaction, so a failed user
+    // insert leaves no org behind to lock bootstrap out for good.
+    const result = await runInTxn(getStore(), async (tx) => {
+      if (await tx.organizations.findOne({}, { projection: { _id: 1 } })) return null
+      // Parsed after the guard, as before: a finished bootstrap answers 403
+      // whatever the body.
+      const body = BootstrapSchema.parse(request.body)
 
-    if (existingOrgs.length > 0) {
-      return reply.status(403).send({ error: 'Bootstrap already completed. Use /admin/users to add users.' })
-    }
-
-    const body = BootstrapSchema.parse(request.body)
-
-    const [org] = await fastify.db
-      .insert(organizations)
-      .values({
+      const now = new Date()
+      const orgId = newId<OrgId>()
+      const userId = newId<UserId>()
+      await tx.organizations.insertOne({
+        _id: orgId,
         name: body.orgName,
         slug: body.orgSlug,
+        githubOrg: null,
+        createdAt: now,
       })
-      .returning({ id: organizations.id })
-
-    const [user] = await fastify.db
-      .insert(users)
-      .values({
-        orgId: org.id,
-        email: body.email,
+      await tx.users.insertOne({
+        _id: userId,
+        orgId,
+        email: body.email.trim().toLowerCase(),
         name: body.name,
+        githubUsername: null,
         role: 'admin',
+        isActive: true,
+        createdAt: now,
       })
-      .returning({ id: users.id })
+      return { orgId, userId }
+    })
 
-    return { orgId: org.id, userId: user.id }
+    if (!result) {
+      return reply.status(403).send({ error: 'Bootstrap already completed. Use /admin/users to add users.' })
+    }
+    return result
   })
 
   // GET /v1/auth/admin/users — every user in the caller's org, including the
@@ -384,30 +419,12 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.get('/admin/users', { preHandler: requireAdmin(fastify) }, async (request) => {
     const jwt = request.user as JwtPayload
 
-    const rows = await fastify.db
-      .select(adminUserFields(fastify.db))
-      .from(users)
-      .where(eq(users.orgId, jwt.orgId))
-      .limit(500)
+    const result = await getStore().users.aggregate<AdminUserRow>(
+      adminUsersPipeline(jwt.orgId as OrgId),
+    )
 
-    const result: AdminUserRow[] = rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      email: r.email,
-      role: r.role,
-      isActive: r.isActive,
-      createdAt: new Date(r.createdAt).toISOString(),
-      deviceCount: r.deviceCount ?? 0,
-      hostnames: r.hostnames ? r.hostnames.split(', ') : [],
-      lastSeenAt: r.lastSeenAt ? String(r.lastSeenAt) : null,
-      lastSyncDate: toDateString(r.lastSyncDate),
-      totalCostUsd: r.totalCostUsd ?? 0,
-      totalTokens: r.totalTokens ?? 0,
-      activeDays: r.activeDays ?? 0,
-    }))
-
-    // 500 rows at most, so the sort is cheaper here than an ORDER BY that would
-    // make Postgres run the spend subquery a second time.
+    // 500 rows at most, so the sort is cheaper here, and localeCompare keeps
+    // the name order the Postgres version had.
     result.sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.name.localeCompare(b.name))
     return result
   })
@@ -427,19 +444,23 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: 'Cannot create users in another organization' })
     }
 
+    const userId = newId<UserId>()
     try {
-      const [user] = await fastify.db
-        .insert(users)
-        .values({
-          orgId,
-          email: body.email,
-          name: body.name,
-        })
-        .returning({ id: users.id })
+      await getStore().users.insertOne({
+        _id: userId,
+        orgId: orgId as OrgId,
+        email: body.email.trim().toLowerCase(),
+        name: body.name,
+        githubUsername: null,
+        role: 'developer',
+        isActive: true,
+        createdAt: new Date(),
+      })
 
-      return { userId: user.id }
+      return { userId }
     } catch (err: unknown) {
-      if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
+      // 11000 is the users_email unique index.
+      if (err instanceof Error && 'code' in err && (err as { code: unknown }).code === 11000) {
         return reply.status(409).send({ error: 'A user with this email already exists' })
       }
       throw err
@@ -452,48 +473,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.get('/admin/devices', { preHandler: requireAdmin(fastify) }, async (request) => {
     const jwt = request.user as JwtPayload
 
-    const rows = await fastify.db
-      .select({
-        id: devices.id,
-        hostname: devices.hostname,
-        platform: devices.platform,
-        // Formatted by Postgres for the same reason as adminUserFields above:
-        // the driver parses a timestamp into a local-time Date, and
-        // serialising that shifts it by the server's offset. The column is
-        // UTC, hence the Z.
-        lastSeenAt: sql<string | null>`to_char(${devices.lastSeenAt}, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
-        userName: users.name,
-        userEmail: users.email,
-        liveTokens: count(deviceTokens.id),
-      })
-      .from(devices)
-      .innerJoin(users, eq(users.id, devices.userId))
-      .leftJoin(
-        deviceTokens,
-        and(eq(deviceTokens.deviceId, devices.id), isNull(deviceTokens.revokedAt)),
-      )
-      .where(eq(users.orgId, jwt.orgId))
-      .groupBy(
-        devices.id,
-        devices.hostname,
-        devices.platform,
-        devices.lastSeenAt,
-        users.name,
-        users.email,
-      )
-      .orderBy(desc(devices.lastSeenAt))
-      .limit(500)
-
-    const result: AdminDeviceRow[] = rows.map((r) => ({
-      id: r.id,
-      hostname: r.hostname,
-      platform: r.platform,
-      lastSeenAt: r.lastSeenAt ? String(r.lastSeenAt) : null,
-      userName: r.userName,
-      userEmail: r.userEmail,
-      revoked: Number(r.liveTokens) === 0,
-    }))
-    return result
+    return getStore().users.aggregate<AdminDeviceRow>(adminDevicesPipeline(jwt.orgId as OrgId))
   })
 
   // POST /v1/auth/admin/devices/revoke lets an admin end a device's access, the
@@ -505,21 +485,25 @@ export async function authRoutes(fastify: FastifyInstance) {
     const body = RevokeDeviceSchema.parse(request.body)
     const jwt = request.user as JwtPayload
 
-    // No limit: devices.id is the primary key and the join to users is
-    // many-to-one, so this matches at most one row.
-    const [device] = await fastify.db
-      .select({ id: devices.id })
-      .from(devices)
-      .innerJoin(users, eq(users.id, devices.userId))
-      .where(and(eq(devices.id, body.deviceId), eq(users.orgId, jwt.orgId)))
+    // The device must hang off a user in the caller's own org.
+    const device = await getStore().devices.findOne(
+      { _id: body.deviceId as DeviceId },
+      { projection: { userId: 1 } },
+    )
+    const owner =
+      device &&
+      (await getStore().users.findOne(
+        { _id: device.userId, orgId: jwt.orgId as OrgId },
+        { projection: { _id: 1 } },
+      ))
 
     // One answer for "no such device" and "a device in another org", so this
     // cannot be used to learn which device ids are real.
-    if (!device) {
+    if (!owner) {
       return reply.status(404).send({ error: 'Device not found' })
     }
 
-    return revokeTokensFor(fastify.db, body.deviceId)
+    return revokeTokensFor(body.deviceId)
   })
 
   // POST /v1/auth/revoke-device lets a device end its own access. `burnwatch
@@ -534,6 +518,6 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: 'Device role required' })
     }
 
-    return revokeTokensFor(fastify.db, jwt.deviceId)
+    return revokeTokensFor(jwt.deviceId)
   })
 }
