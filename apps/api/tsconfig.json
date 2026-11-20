@@ -6,5 +6,5 @@
     "outDir": "./dist",
     "rootDir": "."
   },
-  "include": ["src/**/*", "drizzle/**/*"]
+  "include": ["src/**/*"]
 }

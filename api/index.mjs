@@ -11,7 +11,7 @@
 import Fastify from 'fastify'
 import { configureServer } from '../apps/api/dist/src/build-server.js'
 
-// Module scope, so a warm instance reuses the instance and its Neon pool
+// Module scope, so a warm instance reuses the instance and its Mongo client
 // instead of rebuilding them per request (BW-06).
 const app = configureServer(Fastify({ logger: true }))
 const ready = app.ready()
