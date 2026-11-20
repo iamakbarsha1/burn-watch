@@ -6,7 +6,6 @@
       "env": [
         "API_URL",
         "BETTER_AUTH_SECRET",
-        "DATABASE_URL",
         "JWT_REFRESH_SECRET",
         "JWT_SECRET",
         "MONGODB_URI"

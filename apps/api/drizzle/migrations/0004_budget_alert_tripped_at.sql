@@ -1,1 +1,0 @@
-ALTER TABLE "budget_alerts" ADD COLUMN "tripped_at" timestamp;

@@ -23,20 +23,20 @@ cp apps/dashboard/.env.local.example apps/dashboard/.env.local
 
 | File | Fill |
 | --- | --- |
-| `apps/api/.env` | `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET` |
-| `apps/dashboard/.env.local` | `DATABASE_URL`, `API_URL`, `JWT_SECRET`, `BETTER_AUTH_SECRET` |
+| `apps/api/.env` | `MONGODB_URI`, `JWT_SECRET`, `JWT_REFRESH_SECRET` |
+| `apps/dashboard/.env.local` | `MONGODB_URI`, `API_URL`, `JWT_SECRET`, `BETTER_AUTH_SECRET` |
 
-`JWT_SECRET` and `DATABASE_URL` must be identical in both.
+`JWT_SECRET` and `MONGODB_URI` must be identical in both.
 
 ## 3. Create the schema
 
 ```bash
-npm run db:migrate
+MONGODB_URI=mongodb+srv://… npm run sync -w @burn-watch/db
 ```
 
-`db:push` also exists and is fine against a scratch branch, but it writes no
-row to `drizzle.__drizzle_migrations`, so a database brought up that way reads
-as un-migrated to the `/health` schema check added in BW-37. Use `db:migrate`.
+Creates every collection, index and migration the code expects. Until it runs,
+the `/health` schema check reports drift. `npm run check -w @burn-watch/db`
+lists anything missing without changing the database.
 
 ## 4. Create the first org and admin
 

@@ -75,7 +75,6 @@ read goes to MongoDB on every request.
 | `src/routes/auth/device.ts` | Device registration, verification, admin user management |
 | `src/routes/usage/submit.ts` | Usage event ingestion + snapshot rebuild, one transaction |
 | `src/routes/dashboard/*.ts` | 5 query endpoints, plus `query-schema.ts` and `enrichment.ts` shared by them |
-| `drizzle/` | Old Postgres schema. Only `src/scripts/copy-to-mongo.ts` reads it |
 
 ### `apps/dashboard` — Next.js 15
 
