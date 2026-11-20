@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'events'
 import { readFileSync } from 'fs'
-import { join } from 'path'
+import { delimiter, join } from 'path'
 
 // The collector's parsing lives behind a private method, so the test drives it
 // through the real `collect` path and fakes only the process boundary. That
@@ -10,7 +10,7 @@ import { join } from 'path'
 const spawnMock = vi.fn()
 vi.mock('child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }))
 
-const { CcusageCollector } = await import('./ccusage.js')
+const { CcusageCollector, withCommandDirOnPath } = await import('./ccusage.js')
 
 const fixture = readFileSync(
   join(import.meta.dirname, '..', '..', 'test', 'fixtures', 'ccusage-daily.json'),
@@ -166,5 +166,25 @@ describe('spawn options by platform', () => {
     fakePlatform('darwin')
     await new CcusageCollector().collect('2026-11-05')
     expect(spawnMock.mock.calls[0][2]).toMatchObject({ shell: false })
+  })
+})
+
+// The 6 PM launchd job runs with PATH=/usr/bin:/bin:/usr/sbin:/sbin. npx's
+// `#!/usr/bin/env node` then exits 127 and every scheduled sync sends nothing.
+describe('PATH for the spawned npx', () => {
+  const realPath = process.env.PATH
+
+  afterEach(() => { process.env.PATH = realPath })
+
+  it('puts the directory of an absolute npx first, so its node is found', async () => {
+    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
+    await new CcusageCollector('/usr/local/bin/npx').collect('2026-11-05')
+    const { env } = spawnMock.mock.calls[0][2] as { env: NodeJS.ProcessEnv }
+    expect(env.PATH?.split(delimiter)).toEqual(['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+  })
+
+  it('leaves PATH alone for a bare npx, which PATH already had to resolve', () => {
+    process.env.PATH = '/usr/bin:/bin'
+    expect(withCommandDirOnPath('npx').PATH).toBe('/usr/bin:/bin')
   })
 })
