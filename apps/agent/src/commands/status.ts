@@ -2,6 +2,7 @@ import { hasConfig, loadConfig } from '../lib/config.js'
 import { CcusageCollector } from '../collectors/ccusage.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
 import { isScheduleInstalled } from '../lib/cron.js'
+import { AGENT_VERSION } from '../version.js'
 
 export async function statusCommand() {
   if (!hasConfig()) {
@@ -14,6 +15,7 @@ export async function statusCommand() {
   const codeburn = new CodeburnCollector()
 
   console.log('[burnwatch] Status')
+  console.log('  Version:  ', AGENT_VERSION)
   console.log('  Device ID:', config.deviceId)
   console.log('  API URL:  ', config.apiUrl)
   console.log('  Last sync:', config.lastSyncAt ?? 'never')
