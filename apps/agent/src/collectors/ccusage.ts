@@ -1,7 +1,7 @@
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { delimiter, dirname, isAbsolute, join } from 'path'
 import type { UsageEvent, CcusageOutput, CcusageDailyEntry, AgentName } from '@burn-watch/shared'
 import type { UsageCollector } from './base.js'
 
@@ -16,6 +16,15 @@ const AGENT_MAP: Record<string, AgentName> = {
 
 const FREE_TIER_AGENTS = new Set<AgentName>(['qwen'])
 
+// launchd and systemd start the scheduled sync with a bare PATH, so npx's
+// `#!/usr/bin/env node` finds no node, exits 127, and the sync reports zero
+// usage. node is installed beside npx, so put npx's own directory first.
+export function withCommandDirOnPath(cmd: string): NodeJS.ProcessEnv {
+  if (!isAbsolute(cmd)) return process.env
+  const PATH = [dirname(cmd), process.env.PATH].filter(Boolean).join(delimiter)
+  return { ...process.env, PATH }
+}
+
 function runCommand(cmd: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
     // npx on Windows is `npx.cmd`, which a bare spawn will not resolve — it
@@ -25,6 +34,7 @@ function runCommand(cmd: string, args: string[], timeout: number): Promise<{ std
     const child = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
+      env: withCommandDirOnPath(cmd),
     })
     const chunks: Buffer[] = []
     const errChunks: Buffer[] = []
