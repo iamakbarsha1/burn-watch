@@ -3,8 +3,10 @@ import { createReadStream } from 'fs'
 import { createInterface } from 'readline'
 import { homedir } from 'os'
 import { dirname, join } from 'path'
+import { createHmac } from 'crypto'
 import type { ClaudeEnrichment } from '@burn-watch/shared'
 import type { EnrichmentCollector } from './base.js'
+import { repoIdentity, run, sshHostResolver, type RepoIdentity, type Run } from './repo.js'
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB — skip files larger than this
 
@@ -57,10 +59,14 @@ export function limitNotice(entry: any): string | null {
   return typeof text === 'string' && LIMIT_NOTICE.test(text) ? text : null
 }
 
-interface ProjectBucket {
+interface TokenBucket {
   sessions: Set<string>
   tokens: number
+}
+
+interface ProjectBucket extends TokenBucket, RepoIdentity {
   cacheReadTokens: number
+  branches: Map<string, TokenBucket>
 }
 
 interface DateBucket {
@@ -77,6 +83,15 @@ interface DateBucket {
   // Keyed by notice text: one limit is echoed into every session resumed
   // before it resets, and the text carries the reset time.
   limitNotices: Set<string>
+  claudeVersions: Record<string, number>
+  entrypointCounts: Record<string, number>
+  skillCounts: Record<string, number>
+  sidechainMessages: number
+  permissionModeCounts: Record<string, number>
+}
+
+function tally(counts: Record<string, number>, key: unknown): void {
+  if (typeof key === 'string' && key) counts[key] = (counts[key] ?? 0) + 1
 }
 
 function newBucket(): DateBucket {
@@ -92,11 +107,29 @@ function newBucket(): DateBucket {
     shellUsage: {},
     mcpUsage: {},
     limitNotices: new Set(),
+    claudeVersions: {},
+    entrypointCounts: {},
+    skillCounts: {},
+    sidechainMessages: 0,
+    permissionModeCounts: {},
   }
 }
 
 export class CodeburnCollector implements EnrichmentCollector {
-  constructor(private claudeDir: string = join(homedir(), '.claude', 'projects')) {}
+  private resolveHost: (host: string) => Promise<string>
+
+  /**
+   * `orgId` keys the HMAC on Claude account and org IDs: the same account
+   * hashes alike on every device in one BurnWatch org and differently in
+   * another. Without it no hashes are sent.
+   */
+  constructor(
+    private claudeDir: string = join(homedir(), '.claude', 'projects'),
+    private orgId = '',
+    private runner: Run = run,
+  ) {
+    this.resolveHost = sshHostResolver(runner)
+  }
 
   async isAvailable(): Promise<boolean> {
     return existsSync(this.claudeDir)
@@ -122,6 +155,10 @@ export class CodeburnCollector implements EnrichmentCollector {
     const dateSet = new Set(dates)
     const buckets = new Map<string, DateBucket>()
     const rootCache = new Map<string, string>()
+    const idCache = new Map<string, Promise<RepoIdentity>>()
+    // session-owner records carry no timestamp, so they are joined to days
+    // through sessionId after the pass.
+    const owners = new Map<string, { accountUuid?: unknown; organizationUuid?: unknown }>()
 
     for (const file of files) {
       const stat = statSync(file)
@@ -137,12 +174,20 @@ export class CodeburnCollector implements EnrichmentCollector {
           let entry: any
           try { entry = JSON.parse(line) } catch { continue }
 
+          if (entry.type === 'session-owner') {
+            if (typeof entry.sessionId === 'string') owners.set(entry.sessionId, entry)
+            continue
+          }
+
           const ts: string = entry.timestamp ?? entry.message?.timestamp ?? ''
           const date = ts.slice(0, 10)
           if (!dateSet.has(date)) continue
 
           if (!buckets.has(date)) buckets.set(date, newBucket())
           const b = buckets.get(date)!
+
+          // Only prompts carry it; tool results do not.
+          if (entry.type === 'user') tally(b.permissionModeCounts, entry.permissionMode)
 
           if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
             b.callCount++
@@ -163,17 +208,43 @@ export class CodeburnCollector implements EnrichmentCollector {
             const notice = limitNotice(entry)
             if (notice) b.limitNotices.add(notice)
 
+            tally(b.claudeVersions, entry.version)
+            tally(b.entrypointCounts, entry.entrypoint)
+            tally(b.skillCounts, entry.attributionSkill)
+            if (entry.isSidechain === true) b.sidechainMessages++
+
             const cwd: string = entry.cwd ?? ''
             if (cwd) {
               const root = projectRoot(cwd, rootCache)
-              let p = b.projects.get(root)
-              if (!p) {
-                p = { sessions: new Set(), tokens: 0, cacheReadTokens: 0 }
-                b.projects.set(root, p)
+              let id = idCache.get(root)
+              if (!id) {
+                id = repoIdentity(root, this.runner, this.resolveHost)
+                idCache.set(root, id)
               }
+              const { name, remote } = await id
+              // Keyed by remote, so two clones of one repo are one project.
+              const key = remote ?? name
+              let p = b.projects.get(key)
+              if (!p) {
+                p = { name, remote, sessions: new Set(), tokens: 0, cacheReadTokens: 0, branches: new Map() }
+                b.projects.set(key, p)
+              }
+              const tokens = input + output + cacheCreate + cacheRead
               if (sessionId) p.sessions.add(sessionId)
-              p.tokens += input + output + cacheCreate + cacheRead
+              p.tokens += tokens
               p.cacheReadTokens += cacheRead
+
+              // A detached HEAD names no branch.
+              const branch = typeof entry.gitBranch === 'string' ? entry.gitBranch.slice(0, 200) : ''
+              if (branch && branch !== 'HEAD') {
+                let br = p.branches.get(branch)
+                if (!br) {
+                  br = { sessions: new Set(), tokens: 0 }
+                  p.branches.set(branch, br)
+                }
+                if (sessionId) br.sessions.add(sessionId)
+                br.tokens += tokens
+              }
             }
 
             const content = entry.message.content ?? []
@@ -181,7 +252,8 @@ export class CodeburnCollector implements EnrichmentCollector {
               if (block.type === 'tool_use') {
                 const toolName = (block.name ?? '').toLowerCase()
                 if (toolName === 'bash') {
-                  const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0]
+                  // Basename: a command run by absolute path would carry the user's folders.
+                  const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0].split(/[\\/]/).pop()
                   if (cmd) b.shellUsage[cmd] = (b.shellUsage[cmd] ?? 0) + 1
                 } else if (toolName.startsWith('mcp__') || (block.name ?? '').startsWith('mcp__')) {
                   const server = (block.name ?? '').split('__')[1] ?? ''
@@ -205,6 +277,19 @@ export class CodeburnCollector implements EnrichmentCollector {
       const readable = b.inputTokens + b.cacheCreateTokens + b.cacheReadTokens
       const dayTokens = readable + b.outputTokens
       const dayCost = claudeCostByDate.get(date) ?? 0
+      // ponytail: tokens are a flat weight, so a project on a cheaper model is
+      // charged above its real share. Weight by model price if the split ever
+      // has to be exact.
+      const share = (tokens: number) => (dayTokens > 0 ? dayCost * (tokens / dayTokens) : 0)
+      const hashes = (field: 'accountUuid' | 'organizationUuid') => {
+        if (!this.orgId) return []
+        const ids = new Set<string>()
+        for (const s of b.sessions) {
+          const raw = owners.get(s)?.[field]
+          if (typeof raw === 'string' && raw) ids.add(createHmac('sha256', this.orgId).update(raw).digest('hex'))
+        }
+        return [...ids].slice(0, 20)
+      }
 
       result.set(date, {
         date,
@@ -217,14 +302,15 @@ export class CodeburnCollector implements EnrichmentCollector {
         // declared but referenced nowhere. Fill these when a page wants them.
         activityBreakdown: [],
         topSessions: [],
-        projectBreakdown: Array.from(b.projects.entries()).map(([path, p]) => {
-          // ponytail: tokens are a flat weight, so a project on a cheaper
-          // model is charged above its real share. Weight by model price if
-          // the split ever has to be exact.
-          const cost = dayTokens > 0 ? dayCost * (p.tokens / dayTokens) : 0
+        projectBreakdown: Array.from(b.projects.values()).map((p) => {
+          const cost = share(p.tokens)
           const sessions = p.sessions.size
           return {
-            path,
+            path: p.name,
+            remote: p.remote,
+            branches: Array.from(p.branches, ([name, br]) => ({ name, cost: share(br.tokens), sessions: br.sessions.size }))
+              .sort((x, y) => y.cost - x.cost)
+              .slice(0, 50),
             cost,
             sessions,
             avgPerSession: sessions > 0 ? cost / sessions : 0,
@@ -235,6 +321,13 @@ export class CodeburnCollector implements EnrichmentCollector {
         shellUsage: b.shellUsage,
         mcpUsage: b.mcpUsage,
         limitHitCount: b.limitNotices.size,
+        claudeVersions: b.claudeVersions,
+        entrypointCounts: b.entrypointCounts,
+        skillCounts: b.skillCounts,
+        sidechainMessages: b.sidechainMessages,
+        permissionModeCounts: b.permissionModeCounts,
+        accountHashes: hashes('accountUuid'),
+        claudeOrgHashes: hashes('organizationUuid'),
       })
     }
     return result

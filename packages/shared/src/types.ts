@@ -1,3 +1,6 @@
+import type { z } from 'zod'
+import type { BranchEntrySchema, ClaudeEnrichmentSchema, ProjectEntrySchema, SessionEntrySchema } from './schemas.js'
+
 // Raw output from `npx ccusage@latest daily --json`
 export interface CcusageOutput {
   daily: CcusageDailyEntry[]
@@ -51,35 +54,11 @@ export interface ActivityEntry {
   oneShotRate: number    // percentage 0-100
 }
 
-export interface ProjectEntry {
-  path: string
-  cost: number
-  avgPerSession: number
-  sessions: number
-  overheadK: number      // context overhead in K tokens
-}
-
-export interface SessionEntry {
-  date: string
-  project: string
-  cost: number
-  calls: number
-}
-
-export interface ClaudeEnrichment {
-  date: string
-  sessionCount: number
-  callCount: number
-  cacheHitRate: number   // percentage 0-100
-  writtenTokens: number
-  activityBreakdown: ActivityEntry[]
-  projectBreakdown: ProjectEntry[]
-  topSessions: SessionEntry[]
-  toolUsage: Record<string, number>   // {bash: 501, read: 201, edit: 168, ...}
-  shellUsage: Record<string, number>  // {git: 238, npx: 57, grep: 57, ...}
-  mcpUsage: Record<string, number>    // {playwright: 33, neon: 14, ...}
-  limitHitCount?: number              // Claude usage-limit notices that day; agent 0.3.0+
-}
+// Wire shapes come from the Zod schemas so there is one list of fields.
+export type BranchEntry = z.infer<typeof BranchEntrySchema>
+export type ProjectEntry = z.infer<typeof ProjectEntrySchema>
+export type SessionEntry = z.infer<typeof SessionEntrySchema>
+export type ClaudeEnrichment = z.infer<typeof ClaudeEnrichmentSchema>
 
 // Payload sent by agent to POST /v1/usage
 export interface UsagePayload {
@@ -87,6 +66,7 @@ export interface UsagePayload {
   date: string
   events: UsageEvent[]
   enrichment: ClaudeEnrichment | null
+  agentVersion?: string
 }
 
 // Device registration
@@ -295,6 +275,7 @@ export interface ToolUsageSummary {
 
 export interface OrgProjectSummary {
   path: string
+  remote: string | null
   totalCost: number
   totalSessions: number
   avgCostPerSession: number

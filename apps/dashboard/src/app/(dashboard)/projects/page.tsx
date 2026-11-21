@@ -45,9 +45,10 @@ export default async function ProjectsPage({
               </EmptyRow>
             )}
             {projects.map((p) => (
-              <Tr key={p.path}>
+              <Tr key={p.remote ?? p.path}>
                 <Td>
                   <div className="font-mono text-xs text-ink">{p.path}</div>
+                  {p.remote && <div className="font-mono text-xs text-ink-3">{p.remote}</div>}
                   {/* Share of the top project, so the eye can rank without
                       reading every figure. */}
                   <div className="mt-1.5 h-1 w-full max-w-40 overflow-hidden rounded-full bg-surface-0">

@@ -37,7 +37,10 @@ export interface DeviceDoc {
   userId: UserId
   hostname: string
   platform: string
+  /** Set at register, and on every submit from agent 0.4.0. */
   agentVersion: string
+  /** Highest Claude Code version in the last submit. Null until a 0.4.0 agent submits. */
+  claudeVersion: string | null
   lastSeenAt: Date
   createdAt: Date
 }
@@ -210,6 +213,14 @@ export interface ClaudeEnrichmentDoc {
   mcpUsage: Record<string, number> | null
   /** Null for days synced by an agent before 0.3.0. */
   limitHitCount: number | null
+  /** The fields below are null for days synced by an agent before 0.4.0. */
+  claudeVersions: Record<string, number> | null
+  entrypointCounts: Record<string, number> | null
+  skillCounts: Record<string, number> | null
+  sidechainMessages: number | null
+  permissionModeCounts: Record<string, number> | null
+  accountHashes: string[] | null
+  claudeOrgHashes: string[] | null
   submittedAt: Date
 }
 

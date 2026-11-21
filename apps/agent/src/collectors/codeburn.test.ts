@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { createHmac } from 'crypto'
 import { CodeburnCollector } from './codeburn.js'
 
 // `fs` exports are not configurable under ESM, so `vi.spyOn` cannot touch them.
@@ -210,8 +211,8 @@ describe('CodeburnCollector', () => {
     ])
     const enrichment = await new CodeburnCollector(root).collect(DATE, 30)
 
-    const alpha = enrichment?.projectBreakdown.find((p) => p.path === '/work/alpha')
-    const beta = enrichment?.projectBreakdown.find((p) => p.path === '/work/beta')
+    const alpha = enrichment?.projectBreakdown.find((p) => p.path === 'alpha')
+    const beta = enrichment?.projectBreakdown.find((p) => p.path === 'beta')
 
     // alpha holds 2600 of 3000 tokens, so it carries 2600/3000 of the $30.
     expect(alpha?.cost).toBeCloseTo(26, 10)
@@ -229,7 +230,7 @@ describe('CodeburnCollector', () => {
     writeSession('a.jsonl', [turn({ session: 's1', cwd: '/work/alpha', input: 100 })])
     const enrichment = await new CodeburnCollector(root).collect(DATE)
     expect(enrichment?.projectBreakdown).toEqual([
-      { path: '/work/alpha', cost: 0, sessions: 1, avgPerSession: 0, overheadK: 0 },
+      { path: 'alpha', remote: null, branches: [], cost: 0, sessions: 1, avgPerSession: 0, overheadK: 0 },
     ])
   })
 
@@ -243,13 +244,13 @@ describe('CodeburnCollector', () => {
     ])
     const enrichment = await new CodeburnCollector(root).collect(DATE, 10)
     expect(enrichment?.projectBreakdown).toHaveLength(1)
-    expect(enrichment?.projectBreakdown[0]).toMatchObject({ path: repo, sessions: 2, cost: 10 })
+    expect(enrichment?.projectBreakdown[0]).toMatchObject({ path: 'repo', remote: null, sessions: 2, cost: 10 })
   })
 
-  it('keeps a cwd that is in no checkout as it is', async () => {
+  it('names a cwd that is in no checkout by its own folder', async () => {
     writeSession('a.jsonl', [turn({ session: 's1', cwd: '/nowhere/at/all', input: 100 })])
     const enrichment = await new CodeburnCollector(root).collect(DATE)
-    expect(enrichment?.projectBreakdown[0].path).toBe('/nowhere/at/all')
+    expect(enrichment?.projectBreakdown[0].path).toBe('all')
   })
 
   it('leaves a turn with no cwd out of the project breakdown but in the day totals', async () => {
@@ -258,7 +259,7 @@ describe('CodeburnCollector', () => {
       turn({ session: 's2', cwd: '/work/alpha', input: 500 }),
     ])
     const enrichment = await new CodeburnCollector(root).collect(DATE, 10)
-    expect(enrichment?.projectBreakdown.map((p) => p.path)).toEqual(['/work/alpha'])
+    expect(enrichment?.projectBreakdown.map((p) => p.path)).toEqual(['alpha'])
     // The cwd-less turn still dilutes the share, so alpha gets half, not all.
     expect(enrichment?.projectBreakdown[0].cost).toBeCloseTo(5, 10)
   })
@@ -316,5 +317,143 @@ describe('limit-hit counting', () => {
     writeSession('a.jsonl', ['{"type":"assistant","isApiErrorMessage":true', limitHit(SESSION)])
     const enrichment = await new CodeburnCollector(root).collect(DATE)
     expect(enrichment?.limitHitCount).toBe(1)
+  })
+})
+
+// Synthetic transcript records for the 0.4 fields. IDs are made up.
+const ACCOUNT = '00000000-0000-4000-8000-00000000000a'
+const CLAUDE_ORG = '00000000-0000-4000-8000-00000000000b'
+
+function rich(opts: {
+  session: string
+  cwd?: string
+  input?: number
+  branch?: string
+  version?: string
+  entrypoint?: string
+  skill?: string
+  sidechain?: boolean
+  timestamp?: string
+}) {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: opts.timestamp ?? `${DATE}T10:00:00.000Z`,
+    sessionId: opts.session,
+    cwd: opts.cwd,
+    gitBranch: opts.branch,
+    version: opts.version,
+    entrypoint: opts.entrypoint,
+    isSidechain: opts.sidechain ?? false,
+    ...(opts.skill ? { attributionSkill: opts.skill } : {}),
+    message: { role: 'assistant', content: [], usage: { input_tokens: opts.input ?? 0, output_tokens: 0 } },
+  })
+}
+
+const prompt = (session: string, permissionMode?: string) =>
+  JSON.stringify({
+    type: 'user',
+    timestamp: `${DATE}T09:59:00.000Z`,
+    sessionId: session,
+    permissionMode,
+    message: { role: 'user', content: 'synthetic prompt' },
+  })
+
+const owner = (session: string) =>
+  JSON.stringify({ type: 'session-owner', sessionId: session, accountUuid: ACCOUNT, organizationUuid: CLAUDE_ORG })
+
+describe('0.4 transcript fields', () => {
+  it('counts versions, entry points, skills and sidechain messages per day', async () => {
+    writeSession('a.jsonl', [
+      rich({ session: 's1', version: '2.1.0', entrypoint: 'cli', skill: 'review' }),
+      rich({ session: 's1', version: '2.1.0', entrypoint: 'cli', sidechain: true }),
+      rich({ session: 's2', version: '2.2.0', entrypoint: 'sdk-ts', skill: 'review' }),
+    ])
+    const e = await new CodeburnCollector(root).collect(DATE)
+    expect(e?.claudeVersions).toEqual({ '2.1.0': 2, '2.2.0': 1 })
+    expect(e?.entrypointCounts).toEqual({ cli: 2, 'sdk-ts': 1 })
+    expect(e?.skillCounts).toEqual({ review: 2 })
+    expect(e?.sidechainMessages).toBe(1)
+  })
+
+  it('reads permission mode from user prompts only', async () => {
+    writeSession('a.jsonl', [
+      prompt('s1', 'plan'),
+      prompt('s1', 'plan'),
+      prompt('s1'),
+      // A permission-mode record has no timestamp and is not a prompt.
+      JSON.stringify({ type: 'permission-mode', sessionId: 's1', permissionMode: 'bypassPermissions' }),
+      rich({ session: 's1' }),
+    ])
+    const e = await new CodeburnCollector(root).collect(DATE)
+    expect(e?.permissionModeCounts).toEqual({ plan: 2 })
+  })
+
+  it('splits project cost by branch, skipping HEAD and empty branches', async () => {
+    writeSession('a.jsonl', [
+      rich({ session: 's1', cwd: '/work/alpha', input: 600, branch: 'main' }),
+      rich({ session: 's2', cwd: '/work/alpha', input: 300, branch: 'feat/ABC-12' }),
+      rich({ session: 's2', cwd: '/work/alpha', input: 50, branch: 'HEAD' }),
+      rich({ session: 's2', cwd: '/work/alpha', input: 50, branch: '' }),
+    ])
+    const e = await new CodeburnCollector(root).collect(DATE, 10)
+    const alpha = e!.projectBreakdown[0]
+    expect(alpha.branches).toEqual([
+      { name: 'main', cost: 6, sessions: 1 },
+      { name: 'feat/ABC-12', cost: 3, sessions: 1 },
+    ])
+    // Branch cost is a part of project cost; the rest is HEAD and unnamed turns.
+    const branchSum = alpha.branches!.reduce((sum, b) => sum + b.cost, 0)
+    expect(alpha.cost).toBeCloseTo(branchSum + 1, 10)
+  })
+
+  it('joins timestamp-less session-owner records to days by sessionId, hashed', async () => {
+    writeSession('a.jsonl', [owner('s1'), owner('s2'), rich({ session: 's1' })])
+    writeSession('b.jsonl', [rich({ session: 's3' })])
+    const e = await new CodeburnCollector(root, 'org-1').collect(DATE)
+    const expected = (raw: string) => createHmac('sha256', 'org-1').update(raw).digest('hex')
+    expect(e?.accountHashes).toEqual([expected(ACCOUNT)])
+    expect(e?.claudeOrgHashes).toEqual([expected(CLAUDE_ORG)])
+    // Another BurnWatch org gets a different hash for the same account.
+    const other = await new CodeburnCollector(root, 'org-2').collect(DATE)
+    expect(other?.accountHashes).not.toEqual(e?.accountHashes)
+  })
+
+  it('sends no raw account ID, and no path, anywhere in the payload', async () => {
+    const repo = join(root, 'deep', 'checkout')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeSession('a.jsonl', [
+      owner('s1'),
+      rich({ session: 's1', cwd: repo, input: 10, branch: 'main' }),
+      rich({ session: 's1', cwd: '/gone/folder/sub', input: 10 }),
+    ])
+    const e = await new CodeburnCollector(root, 'org-1', async () => null).collect(DATE, 1)
+    const wire = JSON.stringify(e)
+    expect(wire).not.toContain(ACCOUNT)
+    expect(wire).not.toContain(CLAUDE_ORG)
+    expect(wire).not.toContain(root)
+    expect(e?.projectBreakdown.map((p) => p.path)).toEqual(['checkout', 'sub'])
+    for (const p of e!.projectBreakdown) expect(p.path).not.toMatch(/[\\/]/)
+  })
+
+  it('keys a shell command run by absolute path by its basename', async () => {
+    writeSession('a.jsonl', [
+      assistant([toolUse('Bash', { command: '/opt/tools/bin/deploy --flag' }), toolUse('Bash', { command: 'deploy' })]),
+    ])
+    const e = await new CodeburnCollector(root).collect(DATE)
+    expect(e?.shellUsage).toEqual({ deploy: 2 })
+  })
+
+  it('merges two clones of one repo under its remote', async () => {
+    for (const clone of ['one', 'two']) mkdirSync(join(root, clone, '.git'), { recursive: true })
+    const runner = async (cmd: string) => (cmd === 'git' ? 'git@github.com:Org/Repo.git' : null)
+    writeSession('a.jsonl', [
+      rich({ session: 's1', cwd: join(root, 'one'), input: 10 }),
+      rich({ session: 's2', cwd: join(root, 'two'), input: 10 }),
+    ])
+    const e = await new CodeburnCollector(root, '', runner).collect(DATE)
+    expect(e?.projectBreakdown).toHaveLength(1)
+    expect(e?.projectBreakdown[0]).toMatchObject({ path: 'repo', remote: 'github.com/org/repo', sessions: 2 })
+    // No orgId, no hashes.
+    expect(e?.accountHashes).toEqual([])
   })
 })

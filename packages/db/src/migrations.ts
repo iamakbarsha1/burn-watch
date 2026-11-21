@@ -1,4 +1,5 @@
-import type { Db } from 'mongodb'
+import type { AnyBulkWriteOperation, Db, Document } from 'mongodb'
+import { commandNames, repoName } from './usage.js'
 
 /**
  * Sortable and unique. The numeric prefix is what orders the array, and the
@@ -67,6 +68,63 @@ export const MIGRATIONS: readonly Migration[] = [
       await db
         .collection('budgetAlerts')
         .updateMany({ type: { $exists: false } }, { $set: { type: 'api-spend', idleDays: null, limitHits: null } })
+    },
+  },
+  {
+    id: '0003_project_path_basename',
+    description: 'claudeEnrichment project paths cut to the repo name; home folders become ~',
+    // In node rather than a pipeline so it shares repoName with the write path.
+    // Only documents still holding a separator match, so a re-run is a no-op.
+    // submittedAt in the filter: a day re-synced mid-run keeps its newer breakdown.
+    async run(db) {
+      const coll = db.collection('claudeEnrichment')
+      const cursor = coll.find(
+        { 'projectBreakdown.path': { $regex: '[/\\\\]' } },
+        { projection: { projectBreakdown: 1, submittedAt: 1 } },
+      )
+      let ops: AnyBulkWriteOperation[] = []
+      for await (const doc of cursor) {
+        const projectBreakdown = (doc.projectBreakdown as Document[]).map((p) => ({ ...p, path: repoName(p.path) }))
+        ops.push({ updateOne: { filter: { _id: doc._id, submittedAt: doc.submittedAt }, update: { $set: { projectBreakdown } } } })
+        if (ops.length === 500) {
+          await coll.bulkWrite(ops)
+          ops = []
+        }
+      }
+      if (ops.length > 0) await coll.bulkWrite(ops)
+    },
+  },
+  {
+    id: '0004_shell_usage_basename',
+    description: 'claudeEnrichment shellUsage keys cut to the command name, counts summed on collision',
+    // Same shape as 0003, sharing commandNames with the write path.
+    // Only documents with a key still holding a separator match, so a re-run is a no-op.
+    // submittedAt in the filter: a day re-synced mid-run keeps its newer counts.
+    async run(db) {
+      const coll = db.collection('claudeEnrichment')
+      const cursor = coll.find(
+        {
+          $expr: {
+            $anyElementTrue: {
+              $map: {
+                input: { $objectToArray: { $ifNull: ['$shellUsage', {}] } },
+                in: { $regexMatch: { input: '$$this.k', regex: '[/\\\\]' } },
+              },
+            },
+          },
+        },
+        { projection: { shellUsage: 1, submittedAt: 1 } },
+      )
+      let ops: AnyBulkWriteOperation[] = []
+      for await (const doc of cursor) {
+        const shellUsage = commandNames(doc.shellUsage as Record<string, number>)
+        ops.push({ updateOne: { filter: { _id: doc._id, submittedAt: doc.submittedAt }, update: { $set: { shellUsage } } } })
+        if (ops.length === 500) {
+          await coll.bulkWrite(ops)
+          ops = []
+        }
+      }
+      if (ops.length > 0) await coll.bulkWrite(ops)
     },
   },
 ]

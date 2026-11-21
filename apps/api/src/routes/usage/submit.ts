@@ -15,6 +15,12 @@ import { requireAuth, type JwtPayload } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
 import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
 
+// Highest Claude Code version in the day's counts; numeric collation puts 2.1.330 above 2.1.99.
+export function highestVersion(versions: Record<string, number> | undefined): string | null {
+  const keys = Object.keys(versions ?? {})
+  return keys.length ? keys.reduce((a, b) => (b.localeCompare(a, 'en', { numeric: true }) > 0 ? b : a)) : null
+}
+
 export async function usageRoutes(fastify: FastifyInstance) {
   // POST /v1/usage
   fastify.post(
@@ -116,7 +122,19 @@ export async function usageRoutes(fastify: FastifyInstance) {
       })
 
       // After the commit, so it advances only for a submission that landed.
-      await getStore().devices.updateOne({ _id: device }, { $set: { lastSeenAt: new Date() } })
+      // Versions live on the device: enrichment is per user per day, so two
+      // devices would overwrite each other there.
+      const claudeVersion = highestVersion(payload.enrichment?.claudeVersions)
+      await getStore().devices.updateOne(
+        { _id: device },
+        {
+          $set: {
+            lastSeenAt: new Date(),
+            ...(payload.agentVersion ? { agentVersion: payload.agentVersion } : {}),
+            ...(claudeVersion ? { claudeVersion } : {}),
+          },
+        },
+      )
 
       return { accepted, skipped, date: payload.date }
     },

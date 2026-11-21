@@ -64,6 +64,29 @@ export async function upsertUsageEvents(
   return { accepted, skipped: events.length - accepted }
 }
 
+// A home folder's basename is the login name, so it is reported as `~`.
+const HOME_DIR = /^(?:\/Users|\/home|[A-Za-z]:[\\/]Users)[\\/][^\\/]+[\\/]*$/
+
+/**
+ * Last segment of a `/` or `\\` path, or `~` for a home folder. A repo name
+ * passes through unchanged. Agents before 0.4.0 send absolute paths; this is
+ * what keeps them out of the database.
+ */
+export function repoName(path: string): string {
+  if (HOME_DIR.test(path)) return '~'
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
+}
+
+// Agents before 0.4.0 key shell usage by the command's first word, which can be an absolute path.
+export function commandNames(usage: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [cmd, n] of Object.entries(usage)) {
+    const name = cmd.split(/[\\/]/).filter(Boolean).pop() ?? cmd
+    out[name] = (out[name] ?? 0) + n
+  }
+  return out
+}
+
 /**
  * Writes one user-day of Claude enrichment: the heavy blobs to
  * claudeEnrichment, and callCount, sessionCount and cacheHitRate to the
@@ -111,12 +134,19 @@ export async function upsertEnrichment(
         date,
         writtenTokens: enrichment.writtenTokens,
         activityBreakdown: enrichment.activityBreakdown,
-        projectBreakdown: enrichment.projectBreakdown,
-        topSessions: enrichment.topSessions,
+        projectBreakdown: enrichment.projectBreakdown.map((p) => ({ ...p, path: repoName(p.path), remote: p.remote ?? null })),
+        topSessions: enrichment.topSessions.map((s) => ({ ...s, project: repoName(s.project) })),
         toolUsage: enrichment.toolUsage,
-        shellUsage: enrichment.shellUsage,
+        shellUsage: commandNames(enrichment.shellUsage),
         mcpUsage: enrichment.mcpUsage,
         limitHitCount: enrichment.limitHitCount ?? null,
+        claudeVersions: enrichment.claudeVersions ?? null,
+        entrypointCounts: enrichment.entrypointCounts ?? null,
+        skillCounts: enrichment.skillCounts ?? null,
+        sidechainMessages: enrichment.sidechainMessages ?? null,
+        permissionModeCounts: enrichment.permissionModeCounts ?? null,
+        accountHashes: enrichment.accountHashes ?? null,
+        claudeOrgHashes: enrichment.claudeOrgHashes ?? null,
         submittedAt: now,
       },
     },

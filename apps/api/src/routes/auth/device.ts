@@ -312,6 +312,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       hostname: pending.hostname,
       platform: pending.platform,
       agentVersion: pending.agentVersion,
+      claudeVersion: null,
       lastSeenAt: now,
       createdAt: now,
     })
