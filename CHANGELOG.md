@@ -8,6 +8,19 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.7.0 (2026-11-22)
+
+- New Adoption page (admins and managers) with an "Idle seats" list: every
+  paid seat with no tokens on its agent for 14 or more days. Each row shows
+  who holds it, last used (or "never"), days idle, price per month and cost
+  since last use. Longest idle first, with per-agent totals on top.
+- Change the threshold with the days field on the page (1 to 365). Seats
+  newer than the threshold are left out. Admins see the org, managers their
+  own teams.
+- With no seats entered, the page points admins to Admin > Seats.
+- A tripped idle-seat budget alert links to the list.
+- No new collection or index. No schema sync needed.
+
 ## web-v0.6.0 (2026-11-22)
 
 - Governance page: new "Agent and model policy" section. Admins set a rule
