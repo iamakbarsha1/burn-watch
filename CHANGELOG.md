@@ -8,6 +8,18 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.5.0 (2026-11-22)
+
+- Governance page: new "MCP servers" section. It lists every MCP server name
+  seen in Claude Code use, with where it came from (plugin, claude.ai
+  connector, local config, or no readable name), who used it, calls, days and
+  last seen. Each name shows approved or not approved.
+- Admins approve or revoke each name from the page. Managers see their own
+  teams' servers, read only. Names match exactly, so `Neon` and
+  `claude_ai_Neon` are approved separately.
+- New `mcpApprovals` collection. Run `npm run sync -w @burn-watch/db` after
+  deploy.
+
 ## web-v0.4.0 (2026-11-22)
 
 - New Governance page (admins and managers) with a free-tier usage list: who
