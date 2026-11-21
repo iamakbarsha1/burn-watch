@@ -146,6 +146,44 @@ describe('UsagePayloadSchema', () => {
     expect(UsagePayloadSchema.safeParse(payload).success).toBe(true)
   })
 
+  it('accepts a 0.3 payload with none of the 0.4 fields', () => {
+    expect(UsagePayloadSchema.safeParse(payload).data).not.toHaveProperty('agentVersion')
+  })
+
+  it('accepts a 0.4 payload with every new field', () => {
+    const hash = 'a'.repeat(64)
+    const v4 = {
+      ...payload,
+      agentVersion: '0.4.0',
+      enrichment: {
+        ...enrichment,
+        projectBreakdown: [
+          { ...projectEntry, path: 'repo', remote: 'github.com/org/repo', branches: [{ name: 'main', cost: 1, sessions: 1 }] },
+          { ...projectEntry, path: 'scratch', remote: null },
+        ],
+        claudeVersions: { '2.1.0': 3 },
+        entrypointCounts: { cli: 3 },
+        skillCounts: { review: 1 },
+        sidechainMessages: 1,
+        permissionModeCounts: { plan: 2 },
+        accountHashes: [hash],
+        claudeOrgHashes: [hash],
+      },
+    }
+    expect(UsagePayloadSchema.parse(v4)).toEqual(v4)
+  })
+
+  it('rejects an account hash that is not 64 characters', () => {
+    const bad = { ...payload, enrichment: { ...enrichment, accountHashes: ['raw-id'] } }
+    expect(UsagePayloadSchema.safeParse(bad).success).toBe(false)
+  })
+
+  it('describes every enrichment and project field for the transparency page', () => {
+    for (const shape of [ClaudeEnrichmentSchema.shape, ProjectEntrySchema.shape]) {
+      for (const [key, field] of Object.entries(shape)) expect(field.description, key).toBeTruthy()
+    }
+  })
+
   it('accepts a null enrichment, which is what every non-Claude agent sends', () => {
     expect(UsagePayloadSchema.safeParse({ ...payload, enrichment: null }).success).toBe(true)
   })

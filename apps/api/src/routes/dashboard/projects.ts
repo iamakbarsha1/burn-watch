@@ -27,6 +27,9 @@ export type ProjectTotals = Omit<OrgProjectSummary, 'avgCostPerSession'>
  * The sort is new. A `$group` returns its buckets in no defined order, so
  * without it the table could reorder between two identical requests.
  *
+ * Grouped by remote when there is one, so two orgs' `api` repos stay apart;
+ * days from agents before 0.4.0 have no remote and group by name.
+ *
  * Exported so `enrichment-query.test.ts` can read the stages. The route tests
  * seed the fake store's answer, so they never see this pipeline.
  */
@@ -36,7 +39,9 @@ export function projectTotals(range: EnrichmentRange): Document[] {
     { $unwind: '$projectBreakdown' },
     {
       $group: {
-        _id: '$projectBreakdown.path',
+        _id: { $ifNull: ['$projectBreakdown.remote', '$projectBreakdown.path'] },
+        path: { $first: '$projectBreakdown.path' },
+        remote: { $first: { $ifNull: ['$projectBreakdown.remote', null] } },
         totalCost: { $sum: '$projectBreakdown.cost' },
         totalSessions: { $sum: '$projectBreakdown.sessions' },
         users: { $addToSet: '$userId' },
@@ -45,7 +50,8 @@ export function projectTotals(range: EnrichmentRange): Document[] {
     {
       $project: {
         _id: 0,
-        path: '$_id',
+        path: 1,
+        remote: 1,
         totalCost: 1,
         totalSessions: 1,
         userCount: { $size: '$users' },

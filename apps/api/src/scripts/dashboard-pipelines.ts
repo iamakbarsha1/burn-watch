@@ -109,8 +109,9 @@ function snapshot(
 
 const slice = (tokens: number, usd: number) => ({ tokens, costMicros: microsFromUsd(usd) })
 
-const project = (path: string, cost: number, sessions: number): ProjectEntry => ({
+const project = (path: string, cost: number, sessions: number, remote?: string): ProjectEntry => ({
   path,
+  ...(remote ? { remote } : {}),
   cost,
   sessions,
   avgPerSession: sessions > 0 ? cost / sessions : 0,
@@ -122,7 +123,10 @@ function enrichment(
   orgId: OrgId,
   date: IsoDate,
   blobs: Partial<
-    Pick<ClaudeEnrichmentDoc, 'toolUsage' | 'shellUsage' | 'mcpUsage' | 'projectBreakdown' | 'limitHitCount'>
+    Pick<
+      ClaudeEnrichmentDoc,
+      'toolUsage' | 'shellUsage' | 'mcpUsage' | 'projectBreakdown' | 'limitHitCount' | 'claudeVersions'
+    >
   >,
 ): ClaudeEnrichmentDoc {
   return {
@@ -138,6 +142,13 @@ function enrichment(
     mcpUsage: null,
     projectBreakdown: null,
     limitHitCount: null,
+    claudeVersions: null,
+    entrypointCounts: null,
+    skillCounts: null,
+    sidechainMessages: null,
+    permissionModeCounts: null,
+    accountHashes: null,
+    claudeOrgHashes: null,
     submittedAt: new Date(),
     ...blobs,
   }
@@ -188,6 +199,12 @@ const ENRICHMENT: ClaudeEnrichmentDoc[] = [
   // deleted node-merge tests covered and no fixture reached afterwards.
   enrichment(DI, MINE, D2, { toolUsage: {}, shellUsage: {}, projectBreakdown: [] }),
   enrichment(CY, MINE, D3, { toolUsage: { bash: 999 } }),
+  // 0.4 agents: two `api` repos with one name and two remotes must stay two
+  // rows. The version map has dotted keys, which Mongo stores as field names.
+  enrichment(CY, MINE, D1, {
+    projectBreakdown: [project('api', 3, 1, 'github.com/one/api'), project('api', 2, 1, 'github.com/two/api')],
+    claudeVersions: { '2.1.330': 3, '2.1.99': 1 },
+  }),
   enrichment(ZED, THEIRS, D1, {
     limitHitCount: 50,
     toolUsage: { bash: 1_000 },
@@ -225,6 +242,7 @@ const device = (_id: DeviceId, userId: UserId, hostname: string, lastSeenAt: str
   hostname,
   platform: 'darwin',
   agentVersion: '0.1.0',
+  claudeVersion: null,
   lastSeenAt: new Date(lastSeenAt),
   createdAt: new Date(),
 })
@@ -617,6 +635,7 @@ async function activity(store: Store) {
 async function projects(store: Store) {
   const rows = await store.claudeEnrichment.aggregate<{
     path: string
+    remote: string | null
     totalCost: number
     totalSessions: number
     userCount: number
@@ -625,25 +644,43 @@ async function projects(store: Store) {
   check('projects folds cost and sessions across people and days', () => {
     assert.deepEqual(rows, [
       // ADA 4 + 6, BO 2 — and none of ZED's 500.
-      { path: 'acme/widgets', totalCost: 12, totalSessions: 6, userCount: 2 },
-      { path: 'acme/gadgets', totalCost: 1, totalSessions: 1, userCount: 1 },
+      { path: 'acme/widgets', remote: null, totalCost: 12, totalSessions: 6, userCount: 2 },
+      { path: 'api', remote: 'github.com/one/api', totalCost: 3, totalSessions: 1, userCount: 1 },
+      { path: 'api', remote: 'github.com/two/api', totalCost: 2, totalSessions: 1, userCount: 1 },
+      { path: 'acme/gadgets', remote: null, totalCost: 1, totalSessions: 1, userCount: 1 },
     ])
   })
+
 
   check('projects counts people, not user-days or days', () => {
     // ADA touched acme/widgets on both days, so counting documents answers 3
     // and counting distinct dates answers 2. Only counting people answers 2
     // for a reason, and BO's single day is what tells the last two apart.
     assert.equal(rows[0].userCount, 2)
-    assert.equal(rows[1].userCount, 1, 'acme/gadgets is ADA alone, on one day')
+    assert.equal(rows[3].userCount, 1, 'acme/gadgets is ADA alone, on one day')
   })
 
   check('projects treats an empty breakdown as contributing nothing', () => {
     // DI's projectBreakdown is `[]`, in range. `$unwind` drops the document
     // rather than inventing a row with an undefined path — the second deleted
     // assertion from the node-merge suite.
-    assert.equal(rows.length, 2)
+    assert.equal(rows.length, 4)
     assert.equal(rows.some((r) => r.path === undefined || r.path === null), false)
+  })
+
+  const versions = await store.claudeEnrichment
+    .aggregate<{ _id: string; n: number }>([
+      { $match: { orgId: MINE, claudeVersions: { $ne: null } } },
+      { $project: { kv: { $objectToArray: '$claudeVersions' } } },
+      { $unwind: '$kv' },
+      { $group: { _id: '$kv.k', n: { $sum: '$kv.v' } } },
+      { $sort: { _id: 1 } },
+    ])
+  check('dotted version keys are stored and read back whole', () => {
+    assert.deepEqual(versions, [
+      { _id: '2.1.330', n: 3 },
+      { _id: '2.1.99', n: 1 },
+    ])
   })
 }
 

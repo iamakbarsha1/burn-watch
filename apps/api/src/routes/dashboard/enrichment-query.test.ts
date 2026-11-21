@@ -121,7 +121,7 @@ describe('the projects pipeline', () => {
 
   it('sums cost and sessions per project in the database', () => {
     expect(stage(projects, '$group')).toMatchObject({
-      _id: '$projectBreakdown.path',
+      _id: { $ifNull: ['$projectBreakdown.remote', '$projectBreakdown.path'] },
       totalCost: { $sum: '$projectBreakdown.cost' },
       totalSessions: { $sum: '$projectBreakdown.sessions' },
     })

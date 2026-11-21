@@ -903,7 +903,7 @@ describe('GET /v1/dashboard/projects', () => {
 
   const totals = (over: Record<string, unknown> = {}) =>
     dashboardAggregate('claudeEnrichment', [
-      { path: 'acme/widgets', totalCost: 15, totalSessions: 6, userCount: 2, ...over },
+      { path: 'acme/widgets', remote: null, totalCost: 15, totalSessions: 6, userCount: 2, ...over },
     ])
 
   it('passes the folded figures through and adds the derived average', async () => {
@@ -911,6 +911,7 @@ describe('GET /v1/dashboard/projects', () => {
     expect((await get()).json()).toEqual([
       {
         path: 'acme/widgets',
+        remote: null,
         totalCost: 15,
         totalSessions: 6,
         userCount: 2,
@@ -1571,6 +1572,26 @@ describe('POST /v1/usage', () => {
     // Last, after every write the transaction body issues, so a rolled-back
     // submission never advances it.
     expect(mongoState.calls.map((c) => `${c.collection}.${c.op}`).at(-1)).toBe('devices.updateOne')
+  })
+
+  it('records agent and highest Claude Code version on the device', async () => {
+    liveDeviceToken()
+    knownUser()
+    await submit({
+      ...payload,
+      agentVersion: '0.4.0',
+      enrichment: { ...enrichment, claudeVersions: { '2.1.99': 4, '2.1.330': 1, '2.0.5': 9 } },
+    })
+    const [[, update]] = mongoCalls('devices', 'updateOne') as [unknown, { $set: Record<string, unknown> }][]
+    expect(update.$set).toMatchObject({ agentVersion: '0.4.0', claudeVersion: '2.1.330' })
+  })
+
+  it('leaves both versions alone for a 0.3 agent that sends neither', async () => {
+    liveDeviceToken()
+    knownUser()
+    await submit({ ...payload, enrichment })
+    const [[, update]] = mongoCalls('devices', 'updateOne') as [unknown, { $set: Record<string, unknown> }][]
+    expect(Object.keys(update.$set)).toEqual(['lastSeenAt'])
   })
 
   it('runs every write inside one transaction', async () => {
