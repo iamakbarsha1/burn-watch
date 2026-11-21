@@ -76,6 +76,8 @@ export interface InviteDoc {
   email: string
   role: 'admin' | 'manager' | 'developer'
   code: string
+  /** Team joined on accept. Absent on invites made before R0.5. */
+  teamId?: TeamId | null
   expiresAt: Date
   usedAt: Date | null
   createdAt: Date

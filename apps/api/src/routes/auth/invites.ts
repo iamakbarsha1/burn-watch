@@ -1,17 +1,49 @@
 import type { FastifyInstance } from 'fastify'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { getStore, newId, runInTxn, type OrgId, type UserId } from '@burn-watch/db'
+import { getStore, newId, runInTxn, teamMemberKey, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+const Role = z.enum(['admin', 'manager', 'developer'])
 
 const CreateInviteSchema = z.object({
   // Trim before validating. An admin pasting an address with a trailing space
   // should get an invite, not a 400.
   email: z.string().trim().email(),
-  role: z.enum(['admin', 'manager', 'developer']).default('developer'),
+  role: Role.default('developer'),
 })
+
+// Rows are checked one by one in the handler, so one bad line in a CSV is
+// reported against that line instead of failing the whole upload.
+const BulkInviteSchema = z.object({
+  rows: z
+    .array(z.object({ email: z.string().max(320), role: z.string().max(50).optional(), team: z.string().max(200).optional() }))
+    .min(1)
+    .max(200),
+})
+
+type Invited = { inviteId: string; email: string; role: z.infer<typeof Role>; token: string; expiresAt: string }
+
+async function issueInvite(orgId: OrgId, email: string, role: z.infer<typeof Role>, teamId: TeamId | null): Promise<Invited> {
+  const token = randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS)
+  const inviteId = newId()
+  await getStore().invites.insertOne({
+    _id: inviteId,
+    orgId,
+    email,
+    role,
+    code: hashToken(token),
+    teamId,
+    expiresAt,
+    usedAt: null,
+    createdAt: new Date(),
+  })
+  // The only time the plaintext token exists outside the invitee's link.
+  return { inviteId, email, role, token, expiresAt: expiresAt.toISOString() }
+}
 
 const AcceptInviteSchema = z.object({
   token: z.string().min(1),
@@ -50,29 +82,52 @@ export async function inviteRoutes(fastify: FastifyInstance) {
         return reply.status(409).send({ error: 'A user with this email already exists' })
       }
 
-      const token = randomBytes(32).toString('base64url')
-      const expiresAt = new Date(Date.now() + INVITE_TTL_MS)
-      const inviteId = newId()
+      return issueInvite(jwt.orgId as OrgId, email, body.role, null)
+    },
+  )
 
-      await getStore().invites.insertOne({
-        _id: inviteId,
-        orgId: jwt.orgId as OrgId,
-        email,
-        role: body.role,
-        code: hashToken(token),
-        expiresAt,
-        usedAt: null,
-        createdAt: new Date(),
-      })
+  // POST /v1/auth/admin/invites/bulk — up to 200 invites from a CSV (admin only).
+  // Answers 200 with one result per row, in order; a row error never stops the rest.
+  fastify.post(
+    '/admin/invites/bulk',
+    {
+      config: { rateLimit: { max: 10, timeWindow: '1 hour' } },
+      preHandler: requireAdmin(fastify),
+    },
+    async (request) => {
+      const { rows } = BulkInviteSchema.parse(request.body)
+      const orgId = request.user.orgId as OrgId
+      const store = getStore()
+      const emails = rows.map((r) => r.email.trim().toLowerCase())
 
-      // The only time the plaintext token exists outside the invitee's link.
-      return {
-        inviteId,
-        email,
-        role: body.role,
-        token,
-        expiresAt: expiresAt.toISOString(),
+      // Two reads for the whole upload. Team names match case-insensitively.
+      const taken = new Set(
+        (await store.users.find({ email: { $in: emails } }, { projection: { email: 1 } })).map((u) => u.email),
+      )
+      const teams = new Map(
+        (await store.teams.find({ orgId })).map((t) => [t.name.trim().toLowerCase(), t._id]),
+      )
+
+      const seen = new Set<string>()
+      const results = []
+      for (const [i, row] of rows.entries()) {
+        const email = emails[i]
+        const fail = (error: string) => ({ email, ok: false as const, error })
+        const role = Role.safeParse(row.role?.trim().toLowerCase() || 'developer')
+        const teamName = row.team?.trim() ?? ''
+        const teamId = teamName ? teams.get(teamName.toLowerCase()) : null
+
+        if (!z.string().email().safeParse(email).success) results.push(fail('Not a valid email'))
+        else if (!role.success) results.push(fail('Role must be admin, manager or developer'))
+        else if (teamId === undefined) results.push(fail(`No team named "${teamName}"`))
+        else if (taken.has(email)) results.push(fail('A user with this email already exists'))
+        else if (seen.has(email)) results.push(fail('Listed twice in this upload'))
+        else {
+          seen.add(email)
+          results.push({ ok: true as const, ...(await issueInvite(orgId, email, role.data, teamId)) })
+        }
       }
+      return { results }
     },
   )
 
@@ -131,6 +186,19 @@ export async function inviteRoutes(fastify: FastifyInstance) {
           isActive: true,
           createdAt: now,
         })
+
+        // Join the invite's team, if it still exists in the same org. A team
+        // deleted since the invite was made is skipped, not an error.
+        if (invite.teamId && (await tx.teams.findOne({ _id: invite.teamId, orgId: invite.orgId }))) {
+          await tx.teamMembers.insertOne({
+            _id: teamMemberKey(invite.teamId, userId),
+            teamId: invite.teamId,
+            orgId: invite.orgId,
+            userId,
+            role: invite.role === 'manager' ? 'manager' : 'member',
+            createdAt: now,
+          })
+        }
 
         return { userId, orgId: invite.orgId, email, role: invite.role }
       })

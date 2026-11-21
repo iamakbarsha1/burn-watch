@@ -8,6 +8,15 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.3.0 (2026-11-22)
+
+- Admin page: invite up to 200 people from a CSV (`email,role,team`). Each row
+  gets its own link or its own error; one bad row does not stop the rest.
+- An invite can carry a team. The new user joins it on accept, as manager when
+  invited as manager.
+- GitHub Copilot panel is labelled "Unverified": it has never run against a real
+  Copilot Business org.
+
 ## web-v0.2.0 (2026-11-22)
 
 - New "What BurnWatch knows about me" page at `/privacy` ("My data" in the

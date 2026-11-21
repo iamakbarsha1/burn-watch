@@ -2153,6 +2153,63 @@ describe('invites', () => {
     })
   })
 
+  describe('POST /v1/auth/admin/invites/bulk', () => {
+    const bulk = (rows: unknown[], role: 'admin' | 'developer' = 'admin') =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/invites/bulk',
+        headers: auth(token({ role })),
+        payload: { rows },
+      })
+
+    it('returns 403 for a non-admin', async () => {
+      expect((await bulk([{ email: 'a@example.com' }], 'developer')).statusCode).toBe(403)
+    })
+
+    it('rejects an empty upload and one over 200 rows', async () => {
+      expect((await bulk([])).statusCode).toBe(400)
+      const rows = Array.from({ length: 201 }, (_, i) => ({ email: `u${i}@example.com` }))
+      expect((await bulk(rows)).statusCode).toBe(400)
+    })
+
+    it('invites good rows and reports each bad row without stopping', async () => {
+      mongoState.docs.users = [{ _id: USER_A, email: 'taken@example.com' }]
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+
+      const res = await bulk([
+        { email: ' New@Example.com ', role: 'Manager', team: 'platform' },
+        { email: 'plain@example.com' },
+        { email: 'not-an-email' },
+        { email: 'x@example.com', role: 'owner' },
+        { email: 'y@example.com', team: 'Nope' },
+        { email: 'TAKEN@example.com' },
+        { email: 'new@example.com' },
+      ])
+
+      expect(res.statusCode).toBe(200)
+      const { results } = res.json()
+      expect(results.map((r: { ok: boolean; error?: string }) => r.error ?? 'ok')).toEqual([
+        'ok',
+        'ok',
+        'Not a valid email',
+        'Role must be admin, manager or developer',
+        'No team named "Nope"',
+        'A user with this email already exists',
+        'Listed twice in this upload',
+      ])
+      expect(results[0]).toMatchObject({ email: 'new@example.com', role: 'manager' })
+      expect(results[1]).toMatchObject({ email: 'plain@example.com', role: 'developer' })
+
+      const written = mongoCalls('invites', 'insertOne').map(([doc]) => doc as Record<string, unknown>)
+      expect(written).toHaveLength(2)
+      expect(written[0]).toMatchObject({ orgId: ORG_A, teamId: TEAM_A, role: 'manager' })
+      expect(written[0].code).toBe(createHash('sha256').update(results[0].token).digest('hex'))
+      expect(written[1]).toMatchObject({ orgId: ORG_A, teamId: null })
+      // Teams are read from the caller's org only.
+      expect(mongoCalls('teams', 'find')[0][0]).toEqual({ orgId: ORG_A })
+    })
+  })
+
   describe('GET /v1/auth/admin/invites', () => {
     it('returns 403 for a non-admin', async () => {
       const res = await app.inject({
@@ -2258,6 +2315,31 @@ describe('invites', () => {
 
       const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
       expect(ops).toEqual(['.transaction', 'invites.findOneAndUpdate', 'users.insertOne'])
+    })
+
+    it('adds the new user to the invite team, as manager for a manager invite', async () => {
+      mongoState.docs.invites = [
+        { _id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'manager', teamId: TEAM_A },
+      ]
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+
+      const res = await accept({ token: 'good-token', name: 'New Dev' })
+
+      expect(res.statusCode).toBe(200)
+      expect(mongoCalls('teams', 'findOne')[0][0]).toEqual({ _id: TEAM_A, orgId: ORG_A })
+      const [[member]] = mongoCalls('teamMembers', 'insertOne') as [[Record<string, unknown>]]
+      expect(member).toMatchObject({ teamId: TEAM_A, orgId: ORG_A, userId: res.json().userId, role: 'manager' })
+    })
+
+    it('skips the team when it was deleted after the invite was made', async () => {
+      mongoState.docs.invites = [
+        { _id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'developer', teamId: TEAM_A },
+      ]
+
+      const res = await accept({ token: 'good-token', name: 'New Dev' })
+
+      expect(res.statusCode).toBe(200)
+      expect(mongoCalls('teamMembers', 'insertOne')).toHaveLength(0)
     })
 
     it('cannot be replayed: the losing racer gets 400 and creates no user', async () => {
