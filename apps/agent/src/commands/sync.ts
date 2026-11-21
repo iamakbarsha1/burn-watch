@@ -2,6 +2,7 @@ import { ApiClient } from '../lib/api.js'
 import { loadConfig, updateConfig } from '../lib/config.js'
 import { CcusageCollector } from '../collectors/ccusage.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
+import { AGENT_VERSION } from '../version.js'
 
 // ccusage is the only source of a cost figure. The codeburn pass needs the
 // day's Claude spend to split it across projects.
@@ -82,7 +83,7 @@ export async function syncCommand(options: {
   }
 
   const ccusage = new CcusageCollector(config.npxPath ?? 'npx')
-  const codeburn = new CodeburnCollector()
+  const codeburn = new CodeburnCollector(undefined, config.orgId)
 
   const ccAvailable = await ccusage.isAvailable()
   const cbAvailable = await codeburn.isAvailable()
@@ -135,6 +136,7 @@ export async function syncCommand(options: {
         date,
         events,
         enrichment,
+        agentVersion: AGENT_VERSION,
       })
 
       const claudeEvents = events.filter((e) => e.agent === 'claude')
