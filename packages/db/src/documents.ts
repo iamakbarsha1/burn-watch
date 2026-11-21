@@ -5,6 +5,7 @@ import type {
   DeviceId,
   IntegrationKey,
   IsoDate,
+  McpApprovalKey,
   Micros,
   OrgId,
   SeatKey,
@@ -127,6 +128,20 @@ export interface SeatDoc {
   monthlyPriceMicros: Micros
   startDate: IsoDate
   createdAt: Date
+}
+
+/**
+ * An admin's approval of one MCP server key (R1 B3). `server` is the exact key
+ * the agent sends, so `Neon` and `claude_ai_Neon` are two approvals. The key is
+ * stored as a value, never as a field path, since it comes from developer configs.
+ */
+export interface McpApprovalDoc {
+  _id: McpApprovalKey
+  orgId: OrgId
+  server: string
+  note: string | null
+  approvedBy: UserId
+  approvedAt: Date
 }
 
 export type BudgetAlertType = 'api-spend' | 'idle-seat' | 'limit-hit'

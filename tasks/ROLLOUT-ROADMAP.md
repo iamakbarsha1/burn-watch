@@ -173,7 +173,7 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 | ID | Build | Note |
 |---|---|---|
 | B1 | Free-tier usage list (`isFreeTier`), per user and team | ✅ Built, web-v0.4.0 (`/governance`). Design: `tasks/R1-B1-FREE-TIER-DESIGN.md`. Gemini gap is BW-43 (R2) |
-| B3 | MCP server inventory from `mcpUsage`, allowlist, flag unapproved | Needs org fact #3 |
+| B3 | MCP server inventory from `mcpUsage`, allowlist, flag unapproved | ✅ Built, web-v0.5.0 (`/governance`, `mcpApprovals`). Design: `tasks/R1-B3-MCP-INVENTORY-DESIGN.md`. Admins approve on the page, so org fact #3 is no longer a blocker |
 | B2 | Approved agents/models policy, violation list, dashboard alert | Push alerts wait for a channel |
 | A1 | Idle seats: no usage for 14+ days, per agent | Uses R0.1 seats |
 | A3 | Funnel per team: invited → registered → first sync → weekly active → power user | Uses R0.2 teams |
@@ -251,14 +251,14 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 B1 is built and shipped as web-v0.4.0 (Governance page, free-tier list).
-Still open from R0: the signed-in prod checks (`/privacy`, Projects remote line,
-R0.1 seats, CSV invite, and now `/governance`) need a real login, and Vercel Pro
-is undecided (Risks). Next R1 item is B3 (MCP server inventory). Its allowlist
-needs org fact #3; the inventory half does not.
+R1 B3 shipped as web-v0.5.0 (MCP servers section on `/governance`, new
+`mcpApprovals` collection synced to prod). Next R1 item is B2 (approved
+agents/models policy). Still open: signed-in prod checks (`/privacy`, Projects
+remote line, R0.1 seats, CSV invite, `/governance` with both sections, approve
+and revoke one MCP server) and the Vercel Pro decision (Risks).
 
 ```
-BurnWatch: plan R1 B3 (MCP server inventory from mcpUsage, allowlist, flag unapproved).
-Add it as a section on /governance. See tasks/ROLLOUT-ROADMAP.md R1.
-If signed in, walk the open prod checks first, including /governance.
+BurnWatch: plan R1 B2 (approved agents/models policy, violation list, dashboard alert).
+Add it to /governance. See tasks/ROLLOUT-ROADMAP.md R1. Draft the design before code.
+If signed in, walk the open prod checks first, including approve/revoke on /governance.
 ```

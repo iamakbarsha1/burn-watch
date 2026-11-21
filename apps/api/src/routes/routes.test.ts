@@ -2899,3 +2899,130 @@ describe('GET /v1/dashboard/governance/free-tier', () => {
     expect(callsTo(mongoState, 'usageEvents', 'aggregate')).toEqual([])
   })
 })
+
+describe('GET /v1/dashboard/governance/mcp', () => {
+  const URL = range('/v1/dashboard/governance/mcp')
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const match = () =>
+    (callsTo(mongoState, 'claudeEnrichment', 'aggregate')[0][0] as Document[])[0].$match as Record<string, unknown>
+
+  const seed = () => {
+    mongoState.aggregates.claudeEnrichment = [
+      { _id: 'playwright', calls: 40, users: [USER_B, USER_A], days: 2, lastDate: '2026-11-05' },
+      { _id: 'plugin_vercel_vercel', calls: 9, users: [USER_A], days: 1, lastDate: '2026-11-04' },
+      { _id: 'claude_ai_Neon', calls: 3, users: [USER_A], days: 1, lastDate: '2026-11-03' },
+      { _id: '1a59c906-04da-521d-bda7-7f71b9f9e01c', calls: 1, users: [USER_A], days: 1, lastDate: '2026-11-02' },
+    ]
+    mongoState.docs.users = [
+      { _id: USER_A, orgId: ORG_A, name: 'Ada' },
+      { _id: USER_B, orgId: ORG_A, name: 'Bo' },
+    ]
+    mongoState.docs.mcpApprovals = [
+      { _id: `${ORG_A}:playwright`, orgId: ORG_A, server: 'playwright', note: 'browser tests' },
+      { _id: `${ORG_A}:context7`, orgId: ORG_A, server: 'context7', note: null },
+    ]
+  }
+
+  it('refuses a developer before reading anything', async () => {
+    seed()
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('requires a full range', async () => {
+    expect((await get('admin', '/v1/dashboard/governance/mcp')).statusCode).toBe(400)
+  })
+
+  it('lists servers with source, approval and names, plus approvals nobody used', async () => {
+    seed()
+    const res = await get('admin')
+    expect(res.statusCode).toBe(200)
+    expect(match()).toEqual({ orgId: ORG_A, date: { $gte: DATE, $lte: DATE } })
+    expect(callsTo(mongoState, 'mcpApprovals', 'find')[0][0]).toEqual({ orgId: ORG_A })
+    expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+    const body = res.json()
+    expect(body.servers[0]).toEqual({
+      server: 'playwright',
+      source: 'local',
+      approved: true,
+      note: 'browser tests',
+      users: [
+        { userId: USER_A, name: 'Ada' },
+        { userId: USER_B, name: 'Bo' },
+      ],
+      calls: 40,
+      days: 2,
+      lastDate: '2026-11-05',
+    })
+    expect(body.servers.map((s: { source: string; approved: boolean }) => [s.source, s.approved])).toEqual([
+      ['local', true],
+      ['plugin', false],
+      ['claude.ai', false],
+      ['unnamed', false],
+    ])
+    expect(body.unusedApprovals).toEqual([{ server: 'context7', note: null }])
+  })
+
+  it('limits a manager to themselves and the teams they manage', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    expect((await get('manager')).statusCode).toBe(200)
+    expect(match().userId).toEqual({ $in: [USER_A, USER_B] })
+  })
+})
+
+describe('MCP approval routes', () => {
+  const base = '/v1/dashboard/governance/mcp-approvals'
+  const one = `${base}?server=${encodeURIComponent('claude_ai_Neon')}`
+  const send = (method: 'PUT' | 'DELETE', url: string, payload?: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method, url, payload, headers: auth(token({ role })) })
+
+  it.each(['developer', 'manager'] as const)('answers 403 to a %s and writes nothing', async (role) => {
+    expect((await send('PUT', base, { server: 'claude_ai_Neon', note: 'x' }, role)).statusCode).toBe(403)
+    expect((await send('DELETE', one, undefined, role)).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('upserts an org-scoped approval keyed on the exact server name', async () => {
+    const res = await send('PUT', base, { server: 'claude_ai_Neon', note: '  Neon connector  ' })
+    expect(res.statusCode).toBe(200)
+    const [filter, update, options] = callsTo(mongoState, 'mcpApprovals', 'updateOne')[0] as [
+      Record<string, unknown>,
+      { $set: Record<string, unknown>; $setOnInsert: Record<string, unknown> },
+      unknown,
+    ]
+    expect(filter).toEqual({ _id: `${ORG_A}:claude_ai_Neon` })
+    expect(update.$set).toMatchObject({ note: 'Neon connector', approvedBy: USER_A })
+    expect(update.$setOnInsert).toEqual({ orgId: ORG_A, server: 'claude_ai_Neon' })
+    expect(options).toEqual({ upsert: true })
+  })
+
+  it('stores no note as null', async () => {
+    await send('PUT', base, { server: 'claude_ai_Neon' })
+    const update = callsTo(mongoState, 'mcpApprovals', 'updateOne')[0][1] as { $set: { note: unknown } }
+    expect(update.$set.note).toBeNull()
+  })
+
+  it('accepts a 200-character key with a slash and rejects 201 characters', async () => {
+    const long = `a/${'b'.repeat(198)}`
+    expect((await send('PUT', base, { server: long })).statusCode).toBe(200)
+    expect((await send('PUT', base, { server: `${long}c` })).statusCode).toBe(400)
+    expect((await send('DELETE', `${base}?server=${'a'.repeat(201)}`)).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'mcpApprovals', 'updateOne')).toHaveLength(1)
+    expect(callsTo(mongoState, 'mcpApprovals', 'deleteOne')).toEqual([])
+  })
+
+  it('revokes inside the caller org and answers 404 when nothing matched', async () => {
+    expect((await send('DELETE', one)).statusCode).toBe(404)
+    expect(callsTo(mongoState, 'mcpApprovals', 'deleteOne')[0][0]).toEqual({
+      _id: `${ORG_A}:claude_ai_Neon`,
+      orgId: ORG_A,
+    })
+    mongoState.docs.mcpApprovals = [{ _id: `${ORG_A}:claude_ai_Neon` }]
+    expect((await send('DELETE', one)).json()).toEqual({ server: 'claude_ai_Neon', approved: false })
+  })
+})

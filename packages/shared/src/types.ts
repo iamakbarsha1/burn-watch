@@ -468,3 +468,25 @@ export interface FreeTierResponse {
   rows: FreeTierRow[]
   byTeam: FreeTierTeamTotal[]
 }
+
+/** Where an MCP server key came from, read off its prefix. */
+export type McpServerSource = 'plugin' | 'claude.ai' | 'local' | 'unnamed'
+
+export interface McpServerRow {
+  /** The exact key the agent sent: the name in the developer's config. */
+  server: string
+  source: McpServerSource
+  approved: boolean
+  note: string | null
+  users: { userId: string; name: string | null }[]
+  calls: number
+  /** Distinct days with a call in the range. */
+  days: number
+  lastDate: string
+}
+
+export interface McpInventoryResponse {
+  servers: McpServerRow[]
+  /** Approved keys nobody called in the range, so an admin can still revoke them. */
+  unusedApprovals: { server: string; note: string | null }[]
+}

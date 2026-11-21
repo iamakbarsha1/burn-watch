@@ -18,6 +18,8 @@ export type DayKey = string & { readonly __brand: 'DayKey' }
  * cannot be dropped, misnamed, or missed by a sync that never ran.
  */
 export type IntegrationKey = string & { readonly __brand: 'IntegrationKey' }
+/** `${orgId}:${server}`, so approving an MCP server twice is one upsert, not two rows. */
+export type McpApprovalKey = string & { readonly __brand: 'McpApprovalKey' }
 /** YYYY-MM-DD. Lexicographic order is date order, so range filters work on the string. */
 export type IsoDate = string & { readonly __brand: 'IsoDate' }
 /** Integer micro-dollars. numeric(12,6) has six decimals, so this encoding is lossless. */
@@ -35,6 +37,9 @@ export const seatKey = (userId: UserId, agent: string): SeatKey => `${userId}:${
 
 export const integrationKey = (orgId: OrgId, provider: string): IntegrationKey =>
   `${orgId}:${provider}` as IntegrationKey
+
+export const mcpApprovalKey = (orgId: OrgId, server: string): McpApprovalKey =>
+  `${orgId}:${server}` as McpApprovalKey
 
 export const microsFromUsd = (usd: number): Micros => Math.round(usd * 1e6) as Micros
 

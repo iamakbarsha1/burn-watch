@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { FreeTierResponse } from '@burn-watch/shared'
+import type { FreeTierResponse, McpInventoryResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
   data: null as FreeTierResponse | null,
+  mcp: null as McpInventoryResponse | null,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -19,8 +20,16 @@ vi.mock('@/lib/api', () => ({
     if (!state.data) throw new Error('down')
     return state.data
   },
+  fetchMcpInventory: async () => {
+    if (!state.mcp) throw new Error('down')
+    return state.mcp
+  },
 }))
 vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => null }))
+vi.mock('./McpApprovalButton', () => ({
+  McpApprovalButton: ({ server, approved }: { server: string; approved: boolean }) =>
+    `[${approved ? 'revoke' : 'approve'}:${server}]`,
+}))
 
 const { default: GovernancePage } = await import('./page')
 
@@ -30,7 +39,34 @@ const render = async () =>
 beforeEach(() => {
   state.role = 'admin'
   state.data = { rows: [], byTeam: [] }
+  state.mcp = { servers: [], unusedApprovals: [] }
 })
+
+const MCP: McpInventoryResponse = {
+  servers: [
+    {
+      server: 'playwright',
+      source: 'local',
+      approved: true,
+      note: 'browser tests',
+      users: [{ userId: 'u1', name: 'Ada' }],
+      calls: 40,
+      days: 2,
+      lastDate: '2026-11-05',
+    },
+    {
+      server: 'claude_ai_Neon',
+      source: 'claude.ai',
+      approved: false,
+      note: null,
+      users: [{ userId: 'u2', name: 'Bo' }],
+      calls: 3,
+      days: 1,
+      lastDate: '2026-11-03',
+    },
+  ],
+  unusedApprovals: [{ server: 'context7', note: null }],
+}
 
 describe('GovernancePage', () => {
   it('redirects a developer', async () => {
@@ -74,5 +110,35 @@ describe('GovernancePage', () => {
   it('says so when the API is down', async () => {
     state.data = null
     expect(await render()).toContain('Could not read free-tier usage')
+  })
+
+  it('shows the MCP empty state', async () => {
+    expect(await render()).toContain('No MCP server calls in this range.')
+  })
+
+  it('lists MCP servers with badges and admin buttons, including unused approvals', async () => {
+    state.mcp = MCP
+    const html = await render()
+    expect(html).toContain('2 servers, 1 not approved, used by 2 people')
+    expect(html).toContain('claude.ai connector')
+    expect(html).toContain('not approved')
+    expect(html).toContain('browser tests')
+    expect(html).toContain('[revoke:playwright]')
+    expect(html).toContain('[approve:claude_ai_Neon]')
+    expect(html).toContain('[revoke:context7]')
+  })
+
+  it('hides the approval buttons from a manager', async () => {
+    state.role = 'manager'
+    state.mcp = MCP
+    const html = await render()
+    expect(html).toContain('claude_ai_Neon')
+    expect(html).not.toContain('[approve:')
+    expect(html).not.toContain('[revoke:')
+  })
+
+  it('says so when MCP usage cannot be read', async () => {
+    state.mcp = null
+    expect(await render()).toContain('Could not read MCP usage')
   })
 })

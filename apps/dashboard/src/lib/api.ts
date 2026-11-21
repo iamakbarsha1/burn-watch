@@ -21,6 +21,7 @@ import type {
   SeatAssignAll,
   AgentName,
   FreeTierResponse,
+  McpInventoryResponse,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -263,6 +264,20 @@ export async function removeTeamMember(teamId: string, userId: string): Promise<
 // B1. Admins get the org, managers their own teams; a developer gets 403.
 export async function fetchFreeTier(from: string, to: string, teamId?: string): Promise<FreeTierResponse> {
   return apiFetch(`/v1/dashboard/governance/free-tier?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+export async function fetchMcpInventory(from: string, to: string, teamId?: string): Promise<McpInventoryResponse> {
+  return apiFetch(`/v1/dashboard/governance/mcp?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+// The key goes in the body or query, never the path: it comes from a
+// developer's config and may hold a `/`.
+export async function approveMcpServer(server: string, note: string | null): Promise<{ server: string }> {
+  return apiMutate('PUT', '/v1/dashboard/governance/mcp-approvals', { server, note })
+}
+
+export async function revokeMcpServer(server: string): Promise<{ server: string }> {
+  return apiDelete(`/v1/dashboard/governance/mcp-approvals?server=${encodeURIComponent(server)}`)
 }
 
 export async function fetchSeats(): Promise<Seat[]> {

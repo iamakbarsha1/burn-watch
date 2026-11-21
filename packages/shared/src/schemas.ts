@@ -173,11 +173,20 @@ export const SeatInputSchema = z.object({
 
 export const SeatAssignAllSchema = SeatInputSchema.extend({ agent: AgentNameSchema })
 
+// R1 B3. A key comes from a developer's MCP config, so it is bounded and only
+// ever stored as a value.
+export const McpServerKeySchema = z.string().min(1).max(200)
+export const McpApprovalInputSchema = z.object({
+  server: McpServerKeySchema,
+  note: z.string().trim().max(500).nullable().optional(),
+})
+
 // z.input: what a client sends, so a field with a default stays optional.
 export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
 export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>
 export type SeatInput = z.infer<typeof SeatInputSchema>
 export type SeatAssignAll = z.infer<typeof SeatAssignAllSchema>
+export type McpApprovalInput = z.input<typeof McpApprovalInputSchema>
 
 export type UsageEventInput = z.infer<typeof UsageEventSchema>
 export type ClaudeEnrichmentInput = z.infer<typeof ClaudeEnrichmentSchema>
