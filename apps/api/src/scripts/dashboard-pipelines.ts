@@ -41,6 +41,7 @@ import {
   monthToDateSpend,
   newId,
   seatKey,
+  seatLastUsed,
   seatedKeys,
   storeFor,
   syncSchema,
@@ -785,6 +786,20 @@ async function seats(store: Store) {
   const idle = await idleSeats(store, MINE, null, null, 2, D3)
   check('idle seats: no tokens on that agent in the window, young seats skipped, org-scoped', () => {
     assert.deepEqual(idle.map((s) => s._id), [seatKey(CY, 'claude')])
+  })
+
+  const lastUsed = await seatLastUsed(store, MINE, [ADA, BO, CY, ZED])
+  check('seat last used: max date per (user, agent), other orgs out', () => {
+    assert.deepEqual(
+      Object.fromEntries(lastUsed),
+      {
+        [seatKey(ADA, 'claude')]: D2,
+        [seatKey(ADA, 'copilot')]: D2,
+        [seatKey(BO, 'qwen')]: D2, // tokens at $0 still count as use
+        [seatKey(CY, 'codex')]: D3,
+      },
+      'CY never ran claude, so CY:claude is absent; ZED is another org',
+    )
   })
 
   const orgHits = await limitHitsThisMonth(store, MINE, null, D3)

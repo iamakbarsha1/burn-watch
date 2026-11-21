@@ -9,6 +9,7 @@ import { budgetAlertsRoutes } from './budget-alerts.js'
 import { teamsRoutes } from './teams.js'
 import { seatsRoutes } from './seats.js'
 import { governanceRoutes } from './governance.js'
+import { adoptionRoutes } from './adoption.js'
 
 export async function dashboardRoutes(fastify: FastifyInstance) {
   // All dashboard routes require authenticated user
@@ -23,4 +24,5 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
   await fastify.register(teamsRoutes)
   await fastify.register(seatsRoutes)
   await fastify.register(governanceRoutes)
+  await fastify.register(adoptionRoutes)
 }

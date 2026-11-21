@@ -175,7 +175,7 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 | B1 | Free-tier usage list (`isFreeTier`), per user and team | ✅ Built, web-v0.4.0 (`/governance`). Design: `tasks/R1-B1-FREE-TIER-DESIGN.md`. Gemini gap is BW-43 (R2) |
 | B3 | MCP server inventory from `mcpUsage`, allowlist, flag unapproved | ✅ Built, web-v0.5.0 (`/governance`, `mcpApprovals`). Design: `tasks/R1-B3-MCP-INVENTORY-DESIGN.md`. Admins approve on the page, so org fact #3 is no longer a blocker |
 | B2 | Approved agents/models policy, violation list, dashboard alert | ✅ Built, web-v0.6.0 (`/governance`, `agentPolicies`, nav count + Overview line). Design: `tasks/R1-B2-AGENT-POLICY-DESIGN.md`. Push alerts wait for a channel |
-| A1 | Idle seats: no usage for 14+ days, per agent | Uses R0.1 seats |
+| A1 | Idle seats: no usage for 14+ days, per agent | ✅ Built, web-v0.7.0 (`/adoption`, `?idleDays` default 14, alert links to it). Design: `tasks/R1-A1-IDLE-SEATS-DESIGN.md`. No schema change. Prod shows the empty state until seats are entered (org fact #1) |
 | A3 | Funnel per team: invited → registered → first sync → weekly active → power user | Uses R0.2 teams |
 | A8 | Leaderboard by active days, streaks, features tried; `$` hidden by default | Features-tried improves after R2 |
 | B8 | Admin audit log: device approvals, role changes, who viewed whose data | Moved up from "later": once managers see team data, view logging should exist from day one |
@@ -251,14 +251,20 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 B2 shipped as web-v0.6.0, so the Governance page has B1, B2 and B3. Next
-R1 item is A1 (idle seats per agent, uses R0.1 seats). Still open: signed-in
-prod checks (`/privacy`, Projects remote line, R0.1 seats, CSV invite,
-`/governance` with all three sections, approve/revoke one MCP server, set one
-agent rule and see the nav count) and the Vercel Pro decision (Risks).
+R1 A1 shipped as web-v0.7.0: `/adoption` has the idle seats list. Prod has 0
+seats, so it shows the "add them in Admin > Seats" empty state until seat
+prices are entered (org fact #1). Next is R1 A3, the funnel per team (invited,
+registered, first sync, weekly active, power user), as a second section on
+`/adoption`. Write its design doc first, with a read-only prod query for each
+funnel step. Still open: signed-in prod checks (`/privacy`, Projects remote
+line, R0.1 seats, CSV invite, `/governance` with all three sections,
+approve/revoke one MCP server, set one agent rule and see the nav count,
+`/adoption` empty state and the idle-days field) and the Vercel Pro decision
+(Risks).
 
 ```
-BurnWatch: plan R1 A1 (idle seats: no usage for 14+ days, per agent).
-See tasks/ROLLOUT-ROADMAP.md R1. Draft the design before code.
-If signed in, walk the open prod checks first, including the Governance policy section.
+BurnWatch: design R1 A3 (funnel per team) as a new section on /adoption.
+Steps: invited, registered, first sync, weekly active, power user. Uses R0.2 teams.
+Write tasks/R1-A3-FUNNEL-DESIGN.md with a read-only prod query per step, then stop for decisions.
+If signed in, walk the open prod checks first, including /adoption.
 ```

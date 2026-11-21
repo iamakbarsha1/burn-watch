@@ -515,3 +515,34 @@ export interface McpInventoryResponse {
   /** Approved keys nobody called in the range, so an admin can still revoke them. */
   unusedApprovals: { server: string; note: string | null }[]
 }
+
+// GET /v1/dashboard/adoption/idle-seats (R1 A1). Seats with no tokens on their
+// own agent for `idleDays`+ days. Admins see the org, managers their own teams.
+export interface IdleSeatRow {
+  userId: string
+  /** Null when the user row is gone. */
+  userName: string | null
+  /** Names of the viewer's visible teams this user is in. */
+  teams: string[]
+  agent: AgentName
+  startDate: string
+  /** Last day with tokens on this agent. Null when never used. */
+  lastUsed: string | null
+  /** Days since the day after `lastUsed`, or since `startDate` when never used, today included. */
+  daysIdle: number
+  monthlyPriceUsd: number
+  /** Seat cost from the first idle day to today. */
+  costSinceUsedUsd: number
+}
+
+export interface IdleSeatsResponse {
+  idleDays: number
+  /** Longest idle first. */
+  rows: IdleSeatRow[]
+  byAgent: { agent: AgentName; seats: number; monthlyUsd: number }[]
+  /** A seat holder in two teams counts in both. Holders in no visible team are left out. */
+  byTeam: { teamId: string; teamName: string; seats: number; monthlyUsd: number }[]
+  totalMonthlyUsd: number
+  /** Seats the org has at all, so the page can tell "none entered" from "none idle". Admins only; null for managers. */
+  orgSeats: number | null
+}

@@ -1,6 +1,7 @@
 'use client'
 
 import { useActionState, useState } from 'react'
+import Link from 'next/link'
 import type { BudgetAlert, AgentName } from '@burn-watch/shared'
 import {
   createBudgetAlertAction,
@@ -272,6 +273,11 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
                 {s.userName ?? 'Removed user'} · {s.agent}
               </li>
             ))}
+            <li>
+              <Link href={`/adoption?idleDays=${alert.idleDays ?? 14}`} className="text-brand underline-offset-4 hover:underline">
+                See idle seats
+              </Link>
+            </li>
           </ul>
         )}
       </Td>

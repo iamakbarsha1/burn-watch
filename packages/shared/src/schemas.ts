@@ -193,6 +193,12 @@ export const McpApprovalInputSchema = z.object({
   note: z.string().trim().max(500).nullable().optional(),
 })
 
+// R1 A1. Query strings arrive as text, so coerce; nothing is stored.
+export const IdleSeatsQuerySchema = z.object({
+  teamId: z.string().uuid().optional(),
+  idleDays: z.coerce.number().int().min(1).max(365).default(14),
+})
+
 // z.input: what a client sends, so a field with a default stays optional.
 export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
 export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>
