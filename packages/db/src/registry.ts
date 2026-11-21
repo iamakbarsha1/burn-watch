@@ -10,6 +10,7 @@ import type {
   OrganizationDoc,
   PendingDeviceDoc,
   RateLimitDoc,
+  SeatDoc,
   TeamDoc,
   TeamMemberDoc,
   UsageEventDoc,
@@ -114,6 +115,9 @@ export const COLLECTIONS = {
     // Members of a team: scope expansion, the team filter, and the comparison.
     { name: 'teamMembers_team', key: { teamId: 1 } },
   ]),
+
+  // Admin list, seat cost and idle-seat checks all read one org's seats.
+  seats: spec<SeatDoc>([{ name: 'seats_org_agent', key: { orgId: 1, agent: 1 } }]),
 
   rateLimits: spec<RateLimitDoc>([
     // Replaces the SWEEP_EVERY counter and its delete in plugins/rate-limit-store.ts.

@@ -116,6 +116,7 @@ export async function upsertEnrichment(
         toolUsage: enrichment.toolUsage,
         shellUsage: enrichment.shellUsage,
         mcpUsage: enrichment.mcpUsage,
+        limitHitCount: enrichment.limitHitCount ?? null,
         submittedAt: now,
       },
     },

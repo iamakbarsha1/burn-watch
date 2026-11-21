@@ -1,10 +1,20 @@
 import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
 import { z } from 'zod'
-import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
+import {
+  getStore,
+  seatCost,
+  seatKey,
+  usdFromMicros,
+  type IsoDate,
+  type Micros,
+  type OrgId,
+  type UserId,
+} from '@burn-watch/db'
 import type { AgentName, LeaderboardEntry } from '@burn-watch/shared'
 import { dateQueryShape } from './query-schema.js'
 import { viewerScope } from '../../plugins/jwt.js'
+import { today } from './dates.js'
 
 const QuerySchema = z.object({
   ...dateQueryShape,
@@ -175,6 +185,16 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         perAgent.set(row._id.agent, row)
       }
 
+      // Seats of the page only: actual cost is per person, and the sort stays on value.
+      const seats = await store.seats.find({ orgId, userId: { $in: page.map((row) => row._id) } })
+      const now = today()
+      const seated = new Set(seats.map((seat) => seat._id))
+      const seatMicrosByUser = new Map<string, number>()
+      for (const seat of seats) {
+        const cost = seatCost(seat, fromDate, toDate, now)
+        seatMicrosByUser.set(seat.userId, (seatMicrosByUser.get(seat.userId) ?? 0) + cost)
+      }
+
       const result: LeaderboardEntry[] = page.map((row) => {
         const perAgent = spendByUser.get(row._id)
         const agent = (name: AgentName) => {
@@ -183,6 +203,11 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
           return { tokens: totals.tokens, costUsd: usdFromMicros(totals.costMicros) }
         }
         const user = byId.get(row._id)!
+        let apiMicros = 0
+        for (const [name, totals] of perAgent ?? []) {
+          if (!seated.has(seatKey(row._id, name))) apiMicros += totals.costMicros
+        }
+        const actualMicros = (seatMicrosByUser.get(row._id) ?? 0) + apiMicros
         return {
           userId: row._id,
           name: user.name,
@@ -201,6 +226,9 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
           // over the range, so turning it on is its own change with its own
           // decision about weighting.
           cacheHitRate: null,
+          actualCostUsd: usdFromMicros(actualMicros as Micros),
+          apiSpendUsd: usdFromMicros(apiMicros as Micros),
+          valueMultiple: actualMicros > 0 ? row.totalCostMicros / actualMicros : null,
         }
       })
 

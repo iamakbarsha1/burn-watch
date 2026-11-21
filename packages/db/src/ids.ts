@@ -6,6 +6,8 @@ export type DeviceId = string & { readonly __brand: 'DeviceId' }
 export type TeamId = string & { readonly __brand: 'TeamId' }
 /** `${teamId}:${userId}`, so adding a member twice is one upsert, not two rows. */
 export type TeamMemberKey = string & { readonly __brand: 'TeamMemberKey' }
+/** `${userId}:${agent}`, so one user holds at most one seat per agent and a re-add is an upsert. */
+export type SeatKey = string & { readonly __brand: 'SeatKey' }
 /** `${userId}:${date}`, the _id of every one-per-user-day document. */
 export type DayKey = string & { readonly __brand: 'DayKey' }
 /**
@@ -28,6 +30,8 @@ export const dayKey = (userId: UserId, date: IsoDate): DayKey => `${userId}:${da
 
 export const teamMemberKey = (teamId: TeamId, userId: UserId): TeamMemberKey =>
   `${teamId}:${userId}` as TeamMemberKey
+
+export const seatKey = (userId: UserId, agent: string): SeatKey => `${userId}:${agent}` as SeatKey
 
 export const integrationKey = (orgId: OrgId, provider: string): IntegrationKey =>
   `${orgId}:${provider}` as IntegrationKey

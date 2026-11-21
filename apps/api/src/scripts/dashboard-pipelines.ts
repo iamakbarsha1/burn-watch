@@ -35,8 +35,13 @@ import { MongoClient } from 'mongodb'
 import type { AdminDeviceRow, AdminUserRow, ProjectEntry } from '@burn-watch/shared'
 import {
   dayKey,
+  idleSeats,
+  limitHitsThisMonth,
   microsFromUsd,
+  monthToDateSpend,
   newId,
+  seatKey,
+  seatedKeys,
   storeFor,
   syncSchema,
   type ClaudeEnrichmentDoc,
@@ -46,6 +51,7 @@ import {
   type DeviceTokenDoc,
   type IsoDate,
   type OrgId,
+  type SeatDoc,
   type Store,
   type UserId,
 } from '@burn-watch/db'
@@ -116,7 +122,7 @@ function enrichment(
   orgId: OrgId,
   date: IsoDate,
   blobs: Partial<
-    Pick<ClaudeEnrichmentDoc, 'toolUsage' | 'shellUsage' | 'mcpUsage' | 'projectBreakdown'>
+    Pick<ClaudeEnrichmentDoc, 'toolUsage' | 'shellUsage' | 'mcpUsage' | 'projectBreakdown' | 'limitHitCount'>
   >,
 ): ClaudeEnrichmentDoc {
   return {
@@ -131,6 +137,7 @@ function enrichment(
     shellUsage: null,
     mcpUsage: null,
     projectBreakdown: null,
+    limitHitCount: null,
     submittedAt: new Date(),
     ...blobs,
   }
@@ -158,6 +165,7 @@ const SNAPSHOTS: DailySnapshotDoc[] = [
 
 const ENRICHMENT: ClaudeEnrichmentDoc[] = [
   enrichment(ADA, MINE, D1, {
+    limitHitCount: 2,
     toolUsage: { bash: 5, edit: 2 },
     shellUsage: { git: 1 },
     projectBreakdown: [project('acme/widgets', 4, 2)],
@@ -172,6 +180,7 @@ const ENRICHMENT: ClaudeEnrichmentDoc[] = [
   }),
   // Every blob null but one: the case `$ifNull` exists for.
   enrichment(BO, MINE, D2, {
+    limitHitCount: 1,
     mcpUsage: { neon: 1 },
     projectBreakdown: [project('acme/widgets', 2, 1)],
   }),
@@ -180,6 +189,7 @@ const ENRICHMENT: ClaudeEnrichmentDoc[] = [
   enrichment(DI, MINE, D2, { toolUsage: {}, shellUsage: {}, projectBreakdown: [] }),
   enrichment(CY, MINE, D3, { toolUsage: { bash: 999 } }),
   enrichment(ZED, THEIRS, D1, {
+    limitHitCount: 50,
     toolUsage: { bash: 1_000 },
     projectBreakdown: [project('acme/widgets', 500, 50)],
   }),
@@ -246,6 +256,24 @@ const TOKENS = [
   token(ZED_BOX, null),
 ]
 
+const seat = (userId: UserId, orgId: OrgId, agent: SeatDoc['agent'], startDate: string): SeatDoc => ({
+  _id: seatKey(userId, agent),
+  orgId,
+  userId,
+  agent,
+  monthlyPriceMicros: microsFromUsd(30),
+  startDate: startDate as IsoDate,
+  createdAt: new Date(),
+})
+
+const SEATS = [
+  seat(ADA, MINE, 'claude', '2026-05-01'), // used on D2
+  seat(BO, MINE, 'qwen', '2026-05-01'), // tokens on D2 at $0: used, not idle
+  seat(CY, MINE, 'claude', '2026-05-01'), // CY only ran codex: idle
+  seat(DI, MINE, 'gemini', D3), // younger than the window: ignored
+  seat(ZED, THEIRS, 'claude', '2026-05-01'), // another org, idle, must not show
+]
+
 const RATE_KEY = `dashboard-pipelines-${MINE}`
 
 async function seed(store: Store) {
@@ -268,12 +296,14 @@ async function seed(store: Store) {
   for (const e of ENRICHMENT) await store.claudeEnrichment.insertOne(e)
   for (const d of DEVICES) await store.devices.insertOne(d)
   for (const t of TOKENS) await store.deviceTokens.insertOne(t)
+  for (const s of SEATS) await store.seats.insertOne(s)
 }
 
 async function clean(store: Store) {
   const orgs = { orgId: { $in: [MINE, THEIRS] } }
   await store.dailySnapshots.deleteMany(orgs)
   await store.claudeEnrichment.deleteMany(orgs)
+  await store.seats.deleteMany(orgs)
   await store.deviceTokens.deleteMany({ deviceId: { $in: DEVICES.map((d) => d._id) } })
   await store.devices.deleteMany({ userId: { $in: USERS.map((u) => u._id) } })
   await store.rateLimits.deleteMany({ _id: RATE_KEY })
@@ -332,6 +362,18 @@ async function overview(store: Store) {
       costMicros: microsFromUsd(40),
     })
     assert.equal(byAgent.has('codex'), false, 'CY worked on D3, outside the range')
+  })
+
+  check('overview splits value per (user, agent), so seated pairs can be told from API spend', () => {
+    const pairs = (facet.pairs as { _id: { userId: string; agent: string }; costMicros: number }[])
+      .map((p) => `${p._id.userId === ADA ? 'ADA' : p._id.userId === BO ? 'BO' : 'DI'}:${p._id.agent}=${p.costMicros}`)
+      .sort()
+    assert.deepEqual(pairs, [
+      `ADA:claude=${microsFromUsd(8)}`,
+      `ADA:copilot=${microsFromUsd(1)}`,
+      'BO:qwen=0',
+      `DI:gemini=${microsFromUsd(40)}`,
+    ])
   })
 
   const [single] = await store.dailySnapshots.aggregate(
@@ -691,6 +733,31 @@ async function adminDevices(store: Store) {
   })
 }
 
+async function seats(store: Store) {
+  const seated = await seatedKeys(store, MINE)
+  const all = await monthToDateSpend(store, MINE, null, null, D3, seated)
+  const claude = await monthToDateSpend(store, MINE, null, 'claude', D3, seated)
+  const copilot = await monthToDateSpend(store, MINE, ADA, 'copilot', D3, seated)
+  check('month-to-date API spend leaves seated pairs out, and other orgs too', () => {
+    // DI's gemini seat starts D3, after the D2 usage; it is still seated (a known limit).
+    assert.equal(all, microsFromUsd(12), 'June 60 in MINE, less ADA claude 8 and DI gemini 40')
+    assert.equal(claude, 0, 'ADA claude is the only claude, and it is seated')
+    assert.equal(copilot, microsFromUsd(1), 'ADA copilot is not seated')
+  })
+
+  const idle = await idleSeats(store, MINE, null, null, 2, D3)
+  check('idle seats: no tokens on that agent in the window, young seats skipped, org-scoped', () => {
+    assert.deepEqual(idle.map((s) => s._id), [seatKey(CY, 'claude')])
+  })
+
+  const orgHits = await limitHitsThisMonth(store, MINE, null, D3)
+  const adaHits = await limitHitsThisMonth(store, MINE, ADA, D3)
+  check('limit hits sum this month, null days as 0, other orgs out', () => {
+    assert.equal(orgHits, 3)
+    assert.equal(adaHits, 2)
+  })
+}
+
 async function rateLimit(store: Store) {
   const hit = () => store.rateLimits.findOneAndUpdate({ _id: RATE_KEY }, hitPipeline(60_000), { upsert: true })
 
@@ -737,6 +804,7 @@ async function main() {
     await orphans(store)
     await adminUsers(store)
     await adminDevices(store)
+    await seats(store)
     await rateLimit(store)
   } finally {
     await clean(store)

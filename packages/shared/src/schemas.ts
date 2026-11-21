@@ -51,6 +51,8 @@ export const ClaudeEnrichmentSchema = z.object({
   toolUsage: z.record(z.string(), z.number().int().nonnegative()),
   shellUsage: z.record(z.string(), z.number().int().nonnegative()),
   mcpUsage: z.record(z.string(), z.number().int().nonnegative()),
+  // Optional: agents before 0.3.0 do not send it.
+  limitHitCount: z.number().int().nonnegative().optional(),
 })
 
 export const UsagePayloadSchema = z.object({
@@ -89,11 +91,21 @@ export const ApproveDeviceSchema = z.object({
 // the limit that trips the alert, so 0.8 warns at 80%; 1 is allowed and means
 // "tell me when I reach the limit itself", and anything above 1 would describe
 // an alert that fires after the budget is already blown, which nobody wants.
+//
+// `type` defaults to api-spend so a dashboard that predates it keeps working.
+// Which fields each type needs is checked by the API on the merged alert, so
+// the same rule covers create and patch: api-spend needs monthlyLimitUsd,
+// idle-seat needs idleDays, limit-hit needs limitHits.
+export const BudgetAlertTypeSchema = z.enum(['api-spend', 'idle-seat', 'limit-hit'])
+
 export const BudgetAlertInputSchema = z.object({
+  type: BudgetAlertTypeSchema.default('api-spend'),
   userId: z.string().uuid().nullable().default(null),
   agent: AgentNameSchema.nullable().default(null),
-  monthlyLimitUsd: z.number().positive().max(99999999.99),
+  monthlyLimitUsd: z.number().positive().max(99999999.99).optional(),
   threshold: z.number().positive().max(1).default(0.8),
+  idleDays: z.number().int().min(1).max(365).nullable().default(null),
+  limitHits: z.number().int().min(1).max(100000).nullable().default(null),
 })
 
 // Every field optional, but at least one present. A PATCH with an empty body
@@ -103,8 +115,19 @@ export const BudgetAlertPatchSchema = BudgetAlertInputSchema.partial().refine(
   { message: 'Provide at least one field to update' },
 )
 
-export type BudgetAlertInput = z.infer<typeof BudgetAlertInputSchema>
-export type BudgetAlertPatch = z.infer<typeof BudgetAlertPatchSchema>
+// PUT /v1/dashboard/seats/:userId/:agent. A day-prorated price, so cents are fine.
+export const SeatInputSchema = z.object({
+  monthlyPriceUsd: z.number().nonnegative().max(99999.99),
+  startDate: z.string().regex(dateRegex),
+})
+
+export const SeatAssignAllSchema = SeatInputSchema.extend({ agent: AgentNameSchema })
+
+// z.input: what a client sends, so a field with a default stays optional.
+export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
+export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>
+export type SeatInput = z.infer<typeof SeatInputSchema>
+export type SeatAssignAll = z.infer<typeof SeatAssignAllSchema>
 
 export type UsageEventInput = z.infer<typeof UsageEventSchema>
 export type ClaudeEnrichmentInput = z.infer<typeof ClaudeEnrichmentSchema>

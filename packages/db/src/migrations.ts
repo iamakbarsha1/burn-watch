@@ -59,4 +59,14 @@ export const MIGRATIONS: readonly Migration[] = [
     description: 'no-op marker, proves runMigrations claims and records',
     async run() {},
   },
+  {
+    id: '0002_budget_alert_type',
+    description: 'budget alerts get type api-spend, idleDays null, limitHits null',
+    // Matching only alerts without `type` is what makes a re-run a no-op.
+    async run(db) {
+      await db
+        .collection('budgetAlerts')
+        .updateMany({ type: { $exists: false } }, { $set: { type: 'api-spend', idleDays: null, limitHits: null } })
+    },
+  },
 ]

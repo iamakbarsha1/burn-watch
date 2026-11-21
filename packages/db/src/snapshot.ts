@@ -1,7 +1,7 @@
 import type { Document } from 'mongodb'
 import type { AgentName } from '@burn-watch/shared'
 import type { DailySnapshotDoc, UsageSource } from './documents.js'
-import { dayKey, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
+import { dayKey, seatKey, type IsoDate, type Micros, type OrgId, type SeatKey, type UserId } from './ids.js'
 import type { Store, Txn } from './store.js'
 
 export interface AgentSourceTotals {
@@ -175,13 +175,25 @@ export function costFieldFor(agent: string | null): string {
   return AGENT_COST_FIELD[agent as AgentName]
 }
 
+/** One user's month: the all-agent total and each agent's slot. */
+type UserMonth = { _id: UserId; total: number } & Record<AgentName, number>
+
+const AGENT_SUMS = Object.fromEntries(
+  Object.entries(AGENT_COST_FIELD).map(([agent, path]) => [agent, { $sum: path }]),
+)
+
 /**
- * Month-to-date spend, in micros, for one scope: a whole org or one user of
- * it, and either one agent or every agent.
+ * Month-to-date API spend, in micros, for one scope: a whole org or one user
+ * of it, and either one agent or every agent. Usage on a seated (user, agent)
+ * pair is left out: the seat already paid for it.
  *
  * Shared by the budget-alert evaluator and by the GET route that renders the
  * figure, so what an admin reads can never drift from what the last evaluation
  * decided against.
+ *
+ * Grouped per user, with every agent's slot summed, so the seated pairs can be
+ * subtracted here. A seat set is one org's users × agents, small enough to
+ * hand around in memory.
  */
 export async function monthToDateSpend(
   store: Store,
@@ -189,19 +201,49 @@ export async function monthToDateSpend(
   userId: UserId | null,
   agent: string | null,
   date: IsoDate,
+  seated: ReadonlySet<SeatKey>,
 ): Promise<Micros> {
   const [start, end] = monthRange(date)
   const match: Document = { orgId, date: { $gte: start, $lt: end } }
   if (userId) match.userId = userId
 
-  const [row] = await store.dailySnapshots.aggregate<{ spend: number }>([
+  const rows = await store.dailySnapshots.aggregate<UserMonth>([
     { $match: match },
-    { $group: { _id: null, spend: { $sum: costFieldFor(agent) } } },
+    { $group: { _id: '$userId', total: { $sum: '$totalCostMicros' }, ...AGENT_SUMS } },
   ])
 
-  // `byAgent` is a partial map, so a day on which this agent did nothing has no
+  // An unknown name falls back to the all-agent total, as costFieldFor does.
+  const one = agent && Object.hasOwn(AGENT_COST_FIELD, agent) ? (agent as AgentName) : null
+  const agents = Object.keys(AGENT_COST_FIELD) as AgentName[]
+  let spend = 0
+  for (const row of rows) {
+    const seatedCost = (a: AgentName) => (seated.has(seatKey(row._id, a)) ? row[a] : 0)
+    spend += one
+      ? row[one] - seatedCost(one)
+      : row.total - agents.reduce((sum, a) => sum + seatedCost(a), 0)
+  }
+
+  // `byAgent` is a partial map, so a day on which an agent did nothing has no
   // slot at all. `$sum` skips the missing path, which reads it as the zero it
   // is rather than dropping the whole document from the total. A scope with no
-  // matching days produces no group row, and that is zero too.
-  return (row?.spend ?? 0) as Micros
+  // matching days produces no rows, and that is zero too.
+  return spend as Micros
+}
+
+/**
+ * Claude usage-limit hits this month in scope. `$sum` skips null, so a day
+ * synced by an agent before 0.3.0 counts as 0.
+ */
+export async function limitHitsThisMonth(
+  store: Store,
+  orgId: OrgId,
+  userId: UserId | null,
+  date: IsoDate,
+): Promise<number> {
+  const [start, end] = monthRange(date)
+  const [row] = await store.claudeEnrichment.aggregate<{ hits: number }>([
+    { $match: { orgId, ...(userId && { userId }), date: { $gte: start, $lt: end } } },
+    { $group: { _id: null, hits: { $sum: '$limitHitCount' } } },
+  ])
+  return row?.hits ?? 0
 }

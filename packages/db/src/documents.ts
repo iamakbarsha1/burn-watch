@@ -7,6 +7,7 @@ import type {
   IsoDate,
   Micros,
   OrgId,
+  SeatKey,
   TeamId,
   TeamMemberKey,
   UserId,
@@ -112,16 +113,35 @@ export interface TeamMemberDoc {
   createdAt: Date
 }
 
+/** A paid seat for one user on one agent. Usage on a seated agent is not API spend. */
+export interface SeatDoc {
+  _id: SeatKey
+  orgId: OrgId
+  userId: UserId
+  agent: AgentName
+  monthlyPriceMicros: Micros
+  startDate: IsoDate
+  createdAt: Date
+}
+
+export type BudgetAlertType = 'api-spend' | 'idle-seat' | 'limit-hit'
+
 export interface BudgetAlertDoc {
   _id: string
   orgId: OrgId
+  type: BudgetAlertType
   /** Null means the alert covers the whole org. */
   userId: UserId | null
   /** Null means the alert covers every agent. */
   agent: AgentName | null
+  /** api-spend only; 0 on the other types. */
   monthlyLimitMicros: Micros
-  /** A ratio of the limit, not money, so it stays a plain number. */
+  /** A ratio of the limit, not money, so it stays a plain number. api-spend only. */
   threshold: number
+  /** idle-seat only. */
+  idleDays: number | null
+  /** limit-hit only: hits this month that trip the alert. */
+  limitHits: number | null
   trippedAt: Date | null
   createdAt: Date
 }
@@ -188,6 +208,8 @@ export interface ClaudeEnrichmentDoc {
   toolUsage: Record<string, number> | null
   shellUsage: Record<string, number> | null
   mcpUsage: Record<string, number> | null
+  /** Null for days synced by an agent before 0.3.0. */
+  limitHitCount: number | null
   submittedAt: Date
 }
 

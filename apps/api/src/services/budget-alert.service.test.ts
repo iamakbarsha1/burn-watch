@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { COLLECTIONS } from '@burn-watch/db'
 import type { BudgetAlertDoc, IsoDate, Micros, OrgId, UserId } from '@burn-watch/db'
 import { callsTo, fakeStore, type MongoFakeState } from '../mongo-store.fake.js'
-import { evaluateBudgetAlerts, evaluateBudgetAlert } from './budget-alert.service.js'
+import { evaluateBudgetAlerts, evaluateBudgetAlert, evaluateSeatAlerts } from './budget-alert.service.js'
 
 const ORG = 'org-1' as OrgId
 const USER = 'user-1' as UserId
@@ -11,14 +11,20 @@ const DATE = '2026-11-05' as IsoDate
 const alert = (over: Partial<BudgetAlertDoc> = {}): BudgetAlertDoc => ({
   _id: 'alert-1',
   orgId: ORG,
+  type: 'api-spend',
   userId: null,
   agent: null,
   monthlyLimitMicros: 100_000_000 as Micros,
   threshold: 1,
+  idleDays: null,
+  limitHits: null,
   trippedAt: null,
   createdAt: new Date('2026-01-01'),
   ...over,
 })
+
+/** What the per-user month aggregation answers: one user, all on claude. */
+const monthRows = (micros: number) => [{ _id: USER, total: micros, claude: micros }]
 
 /**
  * One alert per test, so an update in the recorded list unambiguously belongs
@@ -28,7 +34,7 @@ const alert = (over: Partial<BudgetAlertDoc> = {}): BudgetAlertDoc => ({
 function fake(alerts: BudgetAlertDoc[], spendMicros: number) {
   const state: MongoFakeState = {
     docs: { budgetAlerts: alerts },
-    aggregates: { dailySnapshots: [{ _id: null, spend: spendMicros }] },
+    aggregates: { dailySnapshots: monthRows(spendMicros) },
     calls: [],
     failOn: null,
     bulk: { upsertedCount: 0, matchedCount: 0 },
@@ -66,7 +72,7 @@ describe('evaluateBudgetAlerts', () => {
   it('judges the alert against its own org-s spend and its own scope', async () => {
     const state: MongoFakeState = {
       docs: { budgetAlerts: [alert({ userId: USER, agent: 'claude' })] },
-      aggregates: { dailySnapshots: [{ _id: null, spend: 0 }] },
+      aggregates: { dailySnapshots: monthRows(0) },
       calls: [],
       failOn: null,
       bulk: { upsertedCount: 0, matchedCount: 0 },
@@ -195,5 +201,103 @@ describe('evaluateBudgetAlert', () => {
     const { store, updates } = fake([], 554_220_000)
     await evaluateBudgetAlert(store, ORG, 'does-not-exist', DATE)
     expect(updates()).toHaveLength(0)
+  })
+})
+
+describe('api-spend with seats', () => {
+  it('does not count usage on a seated pair toward the limit', async () => {
+    const state: MongoFakeState = {
+      docs: { budgetAlerts: [alert()], seats: [{ _id: `${USER}:claude` }] },
+      aggregates: { dailySnapshots: monthRows(150 * USD) },
+      calls: [],
+      failOn: null,
+      bulk: { upsertedCount: 0, matchedCount: 0 },
+    }
+    await evaluateBudgetAlerts(fakeStore(state, Object.keys(COLLECTIONS)), ORG, USER, DATE)
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(0)
+  })
+})
+
+/**
+ * The fake ignores filters, so each case seeds what the real query would have
+ * matched: seats come back as seeded, and the active-pairs aggregate answers
+ * the seat keys that had tokens.
+ */
+function seatFake(over: Partial<BudgetAlertDoc>, seats: object[], active: string[]) {
+  const state: MongoFakeState = {
+    docs: { budgetAlerts: [alert({ type: 'idle-seat', idleDays: 14, ...over })], seats },
+    aggregates: { dailySnapshots: active.map((_id) => ({ _id })) },
+    calls: [],
+    failOn: null,
+    bulk: { upsertedCount: 0, matchedCount: 0 },
+  }
+  return { state, store: fakeStore(state, Object.keys(COLLECTIONS)) }
+}
+
+describe('idle-seat', () => {
+  const seat = { _id: `${USER}:claude`, orgId: ORG, userId: USER, agent: 'claude', startDate: '2026-10-01' }
+
+  it('trips when a seat had no tokens on its agent in the window', async () => {
+    const { state, store } = seatFake({}, [seat], [])
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    const [, update] = callsTo(state, 'budgetAlerts', 'updateOne')[0] as [unknown, { $set: { trippedAt: unknown } }]
+    expect(update.$set.trippedAt).toBeInstanceOf(Date)
+  })
+
+  it('stays quiet when the seat was used', async () => {
+    const { state, store } = seatFake({}, [seat], [`${USER}:claude`])
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(0)
+  })
+
+  it('ignores seats younger than idleDays, and reads a window of exactly idleDays', async () => {
+    const { state, store } = seatFake({}, [], [])
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    // 14 days ending 2026-11-05 inclusive start on 2026-10-23.
+    expect(callsTo(state, 'seats', 'find')[0][0]).toEqual({ orgId: ORG, startDate: { $lte: '2026-10-23' } })
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(0)
+  })
+
+  it('is re-checked by a seat write, along with api-spend but not limit-hit', async () => {
+    const { state, store } = seatFake({}, [seat], [])
+    await evaluateSeatAlerts(store, ORG, DATE)
+    expect(callsTo(state, 'budgetAlerts', 'find')[0][0]).toEqual({ orgId: ORG, type: { $ne: 'limit-hit' } })
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(1)
+  })
+})
+
+describe('limit-hit', () => {
+  function hitFake(hits: object[]) {
+    const state: MongoFakeState = {
+      docs: { budgetAlerts: [alert({ type: 'limit-hit', limitHits: 3 })] },
+      aggregates: { claudeEnrichment: hits },
+      calls: [],
+      failOn: null,
+      bulk: { upsertedCount: 0, matchedCount: 0 },
+    }
+    return { state, store: fakeStore(state, Object.keys(COLLECTIONS)) }
+  }
+
+  it('trips when hits this month reach limitHits', async () => {
+    const { state, store } = hitFake([{ _id: null, hits: 3 }])
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(1)
+  })
+
+  it('does not trip one under', async () => {
+    const { state, store } = hitFake([{ _id: null, hits: 2 }])
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(0)
+  })
+
+  it('sums limitHitCount with $sum, which reads a null day as 0, over this month in the org', async () => {
+    const { state, store } = hitFake([])
+    await evaluateBudgetAlerts(store, ORG, USER, DATE)
+    const [pipeline] = callsTo(state, 'claudeEnrichment', 'aggregate')[0] as [Record<string, unknown>[]]
+    expect(pipeline).toEqual([
+      { $match: { orgId: ORG, date: { $gte: '2026-11-01', $lt: '2026-12-01' } } },
+      { $group: { _id: null, hits: { $sum: '$limitHitCount' } } },
+    ])
+    expect(callsTo(state, 'budgetAlerts', 'updateOne')).toHaveLength(0)
   })
 })

@@ -261,6 +261,12 @@ describe('dashboard routes — team filter', () => {
   const withTeam = (url: string, team = TEAM_A) => `${range(url)}&teamId=${team}`
   const get = (url: string, role: JwtPayload['role']) =>
     app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  // Overview reads usage and seats, so it filters twice, both on the same ids.
+  const expectOnly = (ids: string[]) => {
+    const filters = userFilters()
+    expect(filters.length).toBeGreaterThan(0)
+    for (const f of filters) expect(f).toEqual({ $in: ids })
+  }
 
   it.each(TEAM_ROUTES)('%s narrows an admin to the team members', async (url) => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
@@ -269,7 +275,7 @@ describe('dashboard routes — team filter', () => {
     ]
     const res = await get(withTeam(url), 'admin')
     expect(res.statusCode).toBe(200)
-    expect(userFilters()).toEqual([{ $in: [USER_B] }])
+    expectOnly([USER_B])
     // The team lookup is org-scoped, so another org's team id answers 404.
     expect(callsTo(mongoState, 'teams', 'findOne')[0][0]).toEqual({ _id: TEAM_A, orgId: ORG_A })
   })
@@ -282,7 +288,7 @@ describe('dashboard routes — team filter', () => {
     ]
     const res = await get(withTeam(url), 'manager')
     expect(res.statusCode).toBe(200)
-    expect(userFilters()).toEqual([{ $in: [USER_A, USER_B] }])
+    expectOnly([USER_A, USER_B])
   })
 
   it.each(TEAM_ROUTES)('%s answers 403 to a manager filtering a team they do not manage', async (url) => {
@@ -301,7 +307,7 @@ describe('dashboard routes — team filter', () => {
     ]
     const res = await get(withTeam(url), 'developer')
     expect(res.statusCode).toBe(200)
-    expect(userFilters()).toEqual([{ $in: [USER_A] }])
+    expectOnly([USER_A])
   })
 
   it.each(TEAM_ROUTES)('%s answers 404 for a team not in the org', async (url) => {
@@ -965,9 +971,9 @@ const alertDoc = (over: Record<string, unknown> = {}) => ({
 const mongoCalls = (collection: string, op: string) =>
   mongoState.calls.filter((c) => c.collection === collection && c.op === op).map((c) => c.args)
 
-/** What the month-to-date aggregation answers with, in micros. */
+/** What the per-user month-to-date aggregation answers with, in micros: one user, all on claude. */
 const spend = (micros: number) => {
-  mongoState.aggregates.dailySnapshots = [{ _id: null, spend: micros }]
+  mongoState.aggregates.dailySnapshots = [{ _id: USER_A, total: micros, claude: micros }]
 }
 
 describe('GET /v1/dashboard/budget-alerts', () => {
@@ -1226,6 +1232,233 @@ describe('DELETE /v1/dashboard/budget-alerts/:id', () => {
     const res = await del(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ id: ALERT_A })
+  })
+})
+
+describe('seat routes', () => {
+  const one = `/v1/dashboard/seats/${USER_B}/claude`
+  const send = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, payload?: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method, url, payload, headers: auth(token({ role })) })
+  const price = { monthlyPriceUsd: 30, startDate: '2026-11-01' }
+
+  it.each(['developer', 'manager'] as const)('answers 403 to a %s on every seat route, and reads nothing', async (role) => {
+    for (const [method, url, payload] of [
+      ['GET', '/v1/dashboard/seats', undefined],
+      ['PUT', one, price],
+      ['DELETE', one, undefined],
+      ['POST', '/v1/dashboard/seats/assign-all', { ...price, agent: 'claude' }],
+    ] as const) {
+      const res = await send(method, url, payload, role)
+      expect(res.statusCode, `${method} ${url}`).toBe(403)
+    }
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('lists the org seats with the holder name and email, in dollars', async () => {
+    mongoState.docs.seats = [
+      { _id: `${USER_B}:claude`, orgId: ORG_A, userId: USER_B, agent: 'claude', monthlyPriceMicros: 30 * USD, startDate: '2026-11-01', createdAt: new Date('2026-11-01') },
+    ]
+    mongoState.docs.users = [{ _id: USER_B, name: 'Bo', email: 'bo@example.com' }]
+    const res = await send('GET', '/v1/dashboard/seats')
+    expect(res.json()).toEqual([
+      { userId: USER_B, userName: 'Bo', userEmail: 'bo@example.com', agent: 'claude', monthlyPriceUsd: 30, startDate: '2026-11-01', createdAt: '2026-11-01T00:00:00.000Z' },
+    ])
+    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A })
+    expect(mongoCalls('users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+  })
+
+  it('refuses to seat a user from another org, and writes nothing', async () => {
+    const res = await send('PUT', one, price)
+    expect(res.statusCode).toBe(400)
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_B, orgId: ORG_A })
+    expect(mongoCalls('seats', 'updateOne')).toEqual([])
+  })
+
+  it('rejects an agent outside the five', async () => {
+    const res = await send('PUT', `/v1/dashboard/seats/${USER_B}/cursor`, price)
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('upserts the seat keyed by user and agent, in micros', async () => {
+    mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A }]
+    const res = await send('PUT', one, { ...price, monthlyPriceUsd: 19.99 })
+    expect(res.statusCode).toBe(200)
+    const [[filter, update, opts]] = mongoCalls('seats', 'updateOne') as Document[][]
+    expect(filter).toEqual({ _id: `${USER_B}:claude` })
+    expect(update).toMatchObject({
+      $set: { monthlyPriceMicros: 19_990_000, startDate: '2026-11-01' },
+      $setOnInsert: { orgId: ORG_A, userId: USER_B, agent: 'claude' },
+    })
+    expect(opts).toEqual({ upsert: true })
+  })
+
+  it('re-evaluates the org alerts inside the same transaction as the seat write', async () => {
+    mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A }]
+    mongoState.docs.budgetAlerts = [alertDoc({ type: 'api-spend', monthlyLimitMicros: 10 * USD, threshold: 1 })]
+    spend(10 * USD)
+    const res = await send('PUT', one, price)
+    expect(res.statusCode).toBe(200)
+    const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+    expect(ops.indexOf('.transaction')).toBeLessThan(ops.indexOf('seats.updateOne'))
+    expect(ops.indexOf('seats.updateOne')).toBeLessThan(ops.indexOf('budgetAlerts.updateOne'))
+    expect(mongoCalls('budgetAlerts', 'find')[0][0]).toEqual({ orgId: ORG_A, type: { $ne: 'limit-hit' } })
+    const [, update] = mongoCalls('budgetAlerts', 'updateOne')[0] as [unknown, { $set: Record<string, unknown> }]
+    expect(update.$set.trippedAt).toBeInstanceOf(Date)
+  })
+
+  it('deletes only inside the caller org, and answers 404 when nothing matched', async () => {
+    const res = await send('DELETE', one)
+    expect(res.statusCode).toBe(404)
+    expect(mongoCalls('seats', 'deleteOne')[0][0]).toEqual({ _id: `${USER_B}:claude`, orgId: ORG_A })
+    expect(mongoCalls('budgetAlerts', 'find')).toEqual([])
+  })
+
+  it('assign-all seats only active users without one, never overwriting', async () => {
+    mongoState.docs.users = [{ _id: USER_A }, { _id: USER_B }]
+    mongoState.docs.seats = [{ _id: `${USER_A}:claude`, orgId: ORG_A, userId: USER_A, agent: 'claude' }]
+    const res = await send('POST', '/v1/dashboard/seats/assign-all', { ...price, agent: 'claude' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ created: 1 })
+    expect(mongoCalls('users', 'find')[0][0]).toEqual({ orgId: ORG_A, isActive: true })
+    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, agent: 'claude' })
+    const [[ops]] = mongoCalls('seats', 'bulkWrite') as Document[][][]
+    expect(ops).toHaveLength(1)
+    expect(ops[0].updateOne.filter).toEqual({ _id: `${USER_B}:claude` })
+    expect(Object.keys(ops[0].updateOne.update)).toEqual(['$setOnInsert'])
+  })
+
+  it('assign-all writes nothing when everyone already has a seat', async () => {
+    mongoState.docs.users = [{ _id: USER_A }]
+    mongoState.docs.seats = [{ _id: `${USER_A}:claude`, orgId: ORG_A, userId: USER_A, agent: 'claude' }]
+    const res = await send('POST', '/v1/dashboard/seats/assign-all', { ...price, agent: 'claude' })
+    expect(res.json()).toEqual({ created: 0 })
+    expect(mongoCalls('seats', 'bulkWrite')).toEqual([])
+  })
+})
+
+describe('actual cost', () => {
+  // $36.50/mo is $1.20 a day. DATE is one day, inside the seat.
+  const seat = (userId: string, agent: string) => ({
+    _id: `${userId}:${agent}`, orgId: ORG_A, userId, agent, monthlyPriceMicros: 36_500_000, startDate: '2026-11-01',
+  })
+
+  it('splits overview value into seat cost and unseated API spend', async () => {
+    dashboardAggregate('dailySnapshots', [
+      {
+        totals: [{ costMicros: 12 * USD, tokens: 400, activeUsers: 2 }],
+        byAgent: [],
+        pairs: [
+          { _id: { userId: USER_A, agent: 'claude' }, costMicros: 10 * USD },
+          { _id: { userId: USER_B, agent: 'codex' }, costMicros: 2 * USD },
+        ],
+      },
+    ])
+    mongoState.docs.seats = [seat(USER_A, 'claude')]
+    const body = (await app.inject({ method: 'GET', url: range('/v1/dashboard/overview'), headers: auth(token({ role: 'admin' })) })).json()
+    expect(body.valueUsd).toBe(12)
+    expect(body.actualCost).toEqual({ seatUsd: 1.2, apiUsd: 2, totalUsd: 3.2, seatCount: 1, monthlySeatUsd: 36.5 })
+    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A })
+  })
+
+  it('limits a manager overview to the seats of the people in scope', async () => {
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    await app.inject({ method: 'GET', url: range('/v1/dashboard/overview'), headers: auth(token({ role: 'manager' })) })
+    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+  })
+
+  it('gives each leaderboard row its actual cost and value multiple', async () => {
+    dashboardAggregate('dailySnapshots', [
+      {
+        users: [
+          { _id: USER_A, totalCostMicros: 12 * USD, totalTokens: 1, sessions: 1 },
+          { _id: USER_B, totalCostMicros: 0, totalTokens: 1, sessions: 1 },
+        ],
+        agents: [
+          { _id: { userId: USER_A, agent: 'claude' }, tokens: 1, costMicros: 10 * USD },
+          { _id: { userId: USER_A, agent: 'codex' }, tokens: 1, costMicros: 2 * USD },
+        ],
+        everyone: [{ ids: [USER_A, USER_B] }],
+      },
+    ])
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada', email: 'a@example.com' },
+      { _id: USER_B, name: 'Bo', email: 'b@example.com' },
+    ]
+    mongoState.docs.seats = [seat(USER_A, 'claude')]
+    const [ada, bo] = (await app.inject({ method: 'GET', url: range('/v1/dashboard/leaderboard'), headers: auth(token({ role: 'admin' })) })).json()
+    expect(ada).toMatchObject({ totalCostUsd: 12, apiSpendUsd: 2, actualCostUsd: 3.2, valueMultiple: 3.75 })
+    expect(bo).toMatchObject({ apiSpendUsd: 0, actualCostUsd: 0, valueMultiple: null })
+    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+  })
+})
+
+describe('budget alert types', () => {
+  const post = (payload: object) =>
+    app.inject({ method: 'POST', url: '/v1/dashboard/budget-alerts', payload, headers: auth(token({ role: 'admin' })) })
+
+  it.each([
+    [{ type: 'api-spend' }, 'monthlyLimitUsd'],
+    [{ type: 'idle-seat' }, 'idleDays'],
+    [{ type: 'limit-hit' }, 'limitHits'],
+  ])('refuses %o without %s', async (payload, field) => {
+    const res = await post(payload)
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toContain(field)
+    expect(mongoCalls('budgetAlerts', 'insertOne')).toEqual([])
+  })
+
+  it('rejects idleDays that is not a whole number of at least 1', async () => {
+    expect((await post({ type: 'idle-seat', idleDays: 0 })).statusCode).toBe(400)
+    expect((await post({ type: 'idle-seat', idleDays: 1.5 })).statusCode).toBe(400)
+  })
+
+  it('stores an idle-seat alert with only its own field', async () => {
+    const res = await post({ type: 'idle-seat', idleDays: 14, monthlyLimitUsd: 99, limitHits: 3 })
+    expect(res.statusCode).toBe(201)
+    const [written] = mongoCalls('budgetAlerts', 'insertOne')[0] as [Record<string, unknown>]
+    expect(written).toMatchObject({ type: 'idle-seat', idleDays: 14, limitHits: null, monthlyLimitMicros: 0 })
+  })
+
+  it('defaults a create with no type to api-spend, as older dashboards send', async () => {
+    await post({ monthlyLimitUsd: 50 })
+    const [written] = mongoCalls('budgetAlerts', 'insertOne')[0] as [Record<string, unknown>]
+    expect(written).toMatchObject({ type: 'api-spend', monthlyLimitMicros: 50 * USD, idleDays: null, limitHits: null })
+  })
+
+  it('refuses a patch that switches type without the field the new type needs', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ _id: ALERT_A })]
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/v1/dashboard/budget-alerts/${ALERT_A}`,
+      payload: { type: 'limit-hit' },
+      headers: auth(token({ role: 'admin' })),
+    })
+    expect(res.statusCode).toBe(400)
+    expect(mongoCalls('budgetAlerts', 'findOneAndUpdate')).toEqual([])
+  })
+
+  it('returns type, idleDays and the idle seats with names', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ type: 'idle-seat', idleDays: 14, limitHits: null })]
+    mongoState.docs.seats = [{ _id: `${USER_B}:claude`, orgId: ORG_A, userId: USER_B, agent: 'claude', startDate: '2026-01-01' }]
+    mongoState.docs.users = [{ _id: USER_B, name: 'Bo' }]
+    mongoState.aggregates.dailySnapshots = [] // no active pairs, and no spend
+    const [row] = (await app.inject({ method: 'GET', url: '/v1/dashboard/budget-alerts', headers: auth(token({ role: 'admin' })) })).json()
+    expect(row).toMatchObject({
+      type: 'idle-seat',
+      idleDays: 14,
+      limitHits: null,
+      idleSeats: [{ userId: USER_B, userName: 'Bo', agent: 'claude' }],
+    })
+  })
+
+  it('reports idleSeats null for an api-spend alert', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc()]
+    spend(0)
+    const [row] = (await app.inject({ method: 'GET', url: '/v1/dashboard/budget-alerts', headers: auth(token({ role: 'admin' })) })).json()
+    expect(row).toMatchObject({ type: 'api-spend', idleSeats: null })
   })
 })
 

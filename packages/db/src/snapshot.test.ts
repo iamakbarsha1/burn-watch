@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Document } from 'mongodb'
-import { dayKey, type DeviceId, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
+import { dayKey, seatKey, type DeviceId, type SeatKey, type IsoDate, type Micros, type OrgId, type UserId } from './ids.js'
 import type { DailySnapshotDoc } from './documents.js'
 import {
   buildSnapshot,
@@ -249,6 +249,14 @@ describe('upsertEnrichment', () => {
     })
   })
 
+  it('stores limitHitCount, and null when an agent before 0.3.0 sent none', async () => {
+    const { tx, writes } = fakeWriteTxn()
+    await upsertEnrichment(tx, userId, orgId, date, { ...wireEnrichment, limitHitCount: 3 })
+    await upsertEnrichment(tx, userId, orgId, date, wireEnrichment)
+    expect(writes.claudeEnrichment[0].update.$set.limitHitCount).toBe(3)
+    expect(writes.claudeEnrichment[1].update.$set.limitHitCount).toBeNull()
+  })
+
   it('writes a genuine zero rather than leaving the field alone', async () => {
     const { tx, writes } = fakeWriteTxn()
     await upsertEnrichment(tx, userId, orgId, date, {
@@ -353,18 +361,23 @@ function evaluate(docs: Document[], pipeline: Document[]): Document[] {
     }),
   )
 
+  // Grouped per user, every accumulator a `$sum` of one path.
   const { _id, ...accumulators } = second.$group as Document
-  const sum = (accumulators.spend as Document | undefined)?.$sum
-  if (_id !== null || Object.keys(accumulators).length !== 1 || typeof sum !== 'string') {
-    throw new Error(`unsupported $group: ${JSON.stringify(second.$group)}`)
+  if (_id !== '$userId') throw new Error(`unsupported $group: ${JSON.stringify(second.$group)}`)
+  const groups = new Map<unknown, Document>()
+  for (const doc of kept) {
+    const key = doc.userId
+    const group = groups.get(key) ?? { _id: key }
+    for (const [name, acc] of Object.entries(accumulators)) {
+      const path = (acc as Document).$sum
+      if (typeof path !== 'string') throw new Error(`unsupported accumulator: ${JSON.stringify(acc)}`)
+      // $sum skips every value that is not a number, and an absent path is one.
+      const value = at(path.slice(1), doc)
+      group[name] = (group[name] ?? 0) + (typeof value === 'number' ? value : 0)
+    }
+    groups.set(key, group)
   }
-  if (kept.length === 0) return []
-  // $sum skips every value that is not a number, and an absent path is one.
-  const spend = kept.reduce((total, doc) => {
-    const value = at(sum.slice(1), doc)
-    return total + (typeof value === 'number' ? value : 0)
-  }, 0)
-  return [{ _id: null, spend }]
+  return [...groups.values()]
 }
 
 const fakeStore = (docs: Document[]) =>
@@ -387,6 +400,7 @@ const snapshot = (day: string, over: Partial<DailySnapshotDoc> = {}): Document =
 })
 
 const NOV = '2026-11-20' as IsoDate
+const NONE = new Set<SeatKey>()
 
 describe('monthToDateSpend', () => {
   it('sums the whole month to date for the org', async () => {
@@ -394,7 +408,7 @@ describe('monthToDateSpend', () => {
       snapshot('2026-11-01', { totalCostMicros: 1_000_000 as Micros }),
       snapshot('2026-11-20', { totalCostMicros: 2_500_000 as Micros }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(3_500_000)
+    expect(await monthToDateSpend(store, orgId, null, null, NOV, NONE)).toBe(3_500_000)
   })
 
   it('takes the month half-open, so the first of the next month is out', async () => {
@@ -403,7 +417,7 @@ describe('monthToDateSpend', () => {
       snapshot('2026-11-01', { totalCostMicros: 1_000_000 as Micros }),
       snapshot('2026-12-01', { totalCostMicros: 9_000_000 as Micros }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(1_000_000)
+    expect(await monthToDateSpend(store, orgId, null, null, NOV, NONE)).toBe(1_000_000)
   })
 
   it('rolls the year over at December without consulting a timezone', async () => {
@@ -411,7 +425,7 @@ describe('monthToDateSpend', () => {
       snapshot('2026-12-31', { totalCostMicros: 4_000_000 as Micros }),
       snapshot('2027-01-01', { totalCostMicros: 9_000_000 as Micros }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, null, '2026-12-05' as IsoDate)).toBe(4_000_000)
+    expect(await monthToDateSpend(store, orgId, null, null, '2026-12-05' as IsoDate, NONE)).toBe(4_000_000)
   })
 
   /**
@@ -426,7 +440,7 @@ describe('monthToDateSpend', () => {
       snapshot('2026-11-03', { orgId: 'o2' as OrgId, totalCostMicros: 500_000_000 as Micros }),
       snapshot('2026-11-04', { orgId: 'o2' as OrgId, totalCostMicros: 500_000_000 as Micros }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, null, NOV)).toBe(1_000_000)
+    expect(await monthToDateSpend(store, orgId, null, null, NOV, NONE)).toBe(1_000_000)
   })
 
   it('counts only the caller org for a per-agent alert too', async () => {
@@ -437,7 +451,7 @@ describe('monthToDateSpend', () => {
         byAgent: { claude: { tokens: 1, costMicros: 900_000_000 as Micros } },
       }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(700_000)
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV, NONE)).toBe(700_000)
   })
 
   it('narrows to one user when the alert is scoped to one', async () => {
@@ -445,7 +459,7 @@ describe('monthToDateSpend', () => {
       snapshot('2026-11-02', { totalCostMicros: 1_000_000 as Micros }),
       snapshot('2026-11-03', { userId: 'u2' as UserId, totalCostMicros: 8_000_000 as Micros }),
     ])
-    expect(await monthToDateSpend(store, orgId, userId, null, NOV)).toBe(1_000_000)
+    expect(await monthToDateSpend(store, orgId, userId, null, NOV, NONE)).toBe(1_000_000)
   })
 
   it('sums one agent slot rather than the total when the alert names an agent', async () => {
@@ -455,7 +469,7 @@ describe('monthToDateSpend', () => {
         totalCostMicros: 900_000 as Micros,
       }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(700_000)
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV, NONE)).toBe(700_000)
   })
 
   /**
@@ -471,17 +485,39 @@ describe('monthToDateSpend', () => {
       snapshot('2026-11-03', { byAgent: { qwen: { tokens: 99, costMicros: 0 as Micros } } }),
       snapshot('2026-11-04', { byAgent: { claude: { tokens: 1, costMicros: 300_000 as Micros } } }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV)).toBe(1_000_000)
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV, NONE)).toBe(1_000_000)
   })
 
   it('answers zero for an agent that appears on no day in the scope', async () => {
     const store = fakeStore([
       snapshot('2026-11-02', { byAgent: { claude: { tokens: 1, costMicros: 5 as Micros } } }),
     ])
-    expect(await monthToDateSpend(store, orgId, null, 'gemini', NOV)).toBe(0)
+    expect(await monthToDateSpend(store, orgId, null, 'gemini', NOV, NONE)).toBe(0)
+  })
+
+  /** API spend only: the seat already paid for usage on a seated (user, agent) pair. */
+  it('leaves out a seated pair, from the all-agent total and from that agent alone', async () => {
+    const store = fakeStore([
+      snapshot('2026-11-02', {
+        byAgent: {
+          claude: { tokens: 1, costMicros: 700_000 as Micros },
+          codex: { tokens: 1, costMicros: 200_000 as Micros },
+        },
+        totalCostMicros: 900_000 as Micros,
+      }),
+      snapshot('2026-11-03', {
+        userId: 'u2' as UserId,
+        byAgent: { claude: { tokens: 1, costMicros: 50_000 as Micros } },
+        totalCostMicros: 50_000 as Micros,
+      }),
+    ])
+    const seated = new Set([seatKey(userId, 'claude')])
+    expect(await monthToDateSpend(store, orgId, null, null, NOV, seated)).toBe(250_000)
+    expect(await monthToDateSpend(store, orgId, null, 'claude', NOV, seated)).toBe(50_000)
+    expect(await monthToDateSpend(store, orgId, null, 'codex', NOV, seated)).toBe(200_000)
   })
 
   it('answers zero rather than undefined when the scope has no days at all', async () => {
-    expect(await monthToDateSpend(fakeStore([]), orgId, null, null, NOV)).toBe(0)
+    expect(await monthToDateSpend(fakeStore([]), orgId, null, null, NOV, NONE)).toBe(0)
   })
 })

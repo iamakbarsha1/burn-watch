@@ -210,10 +210,13 @@ describe('BudgetAlertInputSchema', () => {
 
   it('fills in an org-wide, all-agent alert from the limit alone', () => {
     expect(BudgetAlertInputSchema.parse({ monthlyLimitUsd: 500 })).toEqual({
+      type: 'api-spend',
       userId: null,
       agent: null,
       monthlyLimitUsd: 500,
       threshold: 0.8,
+      idleDays: null,
+      limitHits: null,
     })
   })
 
