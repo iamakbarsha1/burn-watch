@@ -8,6 +8,15 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.4.0 (2026-11-22)
+
+- New Governance page (admins and managers) with a free-tier usage list: who
+  used a free-tier AI tool, on which model, on how many days and with how many
+  tokens, per person and per team. Admins see the whole org, managers their own
+  teams. Each row says why it was flagged: a free-tier agent (Qwen) or a model
+  with no known price.
+- Gemini on a personal Google login is not flagged yet (BW-43). The page says so.
+
 ## web-v0.3.0 (2026-11-22)
 
 - Admin page: invite up to 200 people from a CSV (`email,role,team`). Each row
