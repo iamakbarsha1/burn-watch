@@ -137,8 +137,8 @@ One release, two parts.
 
 ### R0.4 "What BurnWatch knows about me" page · S
 
-Status: built on `feat/r0.4-transparency`, at `/privacy` ("My data" in the
-sidebar). Field list walks `RegisterDeviceSchema` and `UsagePayloadSchema`;
+Status: done, PR #16, released as web-v0.2.0. Page at `/privacy` ("My data" in
+the sidebar). Field list walks `RegisterDeviceSchema` and `UsagePayloadSchema`;
 who-can-see lives in `apps/dashboard/src/lib/transparency.ts`, and its test
 fails when a schema field has no description or no audience.
 
@@ -149,6 +149,10 @@ fails when a schema field has no description or no audience.
 - Ship after R0.3's field list is final.
 
 ### R0.5 Onboarding cleanup · S
+
+Status: built on `feat/r0.5-onboarding`, released as web-v0.3.0. CSV invite on
+the Admin page (`POST /v1/auth/admin/invites/bulk`, team joined on accept).
+BW-42 closed (already fixed). BW-21 shipped as unverified.
 
 - Bulk invite from CSV on the Admin page (email, role, team).
 - Close BW-42 (stale lockfile entry, XS).
@@ -247,11 +251,12 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R0.5 onboarding cleanup: bulk CSV invite, close BW-42, decide BW-21.
+R0 is code-complete. Before announcing it: walk the signed-in checks (`/privacy`,
+Projects remote line, R0.1 seats, CSV invite), and settle Vercel Pro (Risks).
+Then R1 quick wins, starting with B1.
 
 ```
-BurnWatch rollout R0.5: onboarding cleanup.
-Bulk invite from CSV on the Admin page (email, role, team). Close BW-42.
-Decide BW-21 Copilot: ship as "unverified" if no Copilot Business org.
-See tasks/ROLLOUT-ROADMAP.md R0.5.
+BurnWatch: R0 signed-in browser checks, then start R1.
+Walk /privacy, Projects remote line, R0.1 seats views and the CSV invite on prod.
+Then plan R1 B1. See tasks/ROLLOUT-ROADMAP.md R1.
 ```
