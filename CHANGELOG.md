@@ -8,6 +8,20 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.6.0 (2026-11-22)
+
+- Governance page: new "Agent and model policy" section. Admins set a rule
+  for each of the five agents: allowed, listed models only, or blocked.
+  Model names match exactly, and the form shows the models seen in the range.
+- Usage outside the policy is listed per person, agent and model, with the
+  reason: agent blocked, agent not set, or model not listed. Agents with no
+  rule are flagged until an admin sets one. Managers see their own teams'
+  violations and the policy, read only.
+- Admins see the number of violations in the last 30 days on the Governance
+  nav item, in a banner on Governance, and in a line on Overview.
+- New `agentPolicies` collection. Run `npm run sync -w @burn-watch/db` before
+  deploy.
+
 ## web-v0.5.0 (2026-11-22)
 
 - Governance page: new "MCP servers" section. It lists every MCP server name
