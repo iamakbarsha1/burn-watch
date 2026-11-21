@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { formatRange, formatAgo, formatCost, formatSpend, resolveRange, rangePresets, ALL_TIME_FROM } from './format'
+import {
+  formatRange,
+  formatAgo,
+  formatCost,
+  formatSpend,
+  formatMultiple,
+  formatActualCostHint,
+  resolveRange,
+  rangePresets,
+  ALL_TIME_FROM,
+} from './format'
 import type { RangeParams } from './format'
 
 describe('formatCost', () => {
@@ -198,5 +208,30 @@ describe('rangePresets', () => {
       ['Last 30 days', '30d'],
       ['All time', 'all'],
     ])
+  })
+})
+
+describe('formatMultiple', () => {
+  it('shows one decimal and a times sign', () => {
+    expect(formatMultiple(4.25)).toBe('4.3×')
+    expect(formatMultiple(1)).toBe('1.0×')
+  })
+
+  it('shows a dash when there is no actual cost', () => {
+    expect(formatMultiple(null)).toBe('—')
+  })
+})
+
+describe('formatActualCostHint', () => {
+  it('names the seat count, the monthly seat total and the API part', () => {
+    expect(formatActualCostHint(12, 360, 4.1)).toBe('12 seats · $360.00/mo + $4.10 API')
+  })
+
+  it('uses the singular for one seat', () => {
+    expect(formatActualCostHint(1, 200, 0)).toBe('1 seat · $200.00/mo + $0.00 API')
+  })
+
+  it('says there are no seats rather than $0.00/mo', () => {
+    expect(formatActualCostHint(0, 0, 12.5)).toBe('No seats · $12.50 API')
   })
 })

@@ -24,7 +24,7 @@ export default async function ProjectsPage({
     <div>
       <PageHeader
         title="Project Breakdown"
-        subtitle={`${formatRange(from, to)} · AI spend by internal project`}
+        subtitle={`${formatRange(from, to)} · API-equivalent value by internal project`}
       />
 
       <TableFrame>
@@ -32,7 +32,7 @@ export default async function ProjectsPage({
           <thead className="bg-surface-2">
             <tr>
               <Th>Project</Th>
-              <Th numeric>Total cost</Th>
+              <Th numeric>Total value</Th>
               <Th numeric>Sessions</Th>
               <Th numeric>Avg / session</Th>
               <Th numeric>Users</Th>

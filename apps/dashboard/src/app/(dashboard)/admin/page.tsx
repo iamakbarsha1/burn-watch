@@ -7,12 +7,14 @@ import {
   fetchBudgetAlerts,
   fetchCopilotStatus,
   fetchTeams,
+  fetchSeats,
 } from '@/lib/api'
-import { formatCost, formatTokens, formatAgo } from '@/lib/format'
+import { formatCost, formatTokens, formatAgo, today } from '@/lib/format'
 import { InviteForm } from './InviteForm'
 import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
 import { CopilotPanel } from './CopilotPanel'
 import { CreateTeamForm, TeamsList } from './TeamsPanel'
+import { AddSeatForm, AssignAllSeatsForm, SeatsTable } from './SeatsPanel'
 import {
   PageHeader,
   StatTile,
@@ -37,13 +39,15 @@ export default async function AdminPage() {
   // Null rather than [] for the status: there is no empty Copilot status, and
   // the panel renders "could not read" rather than quietly claiming the
   // integration is unconfigured when the API is the thing that is down.
-  const [users, invites, budgetAlerts, copilotStatus, teams] = await Promise.all([
+  const [users, invites, budgetAlerts, copilotStatus, teams, seats] = await Promise.all([
     fetchAdminUsers().catch(() => []),
     fetchPendingInvites().catch(() => []),
     fetchBudgetAlerts().catch(() => []),
     fetchCopilotStatus().catch(() => null),
     fetchTeams().catch(() => []),
+    fetchSeats().catch(() => []),
   ])
+  const firstOfMonth = `${today().slice(0, 8)}01`
 
   const onboarded = users.filter((u) => u.deviceCount > 0).length
   const totalSpend = users.reduce((sum, u) => sum + u.totalCostUsd, 0)
@@ -71,7 +75,7 @@ export default async function AdminPage() {
             hint={onboarded < users.length ? `${users.length - onboarded} still to set up` : 'everyone reporting'}
           />
           <StatTile label="Open invites" value={String(openInvites.length)} />
-          <StatTile label="All-time spend" value={formatCost(totalSpend)} />
+          <StatTile label="All-time value" value={formatCost(totalSpend)} />
         </div>
 
         <section>
@@ -100,7 +104,7 @@ export default async function AdminPage() {
                   <Th>Last sync</Th>
                   <Th numeric>Days</Th>
                   <Th numeric>Tokens</Th>
-                  <Th numeric>Spend</Th>
+                  <Th numeric>Value</Th>
                 </tr>
               </thead>
               <tbody>
@@ -212,8 +216,24 @@ export default async function AdminPage() {
         </Section>
 
         <Section
+          title={`Seats (${seats.length})`}
+          description="Paid plans per person and agent, such as Claude Max or Copilot Business. Seat prices make up the actual cost on Overview and Users. Usage on an agent without a seat counts as API spend."
+        >
+          <div className="space-y-4">
+            <AddSeatForm users={users} defaultStart={firstOfMonth} />
+            <SeatsTable seats={seats} />
+            <div>
+              <p className="mb-2 text-xs text-ink-2">
+                Give every active person a seat on one agent. People who already have one keep their price.
+              </p>
+              <AssignAllSeatsForm defaultStart={firstOfMonth} />
+            </div>
+          </div>
+        </Section>
+
+        <Section
           title="Budget alerts"
-          description="Spend thresholds per developer or the whole org, per agent or across all of them. Tripping one shows the banner above; it clears itself once the month turns over or the limit is raised past current spend."
+          description="API spend: usage on agents a person has no seat for, against a monthly limit. Idle seat: a paid seat with no usage for a number of days. Limit hits: Claude usage limits hit this month. Tripping one shows the banner above; it clears itself once the month turns over or the condition no longer holds."
         >
           <div className="space-y-4">
             <CreateBudgetAlertForm users={users} />
@@ -223,7 +243,7 @@ export default async function AdminPage() {
 
         <Section
           title="GitHub Copilot integration"
-          description="Connect a GitHub organization to pull its Copilot seat and usage figures. Copilot spend stays at zero until one is connected. Business and Enterprise plans only."
+          description="Connect a GitHub organization to pull its Copilot seat and usage figures. Copilot usage stays at zero until one is connected. Business and Enterprise plans only."
         >
           <CopilotPanel status={copilotStatus} />
         </Section>

@@ -15,6 +15,10 @@ const {
   disconnectCopilot,
   syncCopilot,
   fetchCopilotSeats,
+  fetchSeats,
+  setSeat,
+  removeSeat,
+  assignSeatToAll,
 } = await import('./api.js')
 
 function captureFetch(status = 200) {
@@ -233,3 +237,40 @@ function syncBody(over: Record<string, unknown> = {}) {
     ...over,
   }
 }
+
+describe('seats client', () => {
+  const USER = '22222222-2222-4222-8222-222222222222'
+
+  it('reads the seat list off the dashboard prefix', async () => {
+    const calls = stubFetch({ body: [] })
+    await fetchSeats()
+    expect(calls[0].url).toBe('http://localhost:3001/v1/dashboard/seats')
+  })
+
+  it('puts one seat by user and agent', async () => {
+    const calls = stubFetch({ body: { userId: USER, agent: 'claude' } })
+    await setSeat(USER, 'claude', { monthlyPriceUsd: 200, startDate: '2026-11-01' })
+
+    expect(calls[0].init?.method).toBe('PUT')
+    expect(calls[0].url).toBe(`http://localhost:3001/v1/dashboard/seats/${USER}/claude`)
+    expect(body(calls[0].init)).toEqual({ monthlyPriceUsd: 200, startDate: '2026-11-01' })
+  })
+
+  it('deletes one seat with no body', async () => {
+    const calls = stubFetch({ body: { userId: USER, agent: 'copilot' } })
+    await removeSeat(USER, 'copilot')
+
+    expect(calls[0].init?.method).toBe('DELETE')
+    expect(calls[0].url).toBe(`http://localhost:3001/v1/dashboard/seats/${USER}/copilot`)
+    expect(calls[0].init?.body).toBeUndefined()
+  })
+
+  it('posts assign-all and returns the created count', async () => {
+    const calls = stubFetch({ body: { created: 4 } })
+    const res = await assignSeatToAll({ agent: 'claude', monthlyPriceUsd: 30, startDate: '2026-11-01' })
+
+    expect(calls[0].init?.method).toBe('POST')
+    expect(calls[0].url).toBe('http://localhost:3001/v1/dashboard/seats/assign-all')
+    expect(res.created).toBe(4)
+  })
+})

@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { fetchLeaderboard } from '@/lib/api'
-import { formatCost, formatTokens, formatRange, resolveRange, formatCount } from '@/lib/format'
+import { formatCost, formatTokens, formatRange, resolveRange, formatCount, formatMultiple } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
 import { agentById } from '@/lib/agents'
@@ -26,7 +26,7 @@ export default async function LeaderboardPage({
     <div>
       <PageHeader
         title="Developer Leaderboard"
-        subtitle={`${formatRange(from, to)} · ranked by AI spend`}
+        subtitle={`${formatRange(from, to)} · ranked by API-equivalent value`}
       />
 
       <TableFrame>
@@ -50,14 +50,16 @@ export default async function LeaderboardPage({
                   <SeriesDot color={COPILOT.color} /> Copilot
                 </span>
               </Th>
-              <Th numeric>Total</Th>
+              <Th numeric>Value</Th>
+              <Th numeric>Actual cost</Th>
+              <Th numeric>Multiple</Th>
               <Th numeric>Sessions</Th>
               <Th numeric>Cache hit</Th>
             </tr>
           </thead>
           <tbody>
             {users.length === 0 && (
-              <EmptyRow colSpan={8}>No data for this range</EmptyRow>
+              <EmptyRow colSpan={10}>No data for this range</EmptyRow>
             )}
             {users.map((u, i) => (
               <Tr key={u.userId}>
@@ -80,6 +82,15 @@ export default async function LeaderboardPage({
                 <Td numeric className="font-semibold text-ink">
                   {formatCost(u.totalCostUsd)}
                   <div className="text-xs font-normal text-ink-3">{formatTokens(u.totalTokens)} tokens</div>
+                </Td>
+                <Td numeric className="text-ink">
+                  {formatCost(u.actualCostUsd)}
+                  {u.apiSpendUsd > 0 && (
+                    <div className="text-xs text-ink-3">{formatCost(u.apiSpendUsd)} API</div>
+                  )}
+                </Td>
+                <Td numeric className="text-ink-2">
+                  {formatMultiple(u.valueMultiple)}
                 </Td>
                 <Td numeric className="text-ink-2">
                   {formatCount(u.sessions)}

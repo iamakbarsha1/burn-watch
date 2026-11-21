@@ -1,5 +1,8 @@
 import {
+  idleSeats,
+  limitHitsThisMonth,
   monthToDateSpend,
+  seatedKeys,
   type BudgetAlertDoc,
   type IsoDate,
   type OrgId,
@@ -58,7 +61,34 @@ export async function evaluateBudgetAlert(
 }
 
 /**
- * The boundary is inclusive, spend >= trip point, never `>`: a $100 limit at
+ * Re-evaluates the org's api-spend and idle-seat alerts after a seat write,
+ * because a seat changes which usage counts as API spend and which seat is
+ * idle. `$ne` rather than `$in` so an alert the 0002 migration has not reached
+ * yet (no `type`, so api-spend) is still checked.
+ */
+export async function evaluateSeatAlerts(store: Store, orgId: OrgId, date: IsoDate): Promise<void> {
+  const alerts = await store.budgetAlerts.find({ orgId, type: { $ne: 'limit-hit' } })
+  for (const alert of alerts) {
+    await applyTrip(store, alert, date)
+  }
+}
+
+/** Whether an alert's condition holds today. A missing type is api-spend. */
+async function shouldTrip(store: Store, alert: BudgetAlertDoc, date: IsoDate): Promise<boolean> {
+  if (alert.type === 'idle-seat') {
+    const idle = await idleSeats(store, alert.orgId, alert.userId, alert.agent, alert.idleDays ?? 1, date)
+    return idle.length > 0
+  }
+  if (alert.type === 'limit-hit') {
+    return (await limitHitsThisMonth(store, alert.orgId, alert.userId, date)) >= (alert.limitHits ?? 1)
+  }
+  const seated = await seatedKeys(store, alert.orgId)
+  const spend = await monthToDateSpend(store, alert.orgId, alert.userId, alert.agent, date, seated)
+  return spend >= Math.round(alert.monthlyLimitMicros * alert.threshold)
+}
+
+/**
+ * The api-spend boundary is inclusive, spend >= trip point, never `>`: a $100 limit at
  * its default 80% threshold trips the moment spend reaches $80, not after it.
  *
  * Both sides of that comparison are whole micros. `monthlyLimitMicros` is an
@@ -75,14 +105,12 @@ export async function evaluateBudgetAlert(
  */
 async function applyTrip(store: Store, alert: BudgetAlertDoc, date: IsoDate): Promise<void> {
   const monthKey = date.slice(0, 7)
-  const spend = await monthToDateSpend(store, alert.orgId, alert.userId, alert.agent, date)
-  const tripPoint = Math.round(alert.monthlyLimitMicros * alert.threshold)
-  const shouldTrip = spend >= tripPoint
+  const trip = await shouldTrip(store, alert, date)
   const trippedMonth = alert.trippedAt ? isoMonth(alert.trippedAt) : null
 
-  if (shouldTrip && trippedMonth !== monthKey) {
+  if (trip && trippedMonth !== monthKey) {
     await store.budgetAlerts.updateOne({ _id: alert._id }, { $set: { trippedAt: new Date() } })
-  } else if (!shouldTrip && trippedMonth === monthKey) {
+  } else if (!trip && trippedMonth === monthKey) {
     await store.budgetAlerts.updateOne({ _id: alert._id }, { $set: { trippedAt: null } })
   }
 }

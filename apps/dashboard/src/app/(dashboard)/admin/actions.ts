@@ -15,6 +15,9 @@ import {
   deleteTeam,
   setTeamMember,
   removeTeamMember,
+  setSeat,
+  removeSeat,
+  assignSeatToAll,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
 import type { AgentName, CopilotSeatsResponse, CopilotSyncResult } from '@burn-watch/shared'
@@ -74,30 +77,54 @@ function isAgentName(value: string): value is AgentName {
   return (AGENTS as string[]).includes(value)
 }
 
+const ALERT_TYPES = ['api-spend', 'idle-seat', 'limit-hit'] as const
+type AlertType = (typeof ALERT_TYPES)[number]
+
+function wholeNumber(formData: FormData, name: string, min: number, max: number, message: string): number {
+  const n = Number(formData.get(name))
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(message)
+  return n
+}
+
 /**
  * Shared by create and update: a threshold typed as a whole percent (the UI
  * never shows a bare fraction) parsed down to what the API stores, and the
  * optional scoping fields collapsed from "" to null rather than left as an
- * empty string the API would reject.
+ * empty string the API would reject. Only the fields of the chosen type are
+ * sent; the API stores the others as null.
  */
 function parseBudgetAlertForm(formData: FormData) {
-  const monthlyLimitUsd = Number(formData.get('monthlyLimitUsd'))
-  const thresholdPct = Number(formData.get('thresholdPct'))
+  const rawType = String(formData.get('type') ?? '').trim() || 'api-spend'
   const userId = String(formData.get('userId') ?? '').trim() || null
   const rawAgent = String(formData.get('agent') ?? '').trim()
 
+  if (!(ALERT_TYPES as readonly string[]).includes(rawType)) {
+    throw new Error('Unknown alert type')
+  }
+  const type = rawType as AlertType
+  if (rawAgent && !isAgentName(rawAgent)) {
+    throw new Error('Unknown agent')
+  }
+  const agent: AgentName | null = rawAgent && isAgentName(rawAgent) ? rawAgent : null
+
+  if (type === 'idle-seat') {
+    const idleDays = wholeNumber(formData, 'idleDays', 1, 365, 'Enter idle days between 1 and 365')
+    return { type, idleDays, userId, agent }
+  }
+  if (type === 'limit-hit') {
+    const limitHits = wholeNumber(formData, 'limitHits', 1, 100000, 'Enter limit hits of 1 or more')
+    return { type, limitHits, userId, agent }
+  }
+
+  const monthlyLimitUsd = Number(formData.get('monthlyLimitUsd'))
+  const thresholdPct = Number(formData.get('thresholdPct'))
   if (!Number.isFinite(monthlyLimitUsd) || monthlyLimitUsd <= 0) {
     throw new Error('Enter a monthly limit greater than 0')
   }
   if (!Number.isFinite(thresholdPct) || thresholdPct <= 0 || thresholdPct > 100) {
     throw new Error('Enter a threshold between 1 and 100')
   }
-  if (rawAgent && !isAgentName(rawAgent)) {
-    throw new Error('Unknown agent')
-  }
-  const agent: AgentName | null = rawAgent && isAgentName(rawAgent) ? rawAgent : null
-
-  return { monthlyLimitUsd, threshold: thresholdPct / 100, userId, agent }
+  return { type, monthlyLimitUsd, threshold: thresholdPct / 100, userId, agent }
 }
 
 export async function createBudgetAlertAction(
@@ -132,8 +159,7 @@ export async function updateBudgetAlertAction(
   }
 
   try {
-    const { userId, agent, ...patch } = parseBudgetAlertForm(formData)
-    await updateBudgetAlert(id, { ...patch, userId, agent })
+    await updateBudgetAlert(id, parseBudgetAlertForm(formData))
     revalidatePath('/admin')
     return { ok: true, message: 'Budget alert updated.' }
   } catch (err) {
@@ -310,11 +336,11 @@ const failed = (err: unknown, fallback: string): TeamActionState => ({
 })
 
 /**
- * Every team write goes through here: admin gate, then the call, then a
- * revalidate of every page that shows teams. The API also refuses non-admins;
- * this gate only saves the round trip and gives a sentence back.
+ * Every team and seat write goes through here: admin gate, then the call, then
+ * a revalidate of every page that shows teams or seat cost. The API also
+ * refuses non-admins; this gate only saves the round trip and gives a sentence back.
  */
-async function teamWrite(
+async function adminWrite(
   run: () => Promise<unknown>,
   success: string,
   fallback: string,
@@ -324,7 +350,7 @@ async function teamWrite(
   }
   try {
     await run()
-    // The filter and comparison on Overview and Trends read the team list too.
+    // Overview and Trends read the team list and the seat cost too.
     revalidatePath('/', 'layout')
     return { ok: true, message: success }
   } catch (err) {
@@ -340,7 +366,7 @@ export async function createTeamAction(
 ): Promise<TeamActionState> {
   const name = field(formData, 'name')
   if (!name) return { ok: false, message: 'Enter a team name' }
-  return teamWrite(() => createTeam(name), `Team ${name} created.`, 'Failed to create team')
+  return adminWrite(() => createTeam(name), `Team ${name} created.`, 'Failed to create team')
 }
 
 export async function renameTeamAction(
@@ -351,7 +377,7 @@ export async function renameTeamAction(
   const name = field(formData, 'name')
   if (!id) return { ok: false, message: 'No team selected' }
   if (!name) return { ok: false, message: 'Enter a team name' }
-  return teamWrite(() => renameTeam(id, name), 'Team renamed.', 'Failed to rename team')
+  return adminWrite(() => renameTeam(id, name), 'Team renamed.', 'Failed to rename team')
 }
 
 export async function deleteTeamAction(
@@ -360,7 +386,7 @@ export async function deleteTeamAction(
 ): Promise<TeamActionState> {
   const id = field(formData, 'teamId')
   if (!id) return { ok: false, message: 'No team selected' }
-  return teamWrite(() => deleteTeam(id), 'Team deleted.', 'Failed to delete team')
+  return adminWrite(() => deleteTeam(id), 'Team deleted.', 'Failed to delete team')
 }
 
 /** Add a member, or change an existing member's role. Same API call for both. */
@@ -374,7 +400,7 @@ export async function setTeamMemberAction(
   if (!teamId) return { ok: false, message: 'No team selected' }
   if (!userId) return { ok: false, message: 'Pick a person' }
   if (role !== 'manager' && role !== 'member') return { ok: false, message: 'Unknown team role' }
-  return teamWrite(() => setTeamMember(teamId, userId, role), 'Member saved.', 'Failed to save member')
+  return adminWrite(() => setTeamMember(teamId, userId, role), 'Member saved.', 'Failed to save member')
 }
 
 export async function removeTeamMemberAction(
@@ -384,5 +410,72 @@ export async function removeTeamMemberAction(
   const teamId = field(formData, 'teamId')
   const userId = field(formData, 'userId')
   if (!teamId || !userId) return { ok: false, message: 'No member selected' }
-  return teamWrite(() => removeTeamMember(teamId, userId), 'Member removed.', 'Failed to remove member')
+  return adminWrite(() => removeTeamMember(teamId, userId), 'Member removed.', 'Failed to remove member')
+}
+
+/* ---------- Seats (R0.1) ---------- */
+
+export type SeatActionState = TeamActionState
+
+/** Agent, price and start date: what one seat and "assign to everyone" both need. */
+function parseSeatForm(formData: FormData) {
+  const agent = field(formData, 'agent')
+  const rawPrice = field(formData, 'monthlyPriceUsd')
+  const monthlyPriceUsd = Number(rawPrice)
+  const startDate = field(formData, 'startDate')
+  if (!isAgentName(agent)) throw new Error('Pick an agent')
+  if (!rawPrice || !Number.isFinite(monthlyPriceUsd) || monthlyPriceUsd < 0 || monthlyPriceUsd > 99999.99) {
+    throw new Error('Enter a monthly price between 0 and 99,999.99')
+  }
+  if (!DAY.test(startDate)) throw new Error('Enter a start date as YYYY-MM-DD')
+  return { agent, monthlyPriceUsd, startDate }
+}
+
+/** Add a seat, or change the price and start date of an existing one. Same API call for both. */
+export async function setSeatAction(_prev: SeatActionState | null, formData: FormData): Promise<SeatActionState> {
+  const userId = field(formData, 'userId')
+  if (!userId) return { ok: false, message: 'Pick a person' }
+  let seat: ReturnType<typeof parseSeatForm>
+  try {
+    seat = parseSeatForm(formData)
+  } catch (err) {
+    return failed(err, 'Invalid seat')
+  }
+  const { agent, ...input } = seat
+  return adminWrite(() => setSeat(userId, agent, input), 'Seat saved.', 'Failed to save seat')
+}
+
+export async function removeSeatAction(_prev: SeatActionState | null, formData: FormData): Promise<SeatActionState> {
+  const userId = field(formData, 'userId')
+  const agent = field(formData, 'agent')
+  if (!userId || !isAgentName(agent)) return { ok: false, message: 'No seat selected' }
+  return adminWrite(() => removeSeat(userId, agent), 'Seat removed.', 'Failed to remove seat')
+}
+
+export async function assignSeatToAllAction(
+  _prev: SeatActionState | null,
+  formData: FormData,
+): Promise<SeatActionState> {
+  let input: ReturnType<typeof parseSeatForm>
+  try {
+    input = parseSeatForm(formData)
+  } catch (err) {
+    return failed(err, 'Invalid seat')
+  }
+  let created = 0
+  const state = await adminWrite(
+    async () => {
+      created = (await assignSeatToAll(input)).created
+    },
+    '',
+    'Failed to assign seats',
+  )
+  if (!state.ok) return state
+  return {
+    ok: true,
+    message:
+      created === 0
+        ? `Everyone already has a ${input.agent} seat. Nothing changed.`
+        : `Added ${created} ${input.agent} seat${created === 1 ? '' : 's'}. Existing seats were left as they were.`,
+  }
 }

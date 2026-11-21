@@ -1,8 +1,17 @@
 import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
-import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
+import {
+  getStore,
+  seatCost,
+  seatKey,
+  usdFromMicros,
+  type IsoDate,
+  type Micros,
+  type OrgId,
+  type UserId,
+} from '@burn-watch/db'
 import type { OverviewResponse, AgentSummary, AgentName } from '@burn-watch/shared'
-import { dayBefore } from './dates.js'
+import { dayBefore, today } from './dates.js'
 import { z } from 'zod'
 import { dateQueryShape, scopeError, teamIdField } from './query-schema.js'
 import { readScope } from '../../plugins/jwt.js'
@@ -42,9 +51,16 @@ interface AgentRow {
   costMicros: Micros
 }
 
+/** One (user, agent) pair's value over the range, to split seated from API spend. */
+interface PairRow {
+  _id: { userId: UserId; agent: string }
+  costMicros: Micros
+}
+
 interface OverviewFacet {
   totals: Totals[]
   byAgent: AgentRow[]
+  pairs: PairRow[]
   /** Absent unless the request asked for a single day. */
   previous?: Totals[]
 }
@@ -93,14 +109,18 @@ export function overviewPipeline(
     { $project: { _id: 0, costMicros: 1, tokens: 1, activeUsers: { $size: '$users' } } },
   ]
 
+  // `$ifNull` so a snapshot written before any agent reported still
+  // contributes its row rather than erroring the stage.
+  const entries = (lo: IsoDate, hi: IsoDate): Document[] => [
+    span(lo, hi),
+    { $project: { userId: 1, entries: { $objectToArray: { $ifNull: ['$byAgent', {}] } } } },
+    { $unwind: '$entries' },
+  ]
+
   const facet: Document = {
     totals: totals(from, to),
     byAgent: [
-      span(from, to),
-      // `$ifNull` so a snapshot written before any agent reported still
-      // contributes its row rather than erroring the stage.
-      { $project: { entries: { $objectToArray: { $ifNull: ['$byAgent', {}] } } } },
-      { $unwind: '$entries' },
+      ...entries(from, to),
       {
         $group: {
           _id: '$entries.k',
@@ -108,6 +128,10 @@ export function overviewPipeline(
           costMicros: { $sum: '$entries.v.costMicros' },
         },
       },
+    ],
+    pairs: [
+      ...entries(from, to),
+      { $group: { _id: { userId: '$userId', agent: '$entries.k' }, costMicros: { $sum: '$entries.v.costMicros' } } },
     ],
   }
   if (previous) facet.previous = totals(previous, previous)
@@ -134,9 +158,12 @@ export async function overviewRoutes(fastify: FastifyInstance) {
     const scope = await readScope(request.user, parsed.data.teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
 
-    const [facet] = await getStore().dailySnapshots.aggregate<OverviewFacet>(
+    const store = getStore()
+    const [facet] = await store.dailySnapshots.aggregate<OverviewFacet>(
       overviewPipeline(orgId, fromDate, toDate, previous, scope),
     )
+    // Same scope as the usage: a manager pays for the seats of the people they see.
+    const seats = await store.seats.find({ orgId, ...(scope && { userId: { $in: scope } }) })
 
     const current = facet?.totals[0] ?? EMPTY
     const todayCost = usdFromMicros(current.costMicros)
@@ -164,6 +191,19 @@ export async function overviewRoutes(fastify: FastifyInstance) {
       return { agent, tokens: row?.tokens ?? 0, costUsd, isFreeTier: costUsd === 0 }
     })
 
+    const now = today()
+    const seated = new Set(seats.map((seat) => seat._id))
+    let seatMicros = 0
+    let monthlyMicros = 0
+    for (const seat of seats) {
+      seatMicros += seatCost(seat, fromDate, toDate, now)
+      monthlyMicros += seat.monthlyPriceMicros
+    }
+    let apiMicros = 0
+    for (const pair of facet?.pairs ?? []) {
+      if (!seated.has(seatKey(pair._id.userId, pair._id.agent))) apiMicros += pair.costMicros
+    }
+
     const result: OverviewResponse = {
       date: isRange ? `${fromDate} — ${toDate}` : fromDate,
       totalCostUsd: todayCost,
@@ -171,6 +211,14 @@ export async function overviewRoutes(fastify: FastifyInstance) {
       activeUsers: current.activeUsers,
       vsYesterday: vsYesterday ?? { costDelta: 0, costPct: 0, tokensDelta: 0 },
       byAgent,
+      valueUsd: todayCost,
+      actualCost: {
+        seatUsd: usdFromMicros(seatMicros as Micros),
+        apiUsd: usdFromMicros(apiMicros as Micros),
+        totalUsd: usdFromMicros((seatMicros + apiMicros) as Micros),
+        seatCount: seats.length,
+        monthlySeatUsd: usdFromMicros(monthlyMicros as Micros),
+      },
     }
 
     return result

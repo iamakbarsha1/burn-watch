@@ -78,6 +78,7 @@ export interface ClaudeEnrichment {
   toolUsage: Record<string, number>   // {bash: 501, read: 201, edit: 168, ...}
   shellUsage: Record<string, number>  // {git: 238, npx: 57, grep: 57, ...}
   mcpUsage: Record<string, number>    // {playwright: 33, neon: 14, ...}
+  limitHitCount?: number              // Claude usage-limit notices that day; agent 0.3.0+
 }
 
 // Payload sent by agent to POST /v1/usage
@@ -147,6 +148,30 @@ export interface OverviewResponse {
     tokensDelta: number
   }
   byAgent: AgentSummary[]
+  /** API-list-price value of the usage. Same number as totalCostUsd, which stays one release. */
+  valueUsd: number
+  /** What the org paid: prorated seat cost plus usage on unseated agents. */
+  actualCost: {
+    seatUsd: number
+    apiUsd: number
+    totalUsd: number
+    /** Seat rows in scope; Claude + Copilot for one person is two. */
+    seatCount: number
+    /** Sum of the monthly prices of those seats. */
+    monthlySeatUsd: number
+  }
+}
+
+// GET /v1/dashboard/seats (admin only).
+export interface Seat {
+  userId: string
+  /** Null when the user row is gone, so the seat can still be removed. */
+  userName: string | null
+  userEmail: string | null
+  agent: AgentName
+  monthlyPriceUsd: number
+  startDate: string
+  createdAt: string
 }
 
 // GET /v1/dashboard/teams. Teams the viewer can pick in the team filter:
@@ -192,6 +217,12 @@ export interface LeaderboardEntry {
   totalTokens: number
   sessions: number
   cacheHitRate: number | null
+  /** Prorated seat cost over the range plus apiSpendUsd. */
+  actualCostUsd: number
+  /** Value of usage on agents this person has no seat for. */
+  apiSpendUsd: number
+  /** totalCostUsd ÷ actualCostUsd; null when actual cost is 0. */
+  valueMultiple: number | null
 }
 
 // One row of the admin team view. Unlike LeaderboardEntry this covers every
@@ -284,6 +315,7 @@ export interface OrgProjectSummary {
 // table can show the figure climbing between trips.
 export interface BudgetAlert {
   id: string
+  type: 'api-spend' | 'idle-seat' | 'limit-hit'
   userId: string | null
   userName: string | null
   agent: AgentName | null
@@ -292,7 +324,12 @@ export interface BudgetAlert {
   createdAt: string
   trippedAt: string | null
   tripped: boolean
+  /** API spend only: usage on seated (user, agent) pairs is left out. */
   monthToDateSpendUsd: number
+  idleDays: number | null
+  limitHits: number | null
+  /** idle-seat only; null for the other types. */
+  idleSeats: { userId: string; userName: string | null; agent: AgentName }[] | null
 }
 
 // GET /v1/integrations/copilot/status.

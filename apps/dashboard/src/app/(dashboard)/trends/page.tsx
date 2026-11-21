@@ -35,7 +35,7 @@ export default async function TrendsPage({
     <div>
       <PageHeader
         title="Burn Trends"
-        subtitle={`${formatRange(from, to)} · daily spend by agent${team ? ` · team ${team.name}` : ''}`}
+        subtitle={`${formatRange(from, to)} · daily value by agent${team ? ` · team ${team.name}` : ''}`}
       />
 
       {teams.length > 0 && (
@@ -59,7 +59,7 @@ export default async function TrendsPage({
 
           {comparison.length > 0 && (
             <section>
-              <h2 className="text-sm font-semibold tracking-tight text-ink">Daily spend by team</h2>
+              <h2 className="text-sm font-semibold tracking-tight text-ink">Daily value by team</h2>
               <p className="mt-1 mb-3 text-sm text-ink-2">
                 Someone in two teams counts in both lines.
               </p>

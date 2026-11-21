@@ -15,20 +15,28 @@ const renameTeam = vi.fn()
 const deleteTeam = vi.fn()
 const setTeamMember = vi.fn()
 const removeTeamMember = vi.fn()
+const createBudgetAlert = vi.fn()
+const updateBudgetAlert = vi.fn()
+const setSeat = vi.fn()
+const removeSeat = vi.fn()
+const assignSeatToAll = vi.fn()
 vi.mock('@/lib/api', () => ({
   connectCopilot,
   disconnectCopilot,
   syncCopilot,
   // Imported by the module under test, never reached by these tests.
   createInvite: vi.fn(),
-  createBudgetAlert: vi.fn(),
-  updateBudgetAlert: vi.fn(),
+  createBudgetAlert,
+  updateBudgetAlert,
   deleteBudgetAlert: vi.fn(),
   createTeam,
   renameTeam,
   deleteTeam,
   setTeamMember,
   removeTeamMember,
+  setSeat,
+  removeSeat,
+  assignSeatToAll,
 }))
 
 const {
@@ -40,6 +48,11 @@ const {
   deleteTeamAction,
   setTeamMemberAction,
   removeTeamMemberAction,
+  createBudgetAlertAction,
+  updateBudgetAlertAction,
+  setSeatAction,
+  removeSeatAction,
+  assignSeatToAllAction,
 } = await import('./actions.js')
 
 function form(fields: Record<string, string> = {}): FormData {
@@ -280,5 +293,129 @@ describe('team actions', () => {
     createTeam.mockRejectedValueOnce(new Error('A team with this name already exists'))
     const state = await createTeamAction(null, form({ name: 'Platform' }))
     expect(state).toMatchObject({ ok: false, message: 'A team with this name already exists' })
+  })
+})
+
+describe('budget alert types', () => {
+  it('sends limit and threshold for api-spend, and defaults to it when no type is given', async () => {
+    const state = await createBudgetAlertAction(null, form({ monthlyLimitUsd: '100', thresholdPct: '80' }))
+    expect(state.ok).toBe(true)
+    expect(createBudgetAlert).toHaveBeenCalledWith({
+      type: 'api-spend',
+      monthlyLimitUsd: 100,
+      threshold: 0.8,
+      userId: null,
+      agent: null,
+    })
+  })
+
+  it('sends only idle days for idle-seat, ignoring a stray limit', async () => {
+    await createBudgetAlertAction(
+      null,
+      form({ type: 'idle-seat', idleDays: '14', monthlyLimitUsd: '100', agent: 'claude' }),
+    )
+    expect(createBudgetAlert).toHaveBeenCalledWith({ type: 'idle-seat', idleDays: 14, userId: null, agent: 'claude' })
+  })
+
+  it('sends only limit hits for limit-hit', async () => {
+    await createBudgetAlertAction(null, form({ type: 'limit-hit', limitHits: '3' }))
+    expect(createBudgetAlert).toHaveBeenCalledWith({ type: 'limit-hit', limitHits: 3, userId: null, agent: null })
+  })
+
+  it('refuses idle days that are not a whole number in range', async () => {
+    for (const idleDays of ['0', '2.5', '366', '']) {
+      const state = await createBudgetAlertAction(null, form({ type: 'idle-seat', idleDays }))
+      expect(state).toMatchObject({ ok: false, message: 'Enter idle days between 1 and 365' })
+    }
+    expect(createBudgetAlert).not.toHaveBeenCalled()
+  })
+
+  it('refuses an unknown type without calling the API', async () => {
+    const state = await createBudgetAlertAction(null, form({ type: 'weekly', monthlyLimitUsd: '100', thresholdPct: '80' }))
+    expect(state).toMatchObject({ ok: false, message: 'Unknown alert type' })
+    expect(createBudgetAlert).not.toHaveBeenCalled()
+  })
+
+  it('carries the type on an update, so the API checks the right field', async () => {
+    await updateBudgetAlertAction(null, form({ id: 'a1', type: 'idle-seat', idleDays: '30', userId: '', agent: '' }))
+    expect(updateBudgetAlert).toHaveBeenCalledWith('a1', { type: 'idle-seat', idleDays: 30, userId: null, agent: null })
+  })
+})
+
+describe('seat actions', () => {
+  const USER = '22222222-2222-4222-8222-222222222222'
+  const SEAT = { userId: USER, agent: 'claude', monthlyPriceUsd: '200', startDate: '2026-11-01' }
+
+  beforeEach(() => {
+    setSeat.mockResolvedValue({ userId: USER, agent: 'claude' })
+    removeSeat.mockResolvedValue({ userId: USER, agent: 'claude' })
+    assignSeatToAll.mockResolvedValue({ created: 3 })
+  })
+
+  const cases = [
+    ['setSeatAction', setSeatAction, setSeat, SEAT],
+    ['removeSeatAction', removeSeatAction, removeSeat, { userId: USER, agent: 'claude' }],
+    ['assignSeatToAllAction', assignSeatToAllAction, assignSeatToAll, { agent: 'claude', monthlyPriceUsd: '30', startDate: '2026-11-01' }],
+  ] as const
+
+  for (const [name, action, apiFn, fields] of cases) {
+    it(`${name} refuses a manager and calls nothing`, async () => {
+      getUserRole.mockResolvedValue('manager')
+      const state = await action(null, form(fields))
+      expect(state).toMatchObject({ ok: false, message: 'Admin role required' })
+      expect(apiFn).not.toHaveBeenCalled()
+      expect(revalidatePath).not.toHaveBeenCalled()
+    })
+
+    it(`${name} calls the API and revalidates every page`, async () => {
+      const state = await action(null, form(fields))
+      expect(state.ok).toBe(true)
+      expect(apiFn).toHaveBeenCalledTimes(1)
+      expect(revalidatePath).toHaveBeenCalledWith('/', 'layout')
+    })
+  }
+
+  it('passes the seat through as numbers', async () => {
+    await setSeatAction(null, form(SEAT))
+    expect(setSeat).toHaveBeenCalledWith(USER, 'claude', { monthlyPriceUsd: 200, startDate: '2026-11-01' })
+  })
+
+  it('accepts a free seat', async () => {
+    const state = await setSeatAction(null, form({ ...SEAT, monthlyPriceUsd: '0' }))
+    expect(state.ok).toBe(true)
+  })
+
+  it('refuses a blank or negative price without calling the API', async () => {
+    for (const monthlyPriceUsd of ['', '-5', 'abc']) {
+      const state = await setSeatAction(null, form({ ...SEAT, monthlyPriceUsd }))
+      expect(state.ok).toBe(false)
+    }
+    expect(setSeat).not.toHaveBeenCalled()
+  })
+
+  it('refuses a bad date or agent without calling the API', async () => {
+    expect((await setSeatAction(null, form({ ...SEAT, startDate: '11/01/2026' }))).ok).toBe(false)
+    expect((await setSeatAction(null, form({ ...SEAT, agent: 'cursor' }))).ok).toBe(false)
+    expect((await removeSeatAction(null, form({ userId: USER, agent: 'cursor' }))).ok).toBe(false)
+    expect(setSeat).not.toHaveBeenCalled()
+    expect(removeSeat).not.toHaveBeenCalled()
+  })
+
+  it('says how many seats assign-all created', async () => {
+    const state = await assignSeatToAllAction(null, form({ agent: 'copilot', monthlyPriceUsd: '19', startDate: '2026-11-01' }))
+    expect(assignSeatToAll).toHaveBeenCalledWith({ agent: 'copilot', monthlyPriceUsd: 19, startDate: '2026-11-01' })
+    expect(state.message).toBe('Added 3 copilot seats. Existing seats were left as they were.')
+  })
+
+  it('says nothing changed when everyone already has a seat', async () => {
+    assignSeatToAll.mockResolvedValueOnce({ created: 0 })
+    const state = await assignSeatToAllAction(null, form({ agent: 'claude', monthlyPriceUsd: '30', startDate: '2026-11-01' }))
+    expect(state).toEqual({ ok: true, message: 'Everyone already has a claude seat. Nothing changed.' })
+  })
+
+  it("returns the API's own words on failure", async () => {
+    setSeat.mockRejectedValueOnce(new Error('User not found in this organization'))
+    const state = await setSeatAction(null, form(SEAT))
+    expect(state).toEqual({ ok: false, message: 'User not found in this organization' })
   })
 })

@@ -9,12 +9,12 @@ import { formatCost } from '@/lib/format'
 const GRID = '#242424'
 const AXIS_INK = '#6f6f6f'
 
-/** Daily spend, one line per team. Lines, not stacked areas: teams can overlap. */
+/** Daily value, one line per team. Lines, not stacked areas: teams can overlap. */
 export function TeamLinesChart({ teams }: { teams: TeamComparison[] }) {
   const rows = useMemo(() => teamDailyRows(teams), [teams])
 
   if (rows.length === 0) {
-    return <p className="py-16 text-center text-sm text-ink-2">No team spend in this range</p>
+    return <p className="py-16 text-center text-sm text-ink-2">No usage in this range</p>
   }
 
   return (

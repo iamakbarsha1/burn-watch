@@ -57,9 +57,9 @@ Items use the proposal's IDs (A1, B3, C1, ...). Each one gets a BW ticket in
 R0 Foundations
   Seat model + value relabel ──────────────┬──▶ A1 idle seats, D1 value multiple
   Teams + manager scope (C5 included) ─────┼──▶ A3, A5, A6, A7 (per-team views), B8
-  Agent v0.3 (path privacy + 🟡 fields) ───┼──▶ C1 ──▶ C2, B7
+  Agent v0.4 (path privacy + 🟡 fields) ───┼──▶ C1 ──▶ C2, B7
                                            ├──▶ A5, B5, B6, C4
-  Transparency page (after agent v0.3 fields are final)
+  Transparency page (after agent v0.4 fields are final)
   Bulk invite, BW-42, BW-21
 
 R1 Quick wins (existing data)   B1, B3, B2, A1, A3, A8, B8
@@ -69,7 +69,7 @@ R4 Extras                       D1
 ```
 
 One design call shapes the whole plan: **path privacy and every 🟡 field ship
-in one agent release (v0.3.0).** The proposal lists them separately, but both
+in one agent release (v0.4.0).** The proposal lists them separately, but both
 are agent changes. Developers update once, and the transparency page describes
 a field set that will not change again a week later.
 
@@ -82,23 +82,25 @@ thing and managers can see their team.
 
 ### R0.1 Seat model + value relabel · M
 
+Status: done, PR #14 (agent 0.3.0 adds limit-hit counts). Admins still need to enter
+real seat prices (org fact #1).
+
 - `seats` collection: user, agent, monthly price, start date.
 - Admin **Seats** section, with non-destructive "assign to everyone".
 - Leaderboard: `$` becomes **Value (API-equivalent)**; add **Actual cost** and
-  **Value multiple** (`value ÷ seat price`).
+  **Value multiple** (`value ÷ actual cost`).
 - Overview: **Value received** and **Actual cost** tiles
   (`12 seats × $30/mo + $X API`).
 - Budget alerts get a `type`: `api-spend` (only unseated usage), `idle-seat`,
   `limit-hit`.
 - Rename "spend" on Trends, Projects, Admin team table.
-- **Note:** the proposal points to `docs/superpowers/specs/2026-11-16-seat-billing-design.md`.
-  That file is not on disk. Its decisions are copied into proposal section 7;
-  rewrite the spec from there before coding.
+- Design: [R0.1-SEATS-DESIGN.md](R0.1-SEATS-DESIGN.md), rewritten 2026-11-21 from
+  proposal section 7 (the original spec was never committed).
 - **Needs:** org fact #1.
 
 ### R0.2 Teams + manager scope (includes C5) · M
 
-Status: API and dashboard UI done on `feat/r0.2-teams` (uncommitted). Design and plan in
+Status: done, merged in PR #7. Design and plan in
 [R0.2-TEAMS-DESIGN.md](R0.2-TEAMS-DESIGN.md).
 
 - `teams` and `team_members` collections in `packages/db`.
@@ -111,7 +113,7 @@ Status: API and dashboard UI done on `feat/r0.2-teams` (uncommitted). Design and
   self (extend the existing viewer-scope tests in `routes.test.ts`).
 - **Needs:** org fact #2.
 
-### R0.3 Agent v0.3.0 · M
+### R0.3 Agent v0.4.0 · M
 
 One release, two parts.
 
@@ -120,7 +122,7 @@ One release, two parts.
   migration is the cheap answer).
 - **New fields from Claude transcripts:** `attributionSkill`, `isSidechain`,
   `permissionMode`, `entrypoint`, `version`, `accountUuid` (hashed on device),
-  `gitBranch`, plus limit-hit counts for R0.1.
+  `gitBranch`. (Limit-hit counts moved into R0.1, agent 0.3.0.)
 - Collect `permissionMode` even though B4 is not approved: it is cheap now and
   costly to add later. The transparency page must list it. Do not build a view
   on it until B4 is agreed.
@@ -143,7 +145,7 @@ One release, two parts.
   holding the rollout.
 
 **R0 done when:** a manager logs in and sees only their team, every `$` on screen
-is labelled as value or actual cost, agent v0.3 sends no absolute paths, and a
+is labelled as value or actual cost, agent v0.4 sends no absolute paths, and a
 developer can open the transparency page.
 
 ---
@@ -167,9 +169,9 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 
 ---
 
-## R2 · Insights on agent v0.3 fields
+## R2 · Insights on agent v0.4 fields
 
-Starts once a meaningful share of devices run v0.3. Use A3's funnel plus B5's
+Starts once a meaningful share of devices run v0.4. Use A3's funnel plus B5's
 version view to track that.
 
 | ID | Build | Depends on |
@@ -207,7 +209,7 @@ version view to track that.
 
 | Phase | Items | Size |
 |---|---|---|
-| R0 | Seat model, teams, agent v0.3, transparency, onboarding | ~2 M + 1 M + 2 S |
+| R0 | Seat model, teams, agent v0.4, transparency, onboarding | ~2 M + 1 M + 2 S |
 | R1 | B1, B3, B2, A1, A3, A8, B8 | 7 × S/S–M |
 | R2 | B5, A5, B6, C4, A6, A7, D6, D5 | 3 S + 5 M |
 | R3 | C1, C2, B7 | 3 × M |
@@ -222,27 +224,23 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 - **Licensing:** shipping to the org on Vercel Hobby breaks its terms. Pro has
   to be decided before R0 is announced, even though no code depends on it.
-- **Agent adoption lag:** R2 and R3 are only as good as v0.3 coverage. Track it
+- **Agent adoption lag:** R2 and R3 are only as good as v0.4 coverage. Track it
   with B5 and nudge manually until a channel exists.
 - **Trust:** B6, B8 and the manager scope can feel like monitoring. Ship the
   transparency page (R0.4) before managers get access, not after.
 - **Rate limiter debt (BW-05):** still in-memory per instance. Bulk invite and
   wider rollout increase exposure; repay before opening registration to 50+.
-- **Missing spec:** the seat-billing design doc is referenced but not in the
-  repo.
 
 ---
 
 ## Next session
 
-Design R0.2 (Teams + manager scope) or R0.1 (Seat model). R0.2 is the larger
-risk because it changes the scope rule every dashboard route depends on.
+R0.3 agent path privacy plus the remaining v0.4 transcript fields (agent 0.4.0).
 
 ```
-BurnWatch rollout R0.2: design teams + manager scope.
-Admins see all, managers see their team, developers see self.
-Change viewerScope in apps/api/src/plugins/jwt.ts to return a user-id set,
-add teams/team_members to packages/db, add team filter + team comparison
-to Overview and Trends (C5). Extend viewer-scope route tests.
-See tasks/ROLLOUT-ROADMAP.md.
+BurnWatch rollout R0.3: agent path privacy + new transcript fields.
+Send repo name + normalised Git remote, never absolute paths; decide and migrate
+paths already stored. Add attributionSkill, isSidechain, permissionMode,
+entrypoint, version, hashed accountUuid, gitBranch as optional fields.
+Ships as agent 0.4.0. See tasks/ROLLOUT-ROADMAP.md R0.3.
 ```
