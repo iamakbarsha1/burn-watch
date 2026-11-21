@@ -91,14 +91,13 @@ thing and managers can see their team.
 - Budget alerts get a `type`: `api-spend` (only unseated usage), `idle-seat`,
   `limit-hit`.
 - Rename "spend" on Trends, Projects, Admin team table.
-- **Note:** the proposal points to `docs/superpowers/specs/2026-11-16-seat-billing-design.md`.
-  That file is not on disk. Its decisions are copied into proposal section 7;
-  rewrite the spec from there before coding.
+- Design: [R0.1-SEATS-DESIGN.md](R0.1-SEATS-DESIGN.md), rewritten 2026-11-21 from
+  proposal section 7 (the original spec was never committed).
 - **Needs:** org fact #1.
 
 ### R0.2 Teams + manager scope (includes C5) · M
 
-Status: API and dashboard UI done on `feat/r0.2-teams` (uncommitted). Design and plan in
+Status: done, merged in PR #7. Design and plan in
 [R0.2-TEAMS-DESIGN.md](R0.2-TEAMS-DESIGN.md).
 
 - `teams` and `team_members` collections in `packages/db`.
@@ -120,7 +119,7 @@ One release, two parts.
   migration is the cheap answer).
 - **New fields from Claude transcripts:** `attributionSkill`, `isSidechain`,
   `permissionMode`, `entrypoint`, `version`, `accountUuid` (hashed on device),
-  `gitBranch`, plus limit-hit counts for R0.1.
+  `gitBranch`. (Limit-hit counts moved into R0.1, agent 0.3.0.)
 - Collect `permissionMode` even though B4 is not approved: it is cheap now and
   costly to add later. The transparency page must list it. Do not build a view
   on it until B4 is agreed.
@@ -228,8 +227,6 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
   transparency page (R0.4) before managers get access, not after.
 - **Rate limiter debt (BW-05):** still in-memory per instance. Bulk invite and
   wider rollout increase exposure; repay before opening registration to 50+.
-- **Missing spec:** the seat-billing design doc is referenced but not in the
-  repo.
 
 ---
 
