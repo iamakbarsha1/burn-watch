@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb'
 import type { ActivityEntry, AgentName, ProjectEntry, SessionEntry } from '@burn-watch/shared'
 import type {
+  AgentPolicyKey,
   DayKey,
   DeviceId,
   IntegrationKey,
@@ -142,6 +143,22 @@ export interface McpApprovalDoc {
   note: string | null
   approvedBy: UserId
   approvedAt: Date
+}
+
+/**
+ * The org's rule for one agent (R1 B2). No doc means "not set", which the
+ * violation list flags. `models` holds exact model names, used only when
+ * `rule` is 'models'.
+ */
+export interface AgentPolicyDoc {
+  _id: AgentPolicyKey
+  orgId: OrgId
+  agent: AgentName
+  rule: 'allowed' | 'models' | 'blocked'
+  models: string[]
+  note: string | null
+  updatedBy: UserId
+  updatedAt: Date
 }
 
 export type BudgetAlertType = 'api-spend' | 'idle-seat' | 'limit-hit'

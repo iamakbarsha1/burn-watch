@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { cookies } from 'next/headers'
 import type {
   OverviewResponse,
@@ -21,6 +22,8 @@ import type {
   SeatAssignAll,
   AgentName,
   FreeTierResponse,
+  ViolationsResponse,
+  AgentPolicyInput,
   McpInventoryResponse,
 } from '@burn-watch/shared'
 
@@ -264,6 +267,26 @@ export async function removeTeamMember(teamId: string, userId: string): Promise<
 // B1. Admins get the org, managers their own teams; a developer gets 403.
 export async function fetchFreeTier(from: string, to: string, teamId?: string): Promise<FreeTierResponse> {
   return apiFetch(`/v1/dashboard/governance/free-tier?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+export async function fetchViolations(from: string, to: string, teamId?: string): Promise<ViolationsResponse> {
+  return apiFetch(`/v1/dashboard/governance/violations?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+/**
+ * Policy violations in the last 30 days, admins only. Cached per request: the
+ * layout's nav count and a page's banner share one call.
+ */
+export const fetchViolationCount = cache(async (): Promise<number> => {
+  return (await apiFetch<{ count: number }>('/v1/dashboard/governance/violations/count')).count
+})
+
+export async function setAgentPolicy(agent: AgentName, input: AgentPolicyInput): Promise<{ agent: AgentName }> {
+  return apiMutate('PUT', `/v1/dashboard/governance/agent-policy/${agent}`, input)
+}
+
+export async function clearAgentPolicy(agent: AgentName): Promise<{ agent: AgentName }> {
+  return apiDelete(`/v1/dashboard/governance/agent-policy/${agent}`)
 }
 
 export async function fetchMcpInventory(from: string, to: string, teamId?: string): Promise<McpInventoryResponse> {

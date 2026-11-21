@@ -6,9 +6,11 @@ const getUserRole = vi.fn<() => Promise<string | null>>()
 vi.mock('@/lib/session', () => ({ getUserRole }))
 const approveMcpServer = vi.fn()
 const revokeMcpServer = vi.fn()
-vi.mock('@/lib/api', () => ({ approveMcpServer, revokeMcpServer }))
+const setAgentPolicy = vi.fn()
+const clearAgentPolicy = vi.fn()
+vi.mock('@/lib/api', () => ({ approveMcpServer, revokeMcpServer, setAgentPolicy, clearAgentPolicy }))
 
-const { mcpApprovalAction } = await import('./actions')
+const { mcpApprovalAction, agentPolicyAction } = await import('./actions')
 
 const form = (fields: Record<string, string>) => {
   const f = new FormData()
@@ -44,5 +46,44 @@ describe('mcpApprovalAction', () => {
   it('passes the API error back', async () => {
     approveMcpServer.mockRejectedValue(new Error('Validation failed'))
     expect(await mcpApprovalAction(null, form({ server: 'Neon' }))).toEqual({ ok: false, message: 'Validation failed' })
+  })
+})
+
+describe('agentPolicyAction', () => {
+  it('refuses a manager without calling the API', async () => {
+    getUserRole.mockResolvedValue('manager')
+    expect((await agentPolicyAction(null, form({ agent: 'claude', rule: 'allowed' }))).ok).toBe(false)
+    expect(setAgentPolicy).not.toHaveBeenCalled()
+  })
+
+  it('sends models one per line, trimmed, and revalidates every page', async () => {
+    const state = await agentPolicyAction(
+      null,
+      form({ agent: 'claude', rule: 'models', models: ' claude-opus-5 \n\nclaude-sonnet-5\n', note: '' }),
+    )
+    expect(state.ok).toBe(true)
+    expect(setAgentPolicy).toHaveBeenCalledWith('claude', {
+      rule: 'models',
+      models: ['claude-opus-5', 'claude-sonnet-5'],
+      note: null,
+    })
+    expect(revalidatePath).toHaveBeenCalledWith('/', 'layout')
+  })
+
+  it('asks for a model when models-only has none', async () => {
+    expect((await agentPolicyAction(null, form({ agent: 'claude', rule: 'models', models: ' ' }))).message).toBe(
+      'List at least one model, or choose blocked',
+    )
+    expect(setAgentPolicy).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unknown agent', async () => {
+    expect((await agentPolicyAction(null, form({ agent: 'cursor', rule: 'allowed' }))).message).toBe('Unknown agent')
+  })
+
+  it('clears a rule', async () => {
+    await agentPolicyAction(null, form({ agent: 'qwen', intent: 'clear' }))
+    expect(clearAgentPolicy).toHaveBeenCalledWith('qwen')
+    expect(setAgentPolicy).not.toHaveBeenCalled()
   })
 })

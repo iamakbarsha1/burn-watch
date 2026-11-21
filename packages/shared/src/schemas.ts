@@ -173,6 +173,18 @@ export const SeatInputSchema = z.object({
 
 export const SeatAssignAllSchema = SeatInputSchema.extend({ agent: AgentNameSchema })
 
+// R1 B2. Model names are exact strings from agent output, stored as values.
+export const AgentPolicyInputSchema = z
+  .object({
+    rule: z.enum(['allowed', 'models', 'blocked']),
+    models: z.array(z.string().trim().min(1).max(200)).max(50).default([]),
+    note: z.string().trim().max(500).nullable().optional(),
+  })
+  .refine((p) => p.rule !== 'models' || p.models.length > 0, {
+    message: 'List at least one model, or choose blocked',
+    path: ['models'],
+  })
+
 // R1 B3. A key comes from a developer's MCP config, so it is bounded and only
 // ever stored as a value.
 export const McpServerKeySchema = z.string().min(1).max(200)
@@ -186,6 +198,7 @@ export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
 export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>
 export type SeatInput = z.infer<typeof SeatInputSchema>
 export type SeatAssignAll = z.infer<typeof SeatAssignAllSchema>
+export type AgentPolicyInput = z.input<typeof AgentPolicyInputSchema>
 export type McpApprovalInput = z.input<typeof McpApprovalInputSchema>
 
 export type UsageEventInput = z.infer<typeof UsageEventSchema>

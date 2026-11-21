@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { FreeTierResponse, McpInventoryResponse } from '@burn-watch/shared'
+import type { FreeTierResponse, McpInventoryResponse, ViolationsResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
   data: null as FreeTierResponse | null,
   mcp: null as McpInventoryResponse | null,
+  violations: null as ViolationsResponse | null,
+  count: 0,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -20,12 +22,21 @@ vi.mock('@/lib/api', () => ({
     if (!state.data) throw new Error('down')
     return state.data
   },
+  fetchViolations: async () => {
+    if (!state.violations) throw new Error('down')
+    return state.violations
+  },
+  fetchViolationCount: async () => state.count,
   fetchMcpInventory: async () => {
     if (!state.mcp) throw new Error('down')
     return state.mcp
   },
 }))
 vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => null }))
+vi.mock('./AgentPolicyForm', () => ({
+  AgentPolicyForm: ({ policy, seen }: { policy: { agent: string }; seen: string[] }) =>
+    `[edit:${policy.agent}:${seen.join('|')}]`,
+}))
 vi.mock('./McpApprovalButton', () => ({
   McpApprovalButton: ({ server, approved }: { server: string; approved: boolean }) =>
     `[${approved ? 'revoke' : 'approve'}:${server}]`,
@@ -40,7 +51,46 @@ beforeEach(() => {
   state.role = 'admin'
   state.data = { rows: [], byTeam: [] }
   state.mcp = { servers: [], unusedApprovals: [] }
+  state.violations = {
+    policies: (['claude', 'qwen', 'gemini', 'codex', 'copilot'] as const).map((agent) => ({
+      agent,
+      rule: 'unset' as const,
+      models: [],
+      note: null,
+    })),
+    rows: [],
+    byTeam: [],
+    seenModels: {},
+  }
+  state.count = 0
 })
+
+const VIOLATIONS: ViolationsResponse = {
+  policies: [
+    { agent: 'claude', rule: 'models', models: ['claude-opus-5'], note: 'Opus only' },
+    { agent: 'qwen', rule: 'blocked', models: [], note: null },
+    { agent: 'gemini', rule: 'allowed', models: [], note: null },
+    { agent: 'codex', rule: 'unset', models: [], note: null },
+    { agent: 'copilot', rule: 'unset', models: [], note: null },
+  ],
+  rows: [
+    {
+      userId: 'u1',
+      userName: 'Ada',
+      userEmail: 'ada@x.test',
+      teams: [],
+      agent: 'claude',
+      modelName: 'claude-opus-5-5',
+      reason: 'model-not-listed',
+      days: 2,
+      tokens: 500,
+      firstDate: '2026-11-01',
+      lastDate: '2026-11-05',
+    },
+  ],
+  byTeam: [{ teamId: null, teamName: null, users: 1, tokens: 500 }],
+  seenModels: { claude: ['claude-opus-5', 'claude-opus-5-5'] },
+}
 
 const MCP: McpInventoryResponse = {
   servers: [
@@ -140,5 +190,42 @@ describe('GovernancePage', () => {
   it('says so when MCP usage cannot be read', async () => {
     state.mcp = null
     expect(await render()).toContain('Could not read MCP usage')
+  })
+
+  it('shows the policy with badges, violations and admin edit forms', async () => {
+    state.violations = VIOLATIONS
+    const html = await render()
+    expect(html).toContain('listed models only')
+    expect(html).toContain('claude-opus-5')
+    expect(html).toContain('Opus only')
+    expect(html).toContain('blocked')
+    expect(html).toContain('not set')
+    expect(html).toContain('model not listed')
+    expect(html).toContain('claude-opus-5-5')
+    expect(html).toContain('[edit:claude:claude-opus-5|claude-opus-5-5]')
+  })
+
+  it('shows the violation empty state', async () => {
+    expect(await render()).toContain('No usage outside the policy in this range.')
+  })
+
+  it('hides the edit forms and the banner from a manager', async () => {
+    state.role = 'manager'
+    state.violations = VIOLATIONS
+    state.count = 3
+    const html = await render()
+    expect(html).toContain('model not listed')
+    expect(html).not.toContain('[edit:')
+    expect(html).not.toContain('outside the policy in the last 30 days')
+  })
+
+  it('shows the 30-day banner to an admin', async () => {
+    state.count = 3
+    expect(await render()).toContain('3 uses of an agent or model outside the policy in the last 30 days.')
+  })
+
+  it('says so when the policy cannot be read', async () => {
+    state.violations = null
+    expect(await render()).toContain('Could not read the policy')
   })
 })

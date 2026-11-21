@@ -18,6 +18,8 @@ export type DayKey = string & { readonly __brand: 'DayKey' }
  * cannot be dropped, misnamed, or missed by a sync that never ran.
  */
 export type IntegrationKey = string & { readonly __brand: 'IntegrationKey' }
+/** `${orgId}:${agent}`, so an org holds one policy rule per agent and a re-save is an upsert. */
+export type AgentPolicyKey = string & { readonly __brand: 'AgentPolicyKey' }
 /** `${orgId}:${server}`, so approving an MCP server twice is one upsert, not two rows. */
 export type McpApprovalKey = string & { readonly __brand: 'McpApprovalKey' }
 /** YYYY-MM-DD. Lexicographic order is date order, so range filters work on the string. */
@@ -37,6 +39,8 @@ export const seatKey = (userId: UserId, agent: string): SeatKey => `${userId}:${
 
 export const integrationKey = (orgId: OrgId, provider: string): IntegrationKey =>
   `${orgId}:${provider}` as IntegrationKey
+
+export const agentPolicyKey = (orgId: OrgId, agent: string): AgentPolicyKey => `${orgId}:${agent}` as AgentPolicyKey
 
 export const mcpApprovalKey = (orgId: OrgId, server: string): McpApprovalKey =>
   `${orgId}:${server}` as McpApprovalKey

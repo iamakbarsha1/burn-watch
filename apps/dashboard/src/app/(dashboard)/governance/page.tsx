@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
-import { fetchFreeTier, fetchMcpInventory, fetchTeams } from '@/lib/api'
+import { fetchFreeTier, fetchMcpInventory, fetchTeams, fetchViolationCount, fetchViolations } from '@/lib/api'
 import { agentById } from '@/lib/agents'
 import { formatRange, formatTokens, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
@@ -8,13 +8,27 @@ import { pickTeam } from '@/lib/teams'
 import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
 import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
-import type { McpServerSource } from '@burn-watch/shared'
+import type { AgentPolicyRule, McpServerSource, ViolationReason } from '@burn-watch/shared'
 import { McpApprovalButton } from './McpApprovalButton'
+import { AgentPolicyForm } from './AgentPolicyForm'
 
 // Shown whatever the list holds, so an empty list is never read as "nobody
 // uses Gemini's free tier". Remove when BW-43 ships.
 const GEMINI_NOTE =
   'Gemini on a personal Google login is free, but it is not detected yet: those rows carry a list-price cost and are not flagged (BW-43).'
+
+const RULE_BADGE: Record<AgentPolicyRule, { tone: 'good' | 'warn' | 'bad' | 'neutral'; label: string }> = {
+  allowed: { tone: 'good', label: 'allowed' },
+  models: { tone: 'neutral', label: 'listed models only' },
+  blocked: { tone: 'bad', label: 'blocked' },
+  unset: { tone: 'warn', label: 'not set' },
+}
+
+const REASON_LABEL: Record<ViolationReason, string> = {
+  'agent-blocked': 'agent blocked',
+  'agent-not-set': 'agent not set',
+  'model-not-listed': 'model not listed',
+}
 
 const SOURCE_LABEL: Record<McpServerSource, string> = {
   plugin: 'Claude Code plugin',
@@ -35,11 +49,13 @@ export default async function GovernancePage({
   const { from, to } = resolveRange(params)
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
-  const [data, mcp] = await Promise.all([
+  const isAdmin = role === 'admin'
+  const [data, mcp, violations, violationCount] = await Promise.all([
     fetchFreeTier(from, to, team?.id).catch(() => null),
     fetchMcpInventory(from, to, team?.id).catch(() => null),
+    fetchViolations(from, to, team?.id).catch(() => null),
+    isAdmin ? fetchViolationCount().catch(() => 0) : 0,
   ])
-  const isAdmin = role === 'admin'
   const mcpCols = isAdmin ? 8 : 7
   const mcpPeople = mcp ? new Set(mcp.servers.flatMap((s) => s.users.map((u) => u.userId))).size : 0
   const mcpUnapproved = mcp ? mcp.servers.filter((s) => !s.approved).length : 0
@@ -50,6 +66,15 @@ export default async function GovernancePage({
         title="Governance"
         subtitle={`${formatRange(from, to)}${team ? ` · team ${team.name}` : ''}`}
       />
+
+      {violationCount > 0 && (
+        <div className="mb-4 rounded-lg border border-bad/35 bg-bad/10 px-4 py-3 text-sm text-bad">
+          {violationCount === 1
+            ? '1 use of an agent or model outside the policy in the last 30 days.'
+            : `${violationCount} uses of an agent or model outside the policy in the last 30 days.`}{' '}
+          Counted per person, agent and model.
+        </div>
+      )}
 
       {teams.length > 0 && (
         <Suspense fallback={null}>
@@ -121,6 +146,105 @@ export default async function GovernancePage({
           &ldquo;Unpriced model&rdquo; means the agent found no price for the model, so it may not
           be a free tier. {GEMINI_NOTE}
         </p>
+      </Section>
+
+      <Section
+        title="Agent and model policy"
+        description="Which agents and models the org allows. Usage outside the policy is listed below. Agents with no rule are flagged until an admin sets one."
+      >
+        {violations === null ? (
+          <p className="text-sm text-bad">Could not read the policy. Try again in a moment.</p>
+        ) : (
+          <>
+            <TableFrame>
+              <table className="w-full">
+                <thead>
+                  <tr>
+                    <Th>Agent</Th>
+                    <Th>Rule</Th>
+                    <Th>Allowed models</Th>
+                    <Th>Note</Th>
+                    {isAdmin && <Th>Change</Th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {violations.policies.map((p) => (
+                    <Tr key={p.agent}>
+                      <Td className="font-medium text-ink">{agentById(p.agent)?.label ?? p.agent}</Td>
+                      <Td>
+                        <Badge tone={RULE_BADGE[p.rule].tone}>{RULE_BADGE[p.rule].label}</Badge>
+                      </Td>
+                      <Td className="font-mono text-xs text-ink-2">
+                        {p.rule === 'models' ? p.models.join(', ') : p.rule === 'allowed' ? 'any' : '—'}
+                      </Td>
+                      <Td className="text-ink-2">{p.note ?? '—'}</Td>
+                      {isAdmin && (
+                        <Td>
+                          <AgentPolicyForm policy={p} seen={violations.seenModels[p.agent] ?? []} />
+                        </Td>
+                      )}
+                    </Tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableFrame>
+
+            <h3 className="mt-6 mb-3 text-sm font-medium text-ink">Usage outside the policy</h3>
+            {violations.byTeam.length > 0 && (
+              <p className="mb-3 text-sm text-ink-2">
+                {violations.byTeam
+                  .map(
+                    (t) =>
+                      `${t.teamName ?? 'No team'}: ${t.users} ${t.users === 1 ? 'person' : 'people'}, ${formatTokens(t.tokens)} tokens`,
+                  )
+                  .join(' · ')}
+              </p>
+            )}
+            <TableFrame>
+              <table className="w-full">
+                <thead>
+                  <tr>
+                    <Th>Person</Th>
+                    <Th>Teams</Th>
+                    <Th>Agent · model</Th>
+                    <Th>Why flagged</Th>
+                    <Th numeric>Days</Th>
+                    <Th numeric>Tokens</Th>
+                    <Th numeric>Last seen</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {violations.rows.length === 0 ? (
+                    <EmptyRow colSpan={7}>No usage outside the policy in this range.</EmptyRow>
+                  ) : (
+                    violations.rows.map((r) => (
+                      <Tr key={`${r.userId}:${r.agent}:${r.modelName}`}>
+                        <Td>
+                          <div className="font-medium text-ink">{r.userName ?? 'Removed user'}</div>
+                          {r.userEmail && <div className="text-xs text-ink-2">{r.userEmail}</div>}
+                        </Td>
+                        <Td className="text-ink-2">{r.teams.length ? r.teams.join(', ') : '—'}</Td>
+                        <Td>
+                          {agentById(r.agent)?.label ?? r.agent} · <span className="text-ink-2">{r.modelName}</span>
+                        </Td>
+                        <Td>
+                          <Badge tone={r.reason === 'agent-blocked' ? 'bad' : 'warn'}>{REASON_LABEL[r.reason]}</Badge>
+                        </Td>
+                        <Td numeric>{r.days}</Td>
+                        <Td numeric>{formatTokens(r.tokens)}</Td>
+                        <Td numeric>{r.lastDate}</Td>
+                      </Tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </TableFrame>
+            <p className="mt-3 text-xs text-ink-2">
+              Usage is checked against the current policy, whenever it happened. Model names match exactly, so a new
+              model release is flagged until it is added.
+            </p>
+          </>
+        )}
       </Section>
 
       <Section

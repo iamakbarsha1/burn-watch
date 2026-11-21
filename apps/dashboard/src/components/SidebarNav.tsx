@@ -48,9 +48,12 @@ function NavPending() {
 export function SidebarNav({
   orientation = 'vertical',
   role,
+  governanceCount = 0,
 }: {
   orientation?: 'vertical' | 'horizontal'
   role?: string | null
+  /** Policy violations in the last 30 days (B2). Only passed for admins. */
+  governanceCount?: number
 }) {
   const pathname = usePathname()
   const params = useSearchParams().toString()
@@ -93,6 +96,14 @@ export function SidebarNav({
                   />
                 )}
                 {item.label}
+                {item.href === '/governance' && governanceCount > 0 && (
+                  <span
+                    aria-label={`${governanceCount} policy violations`}
+                    className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-bad/15 px-1.5 text-xs font-medium text-bad"
+                  >
+                    {governanceCount}
+                  </span>
+                )}
                 {!horizontal && <NavPending />}
               </Link>
             </li>

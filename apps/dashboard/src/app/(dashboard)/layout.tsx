@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getSession, getUserRole } from '@/lib/session'
 import { SidebarNav } from '@/components/SidebarNav'
+import { fetchViolationCount } from '@/lib/api'
 import { RangeBar } from '@/components/RangeBar'
 import { SignOutButton } from './SignOutButton'
 
@@ -13,6 +14,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const session = await getSession()
   if (!session) redirect('/login')
   const role = await getUserRole()
+  // B2 alert: admins see the policy-violation count on the Governance link.
+  const governanceCount = role === 'admin' ? await fetchViolationCount().catch(() => 0) : 0
 
   return (
     <div className="flex min-h-screen bg-surface-0">
@@ -27,7 +30,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         {/* useSearchParams inside the nav needs a boundary so the whole shell
             does not get pulled out of the static render. */}
         <Suspense fallback={<div className="flex-1" />}>
-          <SidebarNav role={role} />
+          <SidebarNav role={role} governanceCount={governanceCount} />
         </Suspense>
 
         {session.user && (
@@ -52,7 +55,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           </div>
           <div className="scroll-strip px-2 pb-2">
             <Suspense fallback={null}>
-              <SidebarNav orientation="horizontal" role={role} />
+              <SidebarNav orientation="horizontal" role={role} governanceCount={governanceCount} />
             </Suspense>
           </div>
         </header>
