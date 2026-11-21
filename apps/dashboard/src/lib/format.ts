@@ -32,6 +32,21 @@ export function formatSpend(usd: number, tokens: number): string {
   return `${formatCost(usd)} · ${formatTokens(tokens)} tokens`
 }
 
+/** "4.2×", or "—" when there is no actual cost to divide by. */
+export function formatMultiple(n: number | null): string {
+  return n === null ? '—' : `${n.toFixed(1)}×`
+}
+
+/**
+ * "12 seats · $360.00/mo + $4.10 API". The monthly total, not a per-seat price:
+ * seats can carry different prices, and only their sum comes back.
+ */
+export function formatActualCostHint(seatCount: number, monthlySeatUsd: number, apiUsd: number): string {
+  const api = `${formatCost(apiUsd)} API`
+  if (seatCount === 0) return `No seats · ${api}`
+  return `${seatCount} seat${seatCount === 1 ? '' : 's'} · ${formatCost(monthlySeatUsd)}/mo + ${api}`
+}
+
 export function formatPct(n: number): string {
   return `${n.toFixed(1)}%`
 }

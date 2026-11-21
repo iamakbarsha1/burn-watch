@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import { fetchOverview, fetchTeams, fetchTeamCompare } from '@/lib/api'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
 import { TeamFilter } from '@/components/TeamFilter'
-import { formatCost, formatTokens, formatRange, resolveRange } from '@/lib/format'
+import { formatCost, formatTokens, formatRange, resolveRange, formatActualCostHint } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
 import { getOrgId } from '@/lib/session'
@@ -46,11 +46,21 @@ export default async function OverviewPage({
 
       {overview ? (
         <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatTile
-              label={isRange ? 'Total spend' : 'Spend today'}
-              value={formatCost(overview.totalCostUsd)}
+              label={isRange ? 'Value received' : 'Value today'}
+              value={formatCost(overview.valueUsd)}
+              hint="usage at API list prices"
               delta={!isRange ? overview.vsYesterday.costPct : undefined}
+            />
+            <StatTile
+              label="Actual cost"
+              value={formatCost(overview.actualCost.totalUsd)}
+              hint={formatActualCostHint(
+                overview.actualCost.seatCount,
+                overview.actualCost.monthlySeatUsd,
+                overview.actualCost.apiUsd,
+              )}
             />
             <StatTile label="Total tokens" value={formatTokens(overview.totalTokens)} />
             <StatTile label="Active developers" value={String(overview.activeUsers)} />
@@ -72,7 +82,7 @@ export default async function OverviewPage({
                       <Th>Team</Th>
                       <Th numeric>Active / members</Th>
                       <Th numeric>Tokens</Th>
-                      <Th numeric>Spend</Th>
+                      <Th numeric>Value</Th>
                     </tr>
                   </thead>
                   <tbody>

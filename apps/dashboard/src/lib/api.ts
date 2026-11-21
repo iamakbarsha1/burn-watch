@@ -16,6 +16,10 @@ import type {
   CopilotSeatsResponse,
   Team,
   TeamComparison,
+  Seat,
+  SeatInput,
+  SeatAssignAll,
+  AgentName,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -182,8 +186,8 @@ export async function connectCopilot(
   org: string,
   token: string,
 ): Promise<{ connected: true; org: string }> {
-  // `apiMutate` directly rather than an `apiPut` wrapper: PUT has two uses in
-  // the dashboard (this and setTeamMember), not enough to earn one.
+  // `apiMutate` directly rather than an `apiPut` wrapper: PUT has few uses in
+  // the dashboard (this, setTeamMember, setSeat), not enough to earn one.
   return apiMutate('PUT', '/v1/integrations/copilot/connection', { org, token })
 }
 
@@ -241,4 +245,28 @@ export async function setTeamMember(
 
 export async function removeTeamMember(teamId: string, userId: string): Promise<{ teamId: string; userId: string }> {
   return apiDelete(`/v1/dashboard/teams/${teamId}/members/${userId}`)
+}
+
+/* ---------- Seats (R0.1) ---------- */
+
+export async function fetchSeats(): Promise<Seat[]> {
+  return apiFetch('/v1/dashboard/seats')
+}
+
+// Adds the seat, or changes its price and start date when it already exists.
+export async function setSeat(
+  userId: string,
+  agent: AgentName,
+  input: SeatInput,
+): Promise<{ userId: string; agent: AgentName }> {
+  return apiMutate('PUT', `/v1/dashboard/seats/${userId}/${agent}`, input)
+}
+
+export async function removeSeat(userId: string, agent: AgentName): Promise<{ userId: string; agent: AgentName }> {
+  return apiDelete(`/v1/dashboard/seats/${userId}/${agent}`)
+}
+
+// Never overwrites an existing seat; `created` counts only the new ones.
+export async function assignSeatToAll(input: SeatAssignAll): Promise<{ created: number }> {
+  return apiPost('/v1/dashboard/seats/assign-all', input)
 }

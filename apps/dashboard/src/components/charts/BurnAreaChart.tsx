@@ -54,7 +54,7 @@ function TrendTooltip({
     <div className="min-w-44 rounded-lg border border-line bg-surface-2/95 p-3 text-xs shadow-xl backdrop-blur">
       <p className="mb-2 font-medium text-ink">{label}</p>
       {rows.length === 0 ? (
-        <p className="text-ink-3">No spend</p>
+        <p className="text-ink-3">No usage</p>
       ) : (
         <>
           <ul className="space-y-1">
@@ -87,7 +87,7 @@ export function BurnAreaChart({ data }: Props) {
   const active = AGENTS.filter((a) => totals[a.id] > 0)
 
   if (active.length === 0) {
-    return <p className="py-16 text-center text-sm text-ink-2">No spend in this range</p>
+    return <p className="py-16 text-center text-sm text-ink-2">No usage in this range</p>
   }
 
   return (
