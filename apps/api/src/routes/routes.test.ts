@@ -2803,3 +2803,99 @@ describe('unhandled errors', () => {
     expect(res.json()).toEqual({ error: 'that handle is taken' })
   })
 })
+
+describe('GET /v1/dashboard/governance/free-tier', () => {
+  const URL = range('/v1/dashboard/governance/free-tier')
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const match = () =>
+    (callsTo(mongoState, 'usageEvents', 'aggregate')[0][0] as Document[])[0].$match as Record<string, unknown>
+
+  const seedGroups = () => {
+    mongoState.aggregates.usageEvents = [
+      {
+        _id: { userId: USER_A, agent: 'qwen', modelName: 'coder-model' },
+        days: 3,
+        tokens: 900,
+        firstDate: '2026-11-01',
+        lastDate: '2026-11-05',
+      },
+      {
+        _id: { userId: USER_B, agent: 'claude', modelName: 'claude-new' },
+        days: 1,
+        tokens: 100,
+        firstDate: '2026-11-05',
+        lastDate: '2026-11-05',
+      },
+    ]
+    mongoState.docs.users = [
+      { _id: USER_A, orgId: ORG_A, name: 'Ada', email: 'ada@x.test' },
+      { _id: USER_B, orgId: ORG_A, name: 'Bo', email: 'bo@x.test' },
+    ]
+  }
+
+  it('refuses a developer before reading usage', async () => {
+    seedGroups()
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'usageEvents', 'aggregate')).toEqual([])
+  })
+
+  it('requires a full range', async () => {
+    expect((await get('admin', '/v1/dashboard/governance/free-tier')).statusCode).toBe(400)
+  })
+
+  it('reads only free-tier rows in the caller org and range, org-wide for an admin', async () => {
+    expect((await get('admin')).json()).toEqual({ rows: [], byTeam: [] })
+    expect(match()).toEqual({ orgId: ORG_A, isFreeTier: true, date: { $gte: DATE, $lte: DATE } })
+    // Nothing to name, so no user or team reads.
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+  })
+
+  it('says why each row was flagged and totals per team, with a no-team bucket', async () => {
+    seedGroups()
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    const res = await get('admin')
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.rows).toEqual([
+      {
+        userId: USER_A,
+        userName: 'Ada',
+        userEmail: 'ada@x.test',
+        teams: ['Platform'],
+        agent: 'qwen',
+        modelName: 'coder-model',
+        reason: 'free-tier-agent',
+        days: 3,
+        tokens: 900,
+        firstDate: '2026-11-01',
+        lastDate: '2026-11-05',
+      },
+      expect.objectContaining({ userId: USER_B, teams: [], reason: 'unpriced-model', tokens: 100 }),
+    ])
+    expect(body.byTeam).toEqual([
+      { teamId: TEAM_A, teamName: 'Platform', users: 1, tokens: 900 },
+      { teamId: null, teamName: null, users: 1, tokens: 100 },
+    ])
+    expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+  })
+
+  it('limits a manager to themselves and the teams they manage', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    expect((await get('manager')).statusCode).toBe(200)
+    expect(match().userId).toEqual({ $in: [USER_A, USER_B] })
+  })
+
+  it('answers 403 to a manager filtering a team they do not manage', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'manager' }]
+    const res = await get('manager', `${URL}&teamId=${TEAM_A}`)
+    expect(res.statusCode).toBe(403)
+    expect(callsTo(mongoState, 'usageEvents', 'aggregate')).toEqual([])
+  })
+})
