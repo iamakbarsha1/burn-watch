@@ -115,6 +115,9 @@ Status: done, merged in PR #7. Design and plan in
 
 ### R0.3 Agent v0.4.0 · M
 
+Design: [R0.3-AGENT-PRIVACY-DESIGN.md](R0.3-AGENT-PRIVACY-DESIGN.md), reviewed 2026-11-21.
+
+
 One release, two parts.
 
 - **Path privacy:** send repo name + normalised Git remote, never the absolute
