@@ -82,10 +82,13 @@ thing and managers can see their team.
 
 ### R0.1 Seat model + value relabel · M
 
+Status: done, PR #14 (agent 0.3.0 adds limit-hit counts). Admins still need to enter
+real seat prices (org fact #1).
+
 - `seats` collection: user, agent, monthly price, start date.
 - Admin **Seats** section, with non-destructive "assign to everyone".
 - Leaderboard: `$` becomes **Value (API-equivalent)**; add **Actual cost** and
-  **Value multiple** (`value ÷ seat price`).
+  **Value multiple** (`value ÷ actual cost`).
 - Overview: **Value received** and **Actual cost** tiles
   (`12 seats × $30/mo + $X API`).
 - Budget alerts get a `type`: `api-spend` (only unseated usage), `idle-seat`,
@@ -110,7 +113,7 @@ Status: done, merged in PR #7. Design and plan in
   self (extend the existing viewer-scope tests in `routes.test.ts`).
 - **Needs:** org fact #2.
 
-### R0.3 Agent v0.3.0 · M
+### R0.3 Agent v0.4.0 · M
 
 One release, two parts.
 
@@ -232,14 +235,12 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-Design R0.2 (Teams + manager scope) or R0.1 (Seat model). R0.2 is the larger
-risk because it changes the scope rule every dashboard route depends on.
+R0.3 agent path privacy plus the remaining v0.3 transcript fields (agent 0.4.0).
 
 ```
-BurnWatch rollout R0.2: design teams + manager scope.
-Admins see all, managers see their team, developers see self.
-Change viewerScope in apps/api/src/plugins/jwt.ts to return a user-id set,
-add teams/team_members to packages/db, add team filter + team comparison
-to Overview and Trends (C5). Extend viewer-scope route tests.
-See tasks/ROLLOUT-ROADMAP.md.
+BurnWatch rollout R0.3: agent path privacy + new transcript fields.
+Send repo name + normalised Git remote, never absolute paths; decide and migrate
+paths already stored. Add attributionSkill, isSidechain, permissionMode,
+entrypoint, version, hashed accountUuid, gitBranch as optional fields.
+Ships as agent 0.4.0. See tasks/ROLLOUT-ROADMAP.md R0.3.
 ```
