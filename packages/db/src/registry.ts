@@ -6,6 +6,7 @@ import type {
   DeviceDoc,
   DeviceTokenDoc,
   InviteDoc,
+  McpApprovalDoc,
   OrgIntegrationDoc,
   OrganizationDoc,
   PendingDeviceDoc,
@@ -118,6 +119,9 @@ export const COLLECTIONS = {
 
   // Admin list, seat cost and idle-seat checks all read one org's seats.
   seats: spec<SeatDoc>([{ name: 'seats_org_agent', key: { orgId: 1, agent: 1 } }]),
+
+  // The governance MCP list reads one org's approvals on every request.
+  mcpApprovals: spec<McpApprovalDoc>([{ name: 'mcpApprovals_org', key: { orgId: 1 } }]),
 
   rateLimits: spec<RateLimitDoc>([
     // Replaces the SWEEP_EVERY counter and its delete in plugins/rate-limit-store.ts.

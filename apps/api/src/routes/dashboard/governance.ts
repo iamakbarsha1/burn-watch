@@ -1,15 +1,21 @@
 import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
 import { z } from 'zod'
-import { getStore, type IsoDate, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
+import { getStore, mcpApprovalKey, type IsoDate, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
 import {
   FREE_TIER_AGENTS,
+  McpApprovalInputSchema,
+  McpServerKeySchema,
   type AgentName,
   type FreeTierResponse,
   type FreeTierRow,
   type FreeTierTeamTotal,
+  type McpInventoryResponse,
+  type McpServerRow,
+  type McpServerSource,
 } from '@burn-watch/shared'
-import { comparableTeams, readScope } from '../../plugins/jwt.js'
+import { comparableTeams, readScope, requireAdmin } from '../../plugins/jwt.js'
+import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 
 const QuerySchema = z
@@ -52,6 +58,52 @@ export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userI
     { $sort: { tokens: -1 } },
   ]
 }
+
+/** One MCP server key over the range, summed across every user in scope. */
+interface McpGroup {
+  _id: string
+  calls: number
+  users: UserId[]
+  days: number
+  lastDate: IsoDate
+}
+
+/**
+ * B3: per MCP server key, calls, distinct users, distinct days and last date.
+ * Same unwind shape as `toolUsageTotals`; the key stays a value throughout.
+ */
+export function mcpInventoryPipeline(range: EnrichmentRange): Document[] {
+  return [
+    enrichmentMatch(range),
+    { $project: { userId: 1, date: 1, entries: { $objectToArray: { $ifNull: ['$mcpUsage', {}] } } } },
+    { $unwind: '$entries' },
+    {
+      $group: {
+        _id: '$entries.k',
+        calls: { $sum: '$entries.v' },
+        users: { $addToSet: '$userId' },
+        dates: { $addToSet: '$date' },
+        lastDate: { $max: '$date' },
+      },
+    },
+    { $project: { calls: 1, users: 1, days: { $size: '$dates' }, lastDate: 1 } },
+    { $sort: { calls: -1, _id: 1 } },
+  ]
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The prefix is the only hint: the agent sends the name, never a URL or command. */
+export function mcpSource(server: string): McpServerSource {
+  if (server.startsWith('plugin_')) return 'plugin'
+  if (server.startsWith('claude_ai_')) return 'claude.ai'
+  if (UUID.test(server)) return 'unnamed'
+  return 'local'
+}
+
+// The key travels in the body or query, not the path: Fastify caps path params
+// at 100 characters, and a key may hold a `/`.
+const ServerQuery = z.object({ server: McpServerKeySchema })
 
 export async function governanceRoutes(fastify: FastifyInstance) {
   // GET /governance/free-tier — admins see the org, managers their own teams.
@@ -128,5 +180,80 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       .sort((a, b) => b.tokens - a.tokens)
 
     return { rows, byTeam } satisfies FreeTierResponse
+  })
+
+  // GET /governance/mcp — B3 inventory. Same role rules as free-tier; managers read approvals too.
+  fastify.get('/governance/mcp', async (request, reply) => {
+    if (request.user.role !== 'admin' && request.user.role !== 'manager') {
+      return reply.status(403).send({ error: 'Governance requires admin or manager role' })
+    }
+    const parsed = QuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const scope = await readScope(request.user, parsed.data.teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    const [groups, approvals] = await Promise.all([
+      store.claudeEnrichment.aggregate<McpGroup>(
+        mcpInventoryPipeline({ orgId, userIds: scope, from: parsed.data.from as IsoDate, to: parsed.data.to as IsoDate }),
+      ),
+      store.mcpApprovals.find({ orgId }),
+    ])
+
+    const ids = [...new Set(groups.flatMap((g) => g.users))]
+    const users = ids.length
+      ? await store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1 } })
+      : []
+    const nameOf = new Map(users.map((u) => [u._id, u.name]))
+    const approvalOf = new Map(approvals.map((a) => [a.server, a]))
+
+    const servers = groups.map<McpServerRow>((g) => ({
+      server: g._id,
+      source: mcpSource(g._id),
+      approved: approvalOf.has(g._id),
+      note: approvalOf.get(g._id)?.note ?? null,
+      users: g.users
+        .map((userId) => ({ userId, name: nameOf.get(userId) ?? null }))
+        .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')),
+      calls: g.calls,
+      days: g.days,
+      lastDate: g.lastDate,
+    }))
+    const used = new Set(groups.map((g) => g._id))
+    const unusedApprovals = approvals
+      .filter((a) => !used.has(a.server))
+      .map((a) => ({ server: a.server, note: a.note }))
+      .sort((a, b) => a.server.localeCompare(b.server))
+
+    return { servers, unusedApprovals } satisfies McpInventoryResponse
+  })
+
+  const admin = { preHandler: requireAdmin(fastify) }
+
+  // PUT /governance/mcp-approvals { server, note? } — approve one exact key, or change its note.
+  fastify.put('/governance/mcp-approvals', admin, async (request) => {
+    const { server, note } = McpApprovalInputSchema.parse(request.body)
+    const orgId = request.user.orgId as OrgId
+    await getStore().mcpApprovals.updateOne(
+      { _id: mcpApprovalKey(orgId, server) },
+      {
+        $set: { note: note || null, approvedBy: request.user.userId as UserId, approvedAt: new Date() },
+        $setOnInsert: { orgId, server },
+      },
+      { upsert: true },
+    )
+    return { server, approved: true }
+  })
+
+  // DELETE /governance/mcp-approvals?server= — another org's approval deletes nothing and answers 404.
+  fastify.delete('/governance/mcp-approvals', admin, async (request, reply) => {
+    const { server } = ServerQuery.parse(request.query)
+    const orgId = request.user.orgId as OrgId
+    const deleted = await getStore().mcpApprovals.deleteOne({ _id: mcpApprovalKey(orgId, server), orgId })
+    if (deleted === 0) return reply.status(404).send({ error: 'Approval not found' })
+    return { server, approved: false }
   })
 }
