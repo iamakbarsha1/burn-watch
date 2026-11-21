@@ -4,17 +4,19 @@ export const AgentNameSchema = z.enum(['claude', 'qwen', 'gemini', 'codex', 'cop
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 
+// `.describe()` text on every field the agent sends is what the R0.4
+// transparency page shows; its test fails when a field has none.
 export const UsageEventSchema = z.object({
-  agent: AgentNameSchema,
-  date: z.string().regex(dateRegex, 'Must be YYYY-MM-DD'),
-  modelName: z.string().min(1),
-  inputTokens: z.number().int().nonnegative(),
-  outputTokens: z.number().int().nonnegative(),
-  cacheCreateTokens: z.number().int().nonnegative(),
-  cacheReadTokens: z.number().int().nonnegative(),
-  totalTokens: z.number().int().nonnegative(),
-  costUsd: z.number().nonnegative(),
-  isFreeTier: z.boolean(),
+  agent: AgentNameSchema.describe('Which coding agent (claude, qwen, gemini, codex, copilot)'),
+  date: z.string().regex(dateRegex, 'Must be YYYY-MM-DD').describe('Day the usage happened'),
+  modelName: z.string().min(1).describe('Model name, e.g. claude-sonnet-4'),
+  inputTokens: z.number().int().nonnegative().describe('Input tokens'),
+  outputTokens: z.number().int().nonnegative().describe('Output tokens'),
+  cacheCreateTokens: z.number().int().nonnegative().describe('Tokens written to the prompt cache'),
+  cacheReadTokens: z.number().int().nonnegative().describe('Tokens read from the prompt cache'),
+  totalTokens: z.number().int().nonnegative().describe('Sum of the four token counts'),
+  costUsd: z.number().nonnegative().describe('API-equivalent cost, USD'),
+  isFreeTier: z.boolean().describe('Whether the usage was on a free tier'),
 })
 
 export const ActivityEntrySchema = z.object({
@@ -27,8 +29,6 @@ export const ActivityEntrySchema = z.object({
 const count = z.number().int().nonnegative()
 const countMap = z.record(z.string(), count)
 
-// `.describe()` text is what the R0.4 transparency page shows for each field
-// the agent sends, so every enrichment field carries one.
 export const BranchEntrySchema = z.object({
   name: z.string().max(200).describe('Git branch name, as Claude Code recorded it'),
   cost: z.number().nonnegative().describe("Share of the day's Claude cost spent on this branch, USD"),
@@ -98,18 +98,18 @@ export const ClaudeEnrichmentSchema = z.object({
 })
 
 export const UsagePayloadSchema = z.object({
-  deviceId: z.string().uuid(),
-  date: z.string().regex(dateRegex),
-  events: z.array(UsageEventSchema).max(500),
-  enrichment: ClaudeEnrichmentSchema.nullable(),
+  deviceId: z.string().uuid().describe('BurnWatch ID for this laptop'),
+  date: z.string().regex(dateRegex).describe('Day the sync covers'),
+  events: z.array(UsageEventSchema).max(500).describe('Token and cost totals per agent and model'),
+  enrichment: ClaudeEnrichmentSchema.nullable().describe('Claude Code activity detail, read from local transcripts'),
   agentVersion: z.string().min(1).max(50).optional().describe('BurnWatch agent version. Agent 0.4.0+'),
 })
 
 export const RegisterDeviceSchema = z.object({
-  email: z.string().email(),
-  hostname: z.string().min(1).max(255),
-  platform: z.string().min(1).max(50),
-  agentVersion: z.string().min(1).max(50),
+  email: z.string().email().describe('Your work email, to link the laptop to your account'),
+  hostname: z.string().min(1).max(255).describe("The laptop's network name"),
+  platform: z.string().min(1).max(50).describe('Operating system (darwin, linux, win32)'),
+  agentVersion: z.string().min(1).max(50).describe('BurnWatch agent version at sign-in'),
 })
 
 const DeviceCode = z.string().length(6).regex(/^[A-Z0-9]{6}$/)
