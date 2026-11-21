@@ -43,6 +43,20 @@ function projectRoot(cwd: string, memo: Map<string, string>): string {
   return dir
 }
 
+// Claude Code records a usage-limit stop as a synthetic assistant entry flagged
+// `isApiErrorMessage`. Current CLIs write "You've hit your session limit · resets
+// 3pm"; older ones wrote "Claude AI usage limit reached|<epoch>" or
+// "5-hour limit reached ∙ resets 3pm". The flag keeps Claude's own prose about
+// limits from counting.
+const LIMIT_NOTICE = /You've hit your .*limit|limit reached/i
+
+export function limitNotice(entry: any): string | null {
+  if (entry?.isApiErrorMessage !== true) return null
+  const content = entry.message?.content
+  const text = Array.isArray(content) ? content.find((b: any) => b?.type === 'text')?.text : undefined
+  return typeof text === 'string' && LIMIT_NOTICE.test(text) ? text : null
+}
+
 interface ProjectBucket {
   sessions: Set<string>
   tokens: number
@@ -60,6 +74,9 @@ interface DateBucket {
   toolUsage: Record<string, number>
   shellUsage: Record<string, number>
   mcpUsage: Record<string, number>
+  // Keyed by notice text: one limit is echoed into every session resumed
+  // before it resets, and the text carries the reset time.
+  limitNotices: Set<string>
 }
 
 function newBucket(): DateBucket {
@@ -74,6 +91,7 @@ function newBucket(): DateBucket {
     toolUsage: {},
     shellUsage: {},
     mcpUsage: {},
+    limitNotices: new Set(),
   }
 }
 
@@ -141,6 +159,9 @@ export class CodeburnCollector implements EnrichmentCollector {
             b.outputTokens += output
             b.cacheCreateTokens += cacheCreate
             b.cacheReadTokens += cacheRead
+
+            const notice = limitNotice(entry)
+            if (notice) b.limitNotices.add(notice)
 
             const cwd: string = entry.cwd ?? ''
             if (cwd) {
@@ -213,6 +234,7 @@ export class CodeburnCollector implements EnrichmentCollector {
         toolUsage: b.toolUsage,
         shellUsage: b.shellUsage,
         mcpUsage: b.mcpUsage,
+        limitHitCount: b.limitNotices.size,
       })
     }
     return result

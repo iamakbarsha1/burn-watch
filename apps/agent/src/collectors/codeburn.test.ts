@@ -263,3 +263,58 @@ describe('CodeburnCollector', () => {
     expect(enrichment?.projectBreakdown[0].cost).toBeCloseTo(5, 10)
   })
 })
+
+// Synthetic copy of the entry Claude Code writes when a usage limit stops a
+// turn: an assistant record flagged isApiErrorMessage with the notice as text.
+function limitHit(text: string, timestamp = `${DATE}T10:00:00.000Z`) {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp,
+    isApiErrorMessage: true,
+    error: 'rate_limit',
+    message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] },
+  })
+}
+
+describe('limit-hit counting', () => {
+  const SESSION = "You've hit your session limit · resets 3pm (UTC)"
+
+  it('counts current and older notice wordings', async () => {
+    writeSession('a.jsonl', [
+      limitHit(SESSION),
+      limitHit('Claude AI usage limit reached|1762344000'),
+      limitHit('5-hour limit reached ∙ resets 3pm'),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.limitHitCount).toBe(3)
+  })
+
+  it('reports zero when no notice matches', async () => {
+    writeSession('a.jsonl', [
+      assistant([{ type: 'text', text: "You've hit your session limit" }]),
+      limitHit('API Error: 500 Internal server error'),
+    ])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.limitHitCount).toBe(0)
+  })
+
+  it('counts the same notice once per day, even across sessions', async () => {
+    writeSession('a.jsonl', [limitHit(SESSION), limitHit(SESSION)])
+    writeSession('b.jsonl', [limitHit(SESSION)])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.limitHitCount).toBe(1)
+  })
+
+  it('counts the same notice on two days twice', async () => {
+    writeSession('a.jsonl', [limitHit(SESSION), limitHit(SESSION, '2026-11-04T10:00:00.000Z')])
+    const byDate = await new CodeburnCollector(root).collectRange(['2026-11-04', DATE])
+    expect(byDate.get('2026-11-04')?.limitHitCount).toBe(1)
+    expect(byDate.get(DATE)?.limitHitCount).toBe(1)
+  })
+
+  it('skips malformed lines', async () => {
+    writeSession('a.jsonl', ['{"type":"assistant","isApiErrorMessage":true', limitHit(SESSION)])
+    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    expect(enrichment?.limitHitCount).toBe(1)
+  })
+})
