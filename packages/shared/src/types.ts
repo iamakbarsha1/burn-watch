@@ -469,6 +469,31 @@ export interface FreeTierResponse {
   byTeam: FreeTierTeamTotal[]
 }
 
+/** R1 B2. 'unset' means the org has no rule for the agent yet. */
+export type AgentPolicyRule = 'allowed' | 'models' | 'blocked' | 'unset'
+
+export interface AgentPolicy {
+  agent: AgentName
+  rule: AgentPolicyRule
+  /** Exact model names; only used when rule is 'models'. */
+  models: string[]
+  note: string | null
+}
+
+export type ViolationReason = 'agent-blocked' | 'agent-not-set' | 'model-not-listed'
+
+/** One (user, agent, model) group of usage outside the policy. Same shape as a free-tier row. */
+export type ViolationRow = Omit<FreeTierRow, 'reason'> & { reason: ViolationReason }
+
+export interface ViolationsResponse {
+  /** All five agents, in AGENTS order. */
+  policies: AgentPolicy[]
+  rows: ViolationRow[]
+  byTeam: FreeTierTeamTotal[]
+  /** Model names used in the range per agent, for the edit form. Admins only; {} for managers. */
+  seenModels: Partial<Record<AgentName, string[]>>
+}
+
 /** Where an MCP server key came from, read off its prefix. */
 export type McpServerSource = 'plugin' | 'claude.ai' | 'local' | 'unnamed'
 

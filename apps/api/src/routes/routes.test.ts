@@ -3026,3 +3026,153 @@ describe('MCP approval routes', () => {
     expect((await send('DELETE', one)).json()).toEqual({ server: 'claude_ai_Neon', approved: false })
   })
 })
+
+describe('GET /v1/dashboard/governance/violations', () => {
+  const URL = range('/v1/dashboard/governance/violations')
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const aggregates = () => callsTo(mongoState, 'usageEvents', 'aggregate').map((c) => c[0] as Document[])
+  const policy = (agent: string, rule: string, models: string[] = []) => ({
+    _id: `${ORG_A}:${agent}`,
+    orgId: ORG_A,
+    agent,
+    rule,
+    models,
+    note: null,
+  })
+
+  it('refuses a developer before reading anything', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('flags every agent with no rule, and lists all five as unset', async () => {
+    const body = (await get('admin')).json()
+    expect(body.policies.map((p: { agent: string; rule: string }) => `${p.agent}:${p.rule}`)).toEqual([
+      'claude:unset',
+      'qwen:unset',
+      'gemini:unset',
+      'codex:unset',
+      'copilot:unset',
+    ])
+    expect(callsTo(mongoState, 'agentPolicies', 'find')[0][0]).toEqual({ orgId: ORG_A })
+    expect(aggregates()[0][0].$match).toEqual({
+      orgId: ORG_A,
+      date: { $gte: DATE, $lte: DATE },
+      $or: [{ agent: { $in: ['claude', 'qwen', 'gemini', 'codex', 'copilot'] } }],
+    })
+  })
+
+  it('matches unlisted models by exact name and skips allowed agents', async () => {
+    mongoState.docs.agentPolicies = [
+      policy('claude', 'models', ['claude-opus-5']),
+      policy('qwen', 'blocked'),
+      policy('gemini', 'allowed'),
+      policy('codex', 'allowed'),
+      policy('copilot', 'allowed'),
+    ]
+    await get('admin')
+    expect(aggregates()[0][0].$match.$or).toEqual([
+      { agent: { $in: ['qwen'] } },
+      { agent: 'claude', modelName: { $nin: ['claude-opus-5'] } },
+    ])
+  })
+
+  it('runs no violation query when every agent is allowed', async () => {
+    mongoState.docs.agentPolicies = ['claude', 'qwen', 'gemini', 'codex', 'copilot'].map((a) => policy(a, 'allowed'))
+    mongoState.aggregates.usageEvents = [{ _id: 'claude', models: ['claude-opus-5'] }]
+    const body = (await get('admin')).json()
+    expect(body.rows).toEqual([])
+    // Only the seen-models read.
+    expect(aggregates()).toHaveLength(1)
+    expect(aggregates()[0][0].$match.$or).toBeUndefined()
+  })
+
+  it('names each row and says why it was flagged', async () => {
+    mongoState.docs.agentPolicies = [policy('claude', 'models', ['claude-opus-5']), policy('qwen', 'blocked')]
+    mongoState.aggregates.usageEvents = [
+      { _id: { userId: USER_A, agent: 'claude', modelName: 'claude-opus-5-5' }, days: 2, tokens: 50, firstDate: DATE, lastDate: DATE },
+      { _id: { userId: USER_A, agent: 'qwen', modelName: 'coder-model' }, days: 1, tokens: 10, firstDate: DATE, lastDate: DATE },
+      { _id: { userId: USER_B, agent: 'gemini', modelName: 'gemini-3' }, days: 1, tokens: 5, firstDate: DATE, lastDate: DATE },
+    ]
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A, name: 'Ada', email: 'ada@x.test' }]
+    // A manager, because the fake answers every usageEvents aggregate with the
+    // same seed and an admin also runs the seen-models read.
+    const body = (await get('manager')).json()
+    expect(body.rows.map((r: { modelName: string; reason: string }) => [r.modelName, r.reason])).toEqual([
+      ['claude-opus-5-5', 'model-not-listed'],
+      ['coder-model', 'agent-blocked'],
+      ['gemini-3', 'agent-not-set'],
+    ])
+    expect(body.rows[0]).toMatchObject({ userName: 'Ada', userEmail: 'ada@x.test', teams: [] })
+    expect(body.policies[0]).toEqual({ agent: 'claude', rule: 'models', models: ['claude-opus-5'], note: null })
+  })
+
+  it('limits a manager to their teams and skips the seen-models read', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const body = (await get('manager')).json()
+    expect(aggregates()).toHaveLength(1)
+    expect(aggregates()[0][0].$match.userId).toEqual({ $in: [USER_A, USER_B] })
+    expect(body.seenModels).toEqual({})
+  })
+})
+
+describe('agent policy routes', () => {
+  const send = (method: 'GET' | 'PUT' | 'DELETE', url: string, payload?: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method, url, payload, headers: auth(token({ role })) })
+  const one = '/v1/dashboard/governance/agent-policy/claude'
+
+  it.each(['developer', 'manager'] as const)('answers 403 to a %s and touches nothing', async (role) => {
+    expect((await send('PUT', one, { rule: 'allowed' }, role)).statusCode).toBe(403)
+    expect((await send('DELETE', one, undefined, role)).statusCode).toBe(403)
+    expect((await send('GET', '/v1/dashboard/governance/violations/count', undefined, role)).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('upserts an org-scoped rule with de-duplicated exact models', async () => {
+    const res = await send('PUT', one, { rule: 'models', models: ['claude-opus-5', ' claude-opus-5 '], note: ' ok ' })
+    expect(res.statusCode).toBe(200)
+    const [filter, update, options] = callsTo(mongoState, 'agentPolicies', 'updateOne')[0] as [
+      unknown,
+      { $set: Record<string, unknown>; $setOnInsert: unknown },
+      unknown,
+    ]
+    expect(filter).toEqual({ _id: `${ORG_A}:claude` })
+    expect(update.$set).toMatchObject({ rule: 'models', models: ['claude-opus-5'], note: 'ok', updatedBy: USER_A })
+    expect(update.$setOnInsert).toEqual({ orgId: ORG_A, agent: 'claude' })
+    expect(options).toEqual({ upsert: true })
+  })
+
+  it('drops models when the rule is not models-only', async () => {
+    await send('PUT', one, { rule: 'blocked', models: ['x'] })
+    const update = callsTo(mongoState, 'agentPolicies', 'updateOne')[0][1] as { $set: { models: unknown } }
+    expect(update.$set.models).toEqual([])
+  })
+
+  it.each([
+    ['an unknown agent', '/v1/dashboard/governance/agent-policy/cursor', { rule: 'allowed' }],
+    ['models-only with no models', one, { rule: 'models', models: [] }],
+    ['over 50 models', one, { rule: 'models', models: Array.from({ length: 51 }, (_, i) => `m${i}`) }],
+    ['an unknown rule', one, { rule: 'maybe' }],
+  ])('rejects %s with 400', async (_label, url, payload) => {
+    expect((await send('PUT', url, payload)).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'agentPolicies', 'updateOne')).toEqual([])
+  })
+
+  it('resets to unset inside the caller org, 404 when there was no rule', async () => {
+    expect((await send('DELETE', one)).statusCode).toBe(404)
+    expect(callsTo(mongoState, 'agentPolicies', 'deleteOne')[0][0]).toEqual({ _id: `${ORG_A}:claude`, orgId: ORG_A })
+  })
+
+  it('counts violation groups over the last 30 days for an admin', async () => {
+    mongoState.aggregates.usageEvents = [{ n: 4 }]
+    expect((await send('GET', '/v1/dashboard/governance/violations/count')).json()).toEqual({ count: 4 })
+    const pipeline = callsTo(mongoState, 'usageEvents', 'aggregate')[0][0] as Document[]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, $or: [{ agent: { $in: expect.any(Array) } }] })
+    expect(pipeline.at(-1)).toEqual({ $count: 'n' })
+  })
+})

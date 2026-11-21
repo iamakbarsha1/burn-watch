@@ -1,29 +1,45 @@
 import type { FastifyInstance } from 'fastify'
 import type { Document } from 'mongodb'
 import { z } from 'zod'
-import { getStore, mcpApprovalKey, type IsoDate, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
 import {
+  agentPolicyKey,
+  getStore,
+  mcpApprovalKey,
+  type AgentPolicyDoc,
+  type IsoDate,
+  type OrgId,
+  type TeamId,
+  type UserId,
+} from '@burn-watch/db'
+import {
+  AgentNameSchema,
+  AgentPolicyInputSchema,
   FREE_TIER_AGENTS,
   McpApprovalInputSchema,
   McpServerKeySchema,
   type AgentName,
+  type AgentPolicy,
   type FreeTierResponse,
   type FreeTierRow,
   type FreeTierTeamTotal,
   type McpInventoryResponse,
   type McpServerRow,
   type McpServerSource,
+  type ViolationReason,
+  type ViolationRow,
+  type ViolationsResponse,
 } from '@burn-watch/shared'
-import { comparableTeams, readScope, requireAdmin } from '../../plugins/jwt.js'
+import { comparableTeams, readScope, requireAdmin, type JwtPayload } from '../../plugins/jwt.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
+import { daysBefore, today } from './dates.js'
 
 const QuerySchema = z
   .object({ ...dateRangeFields, ...teamIdField })
   .refine((d) => d.from && d.to, { message: 'Provide from+to' })
 
-/** One (user, agent, model) group of free-tier rows over the range. */
-interface FreeTierGroup {
+/** One (user, agent, model) group of usage rows over the range. */
+interface UsageGroup {
   _id: { userId: UserId; agent: AgentName; modelName: string }
   days: number
   tokens: number
@@ -31,20 +47,10 @@ interface FreeTierGroup {
   lastDate: IsoDate
 }
 
-/**
- * B1: every free-tier usage row in range, grouped per user, agent and model.
- * `userIds` undefined means the whole org (admin with no team filter).
- */
-export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userIds?: UserId[]): Document[] {
+/** Usage rows matching `match`, grouped per user, agent and model. Shared by B1 and B2. */
+function usageGroupPipeline(match: Document): Document[] {
   return [
-    {
-      $match: {
-        orgId,
-        isFreeTier: true,
-        date: { $gte: from, $lte: to },
-        ...(userIds && { userId: { $in: userIds } }),
-      },
-    },
+    { $match: match },
     {
       $group: {
         _id: { userId: '$userId', agent: '$agent', modelName: '$modelName' },
@@ -57,6 +63,121 @@ export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userI
     { $project: { days: { $size: '$dates' }, tokens: 1, firstDate: 1, lastDate: 1 } },
     { $sort: { tokens: -1 } },
   ]
+}
+
+/**
+ * B1: every free-tier usage row in range, grouped per user, agent and model.
+ * `userIds` undefined means the whole org (admin with no team filter).
+ */
+export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userIds?: UserId[]): Document[] {
+  return usageGroupPipeline({
+    orgId,
+    isFreeTier: true,
+    date: { $gte: from, $lte: to },
+    ...(userIds && { userId: { $in: userIds } }),
+  })
+}
+
+const AGENT_NAMES = AgentNameSchema.options
+
+/**
+ * B2: the `$or` branches that select usage outside the policy. An agent with
+ * no rule or a blocked rule matches whole; a models-only agent matches every
+ * model not listed, by exact name. Empty means nothing can violate.
+ */
+export function violationBranches(policies: Pick<AgentPolicyDoc, 'agent' | 'rule' | 'models'>[]): Document[] {
+  const byAgent = new Map(policies.map((p) => [p.agent, p]))
+  const whole = AGENT_NAMES.filter((a) => !byAgent.has(a) || byAgent.get(a)!.rule === 'blocked')
+  const models = AGENT_NAMES.flatMap((a) => {
+    const p = byAgent.get(a)
+    return p?.rule === 'models' ? [{ agent: a, modelName: { $nin: p.models } }] : []
+  })
+  return [...(whole.length ? [{ agent: { $in: whole } }] : []), ...models]
+}
+
+export function violationReason(policies: Map<AgentName, AgentPolicyDoc>, agent: AgentName): ViolationReason {
+  const rule = policies.get(agent)?.rule
+  return rule === 'blocked' ? 'agent-blocked' : rule === 'models' ? 'model-not-listed' : 'agent-not-set'
+}
+
+/**
+ * Names, emails and team names for usage groups, plus per-team totals. Team
+ * names only come from teams the viewer may see, so a manager never learns the
+ * name of a team they do not manage.
+ */
+async function nameGroups<R>(
+  viewer: JwtPayload,
+  groups: UsageGroup[],
+  reasonOf: (g: UsageGroup) => R,
+) {
+  if (groups.length === 0) return { rows: [], byTeam: [] }
+  const store = getStore()
+  const orgId = viewer.orgId as OrgId
+  const ids = [...new Set(groups.map((g) => g._id.userId))]
+  const [users, teams] = await Promise.all([
+    store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1, email: 1 } }),
+    comparableTeams(viewer),
+  ])
+  const members = teams.length
+    ? await store.teamMembers.find({ orgId, teamId: { $in: teams.map((t) => t._id) }, userId: { $in: ids } })
+    : []
+
+  const userById = new Map(users.map((u) => [u._id, u]))
+  const teamName = new Map(teams.map((t) => [t._id, t.name]))
+  const teamsOf = new Map<UserId, TeamId[]>()
+  for (const m of members) {
+    if (!ids.includes(m.userId) || !teamName.has(m.teamId)) continue
+    teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
+  }
+
+  const rows = groups.map((g) => ({
+    userId: g._id.userId,
+    userName: userById.get(g._id.userId)?.name ?? null,
+    userEmail: userById.get(g._id.userId)?.email ?? null,
+    teams: (teamsOf.get(g._id.userId) ?? []).map((id) => teamName.get(id)!).sort(),
+    agent: g._id.agent,
+    modelName: g._id.modelName,
+    reason: reasonOf(g),
+    days: g.days,
+    tokens: g.tokens,
+    firstDate: g.firstDate,
+    lastDate: g.lastDate,
+  }))
+
+  // A user in two teams counts in both, as on /teams/compare.
+  const totals = new Map<TeamId | null, { users: Set<UserId>; tokens: number }>()
+  for (const g of groups) {
+    const userTeams = teamsOf.get(g._id.userId) ?? []
+    for (const key of userTeams.length ? userTeams : [null]) {
+      const t = totals.get(key) ?? { users: new Set(), tokens: 0 }
+      t.users.add(g._id.userId)
+      t.tokens += g.tokens
+      totals.set(key, t)
+    }
+  }
+  const byTeam = [...totals]
+    .map<FreeTierTeamTotal>(([teamId, t]) => ({
+      teamId,
+      teamName: teamId ? teamName.get(teamId)! : null,
+      users: t.users.size,
+      tokens: t.tokens,
+    }))
+    .sort((a, b) => b.tokens - a.tokens)
+
+  return { rows, byTeam }
+}
+
+/** Number of violation groups in the org over the last 30 days: the admin alert. */
+export async function violationCount(orgId: OrgId): Promise<number> {
+  const store = getStore()
+  const branches = violationBranches(await store.agentPolicies.find({ orgId }))
+  if (branches.length === 0) return 0
+  const to = today()
+  const [r] = await store.usageEvents.aggregate<{ n: number }>([
+    ...usageGroupPipeline({ orgId, date: { $gte: daysBefore(to, 29), $lte: to }, $or: branches }).slice(0, 2),
+    { $count: 'n' },
+  ])
+  return r?.n ?? 0
 }
 
 /** One MCP server key over the range, summed across every user in scope. */
@@ -121,65 +242,12 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const scope = await readScope(request.user, parsed.data.teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
 
-    const store = getStore()
     const orgId = request.user.orgId as OrgId
-    const groups = await store.usageEvents.aggregate<FreeTierGroup>(freeTierPipeline(orgId, from, to, scope))
-    if (groups.length === 0) return { rows: [], byTeam: [] } satisfies FreeTierResponse
-
-    const ids = [...new Set(groups.map((g) => g._id.userId))]
-    // Team names only from teams the viewer may see, so a manager never learns
-    // the name of a team they do not manage.
-    const [users, teams] = await Promise.all([
-      store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1, email: 1 } }),
-      comparableTeams(request.user),
-    ])
-    const members = teams.length
-      ? await store.teamMembers.find({ orgId, teamId: { $in: teams.map((t) => t._id) }, userId: { $in: ids } })
-      : []
-
-    const userById = new Map(users.map((u) => [u._id, u]))
-    const teamName = new Map(teams.map((t) => [t._id, t.name]))
-    const teamsOf = new Map<UserId, TeamId[]>()
-    for (const m of members) {
-      if (!ids.includes(m.userId) || !teamName.has(m.teamId)) continue
-      teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
-    }
-
-    const rows = groups.map<FreeTierRow>((g) => ({
-      userId: g._id.userId,
-      userName: userById.get(g._id.userId)?.name ?? null,
-      userEmail: userById.get(g._id.userId)?.email ?? null,
-      teams: (teamsOf.get(g._id.userId) ?? []).map((id) => teamName.get(id)!).sort(),
-      agent: g._id.agent,
-      modelName: g._id.modelName,
-      reason: FREE_TIER_AGENTS.has(g._id.agent) ? 'free-tier-agent' : 'unpriced-model',
-      days: g.days,
-      tokens: g.tokens,
-      firstDate: g.firstDate,
-      lastDate: g.lastDate,
-    }))
-
-    // A user in two teams counts in both, as on /teams/compare.
-    const totals = new Map<TeamId | null, { users: Set<UserId>; tokens: number }>()
-    for (const g of groups) {
-      const userTeams = teamsOf.get(g._id.userId) ?? []
-      for (const key of userTeams.length ? userTeams : [null]) {
-        const t = totals.get(key) ?? { users: new Set(), tokens: 0 }
-        t.users.add(g._id.userId)
-        t.tokens += g.tokens
-        totals.set(key, t)
-      }
-    }
-    const byTeam = [...totals]
-      .map<FreeTierTeamTotal>(([teamId, t]) => ({
-        teamId,
-        teamName: teamId ? teamName.get(teamId)! : null,
-        users: t.users.size,
-        tokens: t.tokens,
-      }))
-      .sort((a, b) => b.tokens - a.tokens)
-
-    return { rows, byTeam } satisfies FreeTierResponse
+    const groups = await getStore().usageEvents.aggregate<UsageGroup>(freeTierPipeline(orgId, from, to, scope))
+    const named = await nameGroups(request.user, groups, (g) =>
+      FREE_TIER_AGENTS.has(g._id.agent) ? ('free-tier-agent' as const) : ('unpriced-model' as const),
+    )
+    return named satisfies FreeTierResponse
   })
 
   // GET /governance/mcp — B3 inventory. Same role rules as free-tier; managers read approvals too.
@@ -232,6 +300,89 @@ export async function governanceRoutes(fastify: FastifyInstance) {
   })
 
   const admin = { preHandler: requireAdmin(fastify) }
+
+  // GET /governance/violations — B2. The policy for all five agents, usage
+  // outside it, and (admins) the models seen per agent for the edit form.
+  fastify.get('/governance/violations', async (request, reply) => {
+    const { role } = request.user
+    if (role !== 'admin' && role !== 'manager') {
+      return reply.status(403).send({ error: 'Governance requires admin or manager role' })
+    }
+    const parsed = QuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const scope = await readScope(request.user, parsed.data.teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    const base = {
+      orgId,
+      date: { $gte: parsed.data.from as IsoDate, $lte: parsed.data.to as IsoDate },
+      ...(scope && { userId: { $in: scope } }),
+    }
+    const docs = await store.agentPolicies.find({ orgId })
+    const byAgent = new Map(docs.map((d) => [d.agent, d]))
+    const branches = violationBranches(docs)
+
+    const [groups, seen] = await Promise.all([
+      branches.length ? store.usageEvents.aggregate<UsageGroup>(usageGroupPipeline({ ...base, $or: branches })) : [],
+      role === 'admin'
+        ? store.usageEvents.aggregate<{ _id: AgentName; models: string[] }>([
+            { $match: base },
+            { $group: { _id: '$agent', models: { $addToSet: '$modelName' } } },
+          ])
+        : [],
+    ])
+    const named = await nameGroups(request.user, groups, (g) => violationReason(byAgent, g._id.agent))
+
+    return {
+      policies: AGENT_NAMES.map<AgentPolicy>((agent) => {
+        const d = byAgent.get(agent)
+        return { agent, rule: d?.rule ?? 'unset', models: d?.models ?? [], note: d?.note ?? null }
+      }),
+      rows: named.rows as ViolationRow[],
+      byTeam: named.byTeam,
+      seenModels: Object.fromEntries(seen.map((s) => [s._id, [...s.models].sort()])),
+    } satisfies ViolationsResponse
+  })
+
+  // GET /governance/violations/count — the admin alert in the nav, Overview and Governance.
+  fastify.get('/governance/violations/count', admin, async (request) => ({
+    count: await violationCount(request.user.orgId as OrgId),
+  }))
+
+  // PUT /governance/agent-policy/:agent — set one agent's rule. The agent is a closed set, so it is safe in the path.
+  fastify.put('/governance/agent-policy/:agent', admin, async (request) => {
+    const agent = AgentNameSchema.parse((request.params as { agent: string }).agent)
+    const body = AgentPolicyInputSchema.parse(request.body)
+    const orgId = request.user.orgId as OrgId
+    await getStore().agentPolicies.updateOne(
+      { _id: agentPolicyKey(orgId, agent) },
+      {
+        $set: {
+          rule: body.rule,
+          models: body.rule === 'models' ? [...new Set(body.models)] : [],
+          note: body.note || null,
+          updatedBy: request.user.userId as UserId,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { orgId, agent },
+      },
+      { upsert: true },
+    )
+    return { agent, rule: body.rule }
+  })
+
+  // DELETE /governance/agent-policy/:agent — back to "not set". Another org's rule deletes nothing and answers 404.
+  fastify.delete('/governance/agent-policy/:agent', admin, async (request, reply) => {
+    const agent = AgentNameSchema.parse((request.params as { agent: string }).agent)
+    const orgId = request.user.orgId as OrgId
+    const deleted = await getStore().agentPolicies.deleteOne({ _id: agentPolicyKey(orgId, agent), orgId })
+    if (deleted === 0) return reply.status(404).send({ error: 'No rule set for this agent' })
+    return { agent, rule: 'unset' }
+  })
 
   // PUT /governance/mcp-approvals { server, note? } — approve one exact key, or change its note.
   fastify.put('/governance/mcp-approvals', admin, async (request) => {
