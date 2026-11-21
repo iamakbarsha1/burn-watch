@@ -12,6 +12,7 @@ const NAV = [
   { href: '/devices', label: 'Devices' },
   { href: '/setup', label: 'Setup' },
   { href: '/governance', label: 'Governance' },
+  { href: '/adoption', label: 'Adoption' },
   { href: '/privacy', label: 'My data' },
   { href: '/admin', label: 'Admin' },
 ]
@@ -59,12 +60,12 @@ export function SidebarNav({
   const params = useSearchParams().toString()
   const query = params ? `?${params}` : ''
   const horizontal = orientation === 'horizontal'
-  // Cosmetic only: `/admin` and `/governance` still redirect on their own, via
+  // Cosmetic only: `/admin`, `/governance` and `/adoption` still redirect on their own, via
   // getUserRole() in the page itself. This just stops a dead link from
   // showing up in the first place.
   const items = NAV.filter((item) => {
     if (item.href === '/admin') return role === 'admin'
-    if (item.href === '/governance') return role === 'admin' || role === 'manager'
+    if (item.href === '/governance' || item.href === '/adoption') return role === 'admin' || role === 'manager'
     return true
   })
 

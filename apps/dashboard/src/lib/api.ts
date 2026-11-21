@@ -25,6 +25,7 @@ import type {
   ViolationsResponse,
   AgentPolicyInput,
   McpInventoryResponse,
+  IdleSeatsResponse,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -291,6 +292,10 @@ export async function clearAgentPolicy(agent: AgentName): Promise<{ agent: Agent
 
 export async function fetchMcpInventory(from: string, to: string, teamId?: string): Promise<McpInventoryResponse> {
   return apiFetch(`/v1/dashboard/governance/mcp?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+export async function fetchIdleSeats(idleDays: number, teamId?: string): Promise<IdleSeatsResponse> {
+  return apiFetch(`/v1/dashboard/adoption/idle-seats?idleDays=${idleDays}${teamQuery(teamId)}`)
 }
 
 // The key goes in the body or query, never the path: it comes from a
