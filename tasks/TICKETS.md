@@ -32,7 +32,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-18 | P4 | Budget alerts API + UI | **done** | L | BW-14 |
 | BW-19 | P4 | Invite flow on `invites` table | **done** | L | BW-14 |
 | BW-20 | P4 | Cross-platform agent scheduling | **done** | M | BW-14 |
-| BW-21 | P4 | GitHub Copilot integration | **in progress** | L | operator (plan only) |
+| BW-21 | P4 | GitHub Copilot integration | **shipped, unverified** | L | operator (plan only) |
 | BW-22 | P5 | Dashboard inline styles to Tailwind | **done** | L | — |
 | BW-23 | P5 | Fix ARCHITECTURE.md drift | **done** | S | BW-08 |
 | BW-24 | P5 | Reconcile REVIEW.md into `docs/audits/` | **done** | S | — |
@@ -53,7 +53,7 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-39 | P4 | Setup instructions are macOS-only, and Windows could never collect | **done** | M | BW-20 |
 | BW-40 | P4 | Every developer has to install Bun and build from source | **done** | M | BW-39 |
 | BW-41 | **P2** | Concurrent rebuilds overwrite a daily snapshot with stale totals | **fixed 2026-11-10** | S | — |
-| BW-42 | P3 | `npm ci` installs the agent from a stale lockfile entry | **open** | XS | — |
+| BW-42 | P3 | `npm ci` installs the agent from a stale lockfile entry | **done** | XS | — |
 
 ---
 
@@ -1255,6 +1255,12 @@ The interim was taken instead: the dead "Connect GitHub org" button is gone,
 replaced by a "Not yet available" badge that says Copilot figures stay at zero
 until the integration exists. That closes the "dead button" harm without
 scaffolding an OAuth flow nobody can exercise.
+
+**Shipped as unverified, 2026-11-22 (R0.5).** No Copilot Business or
+Enterprise org is available, so the roadmap's fallback applies: the integration
+stays live and the admin panel carries an "Unverified" badge saying it has
+never run against a real org. What was never proven is listed under
+Verification debt above. Reopen when an org is available.
 
 Deliberately NOT built: encrypted credential storage and a connection-state
 UI. Both are scaffolding for a flow that cannot be tested, and would have to
@@ -2666,6 +2672,13 @@ eventually be committed by someone who does not.
 `npm ci` that the installed agent version matches `package.json`.
 
 **Acceptance**
-- [ ] `package-lock.json` agrees with `apps/agent/package.json`
-- [ ] A fresh `npm ci` installs the agent at the version `package.json` names
-- [ ] `npm install` on a clean tree leaves `package-lock.json` unmodified
+- [x] `package-lock.json` agrees with `apps/agent/package.json`
+- [x] A fresh `npm ci` installs the agent at the version `package.json` names
+- [x] `npm install` on a clean tree leaves `package-lock.json` unmodified
+
+**Closed 2026-11-22 (R0.5).** Already fixed by the agent version bumps: the
+lockfile and `apps/agent/package.json` both say 0.4.0. `npm install
+--package-lock-only` with the pinned `npm@11.12.1` leaves the lockfile
+unchanged. One trap remains: npm 10 (Node 22's bundled npm) strips the `libc`
+fields npm 11 writes, so a contributor on npm 10 still gets a spurious
+lockfile diff. Use the `packageManager` version, or discard that hunk.
