@@ -3176,3 +3176,126 @@ describe('agent policy routes', () => {
     expect(pipeline.at(-1)).toEqual({ $count: 'n' })
   })
 })
+
+describe('GET /v1/dashboard/adoption/idle-seats', () => {
+  const URL = '/v1/dashboard/adoption/idle-seats'
+  const USER_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const t = today()
+  const seatDoc = (userId: string, agent: string, startDate: string, usd: number) => ({
+    _id: `${userId}:${agent}`,
+    orgId: ORG_A,
+    userId,
+    agent,
+    monthlyPriceMicros: usd * 1e6,
+    startDate,
+  })
+
+  const seed = () => {
+    mongoState.docs.seats = [
+      seatDoc(USER_A, 'claude', daysBefore(t, 100), 30),
+      seatDoc(USER_B, 'copilot', daysBefore(t, 40), 19), // never used
+    ]
+    // Both the idle check and seatLastUsed read this. A pair-keyed row never
+    // matches a seat key, so both seats stay idle and USER_A has a last use.
+    mongoState.aggregates.dailySnapshots = [{ _id: { userId: USER_A, agent: 'claude' }, lastUsed: daysBefore(t, 20) }]
+    mongoState.docs.users = [
+      { _id: USER_A, orgId: ORG_A, name: 'Ada' },
+      { _id: USER_B, orgId: ORG_A, name: 'Bo' },
+    ]
+  }
+
+  it('refuses a developer before reading seats', async () => {
+    seed()
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'seats', 'find')).toEqual([])
+  })
+
+  it.each(['0', '366', '1.5', 'abc'])('rejects idleDays=%s', async (n) => {
+    expect((await get('admin', `${URL}?idleDays=${n}`)).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'seats', 'find')).toEqual([])
+  })
+
+  it('reads only the caller org, skips seats younger than the window, defaults to 14 days', async () => {
+    const res = await get('admin')
+    expect(res.json()).toEqual({ idleDays: 14, rows: [], byAgent: [], byTeam: [], totalMonthlyUsd: 0, orgSeats: 0 })
+    expect(callsTo(mongoState, 'seats', 'find')[0][0]).toEqual({ orgId: ORG_A, startDate: { $lte: daysBefore(t, 13) } })
+    expect(callsTo(mongoState, 'seats', 'find')[1][0]).toEqual({ orgId: ORG_A })
+    // Nothing idle, so no last-used, user or team reads.
+    expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+  })
+
+  it('lists idle seats longest idle first, counting a never-used seat from its start date', async () => {
+    seed()
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    const { seatCost } = await import('@burn-watch/db')
+    const res = await get('admin', `${URL}?idleDays=30`)
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(callsTo(mongoState, 'seats', 'find')[0][0]).toMatchObject({ startDate: { $lte: daysBefore(t, 29) } })
+    const [, lastUsedPipeline] = callsTo(mongoState, 'dailySnapshots', 'aggregate') as Document[][][]
+    expect(lastUsedPipeline[0][0].$match).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+    expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+
+    const [bo, ada] = mongoState.docs.seats.slice().reverse() as Parameters<typeof seatCost>[0][]
+    expect(body.rows).toEqual([
+      {
+        userId: USER_B,
+        userName: 'Bo',
+        teams: [],
+        agent: 'copilot',
+        startDate: daysBefore(t, 40),
+        lastUsed: null,
+        daysIdle: 41,
+        monthlyPriceUsd: 19,
+        costSinceUsedUsd: seatCost(bo, daysBefore(t, 40), t, t) / 1e6,
+      },
+      {
+        userId: USER_A,
+        userName: 'Ada',
+        teams: ['Platform'],
+        agent: 'claude',
+        startDate: daysBefore(t, 100),
+        lastUsed: daysBefore(t, 20),
+        daysIdle: 20,
+        monthlyPriceUsd: 30,
+        costSinceUsedUsd: seatCost(ada, daysBefore(t, 19), t, t) / 1e6,
+      },
+    ])
+    expect(body.byAgent).toEqual([
+      { agent: 'claude', seats: 1, monthlyUsd: 30 },
+      { agent: 'copilot', seats: 1, monthlyUsd: 19 },
+    ])
+    expect(body.byTeam).toEqual([{ teamId: TEAM_A, teamName: 'Platform', seats: 1, monthlyUsd: 30 }])
+    expect(body.totalMonthlyUsd).toBe(49)
+    expect(body.orgSeats).toBe(2)
+  })
+
+  it('limits a manager to their teams, and hides the org seat count', async () => {
+    seed()
+    mongoState.docs.seats.push(seatDoc(USER_C, 'gemini', daysBefore(t, 60), 20))
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const body = (await get('manager')).json()
+    expect(body.rows.map((r: { userId: string }) => r.userId).sort()).toEqual([USER_A, USER_B].sort())
+    expect(body.orgSeats).toBeNull()
+    expect(body.totalMonthlyUsd).toBe(49)
+    // Only the idle check reads seats; no org-wide count for a manager.
+    expect(callsTo(mongoState, 'seats', 'find')).toHaveLength(1)
+  })
+
+  it('answers 404 to a team outside the org and 403 to a team a manager does not run', async () => {
+    seed()
+    expect((await get('admin', `${URL}?teamId=${TEAM_B}`)).statusCode).toBe(404)
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'manager' }]
+    expect((await get('manager', `${URL}?teamId=${TEAM_A}`)).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'seats', 'find')).toEqual([])
+  })
+})

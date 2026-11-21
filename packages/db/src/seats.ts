@@ -1,7 +1,7 @@
 import type { Document } from 'mongodb'
 import type { AgentName } from '@burn-watch/shared'
 import type { SeatDoc } from './documents.js'
-import type { IsoDate, Micros, OrgId, SeatKey, UserId } from './ids.js'
+import { seatKey, type IsoDate, type Micros, type OrgId, type SeatKey, type UserId } from './ids.js'
 import type { Store } from './store.js'
 
 const DAY_MS = 86_400_000
@@ -73,4 +73,22 @@ export async function idleSeats(
   )
   const used = new Set(active.map((r) => r._id))
   return seats.filter((s) => !used.has(s._id))
+}
+
+/**
+ * Last date each (user, agent) pair had tokens, as seat keys. A pair with no
+ * tokens ever is absent. Same unwind as `activePairsPipeline`, with no date
+ * bound. The group key is a pair, not the joined key, so it cannot pass for
+ * an `activePairsPipeline` row.
+ */
+export async function seatLastUsed(store: Store, orgId: OrgId, userIds: UserId[]): Promise<Map<SeatKey, IsoDate>> {
+  if (userIds.length === 0) return new Map()
+  const rows = await store.dailySnapshots.aggregate<{ _id: { userId: UserId; agent: string }; lastUsed: IsoDate }>([
+    { $match: { orgId, userId: { $in: userIds } } },
+    { $project: { userId: 1, date: 1, entries: { $objectToArray: { $ifNull: ['$byAgent', {}] } } } },
+    { $unwind: '$entries' },
+    { $match: { 'entries.v.tokens': { $gt: 0 } } },
+    { $group: { _id: { userId: '$userId', agent: '$entries.k' }, lastUsed: { $max: '$date' } } },
+  ])
+  return new Map(rows.map((r) => [seatKey(r._id.userId, r._id.agent), r.lastUsed]))
 }
