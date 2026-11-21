@@ -115,6 +115,10 @@ Status: done, merged in PR #7. Design and plan in
 
 ### R0.3 Agent v0.4.0 · M
 
+Status: done, PR #15, agent v0.4.0 released. Migrations 0003-0004 ran on prod
+2026-11-22 (paths folded to repo and command names). Teammates still need
+`burnwatch update`; older agents keep working and the server strips their paths.
+
 Design: [R0.3-AGENT-PRIVACY-DESIGN.md](R0.3-AGENT-PRIVACY-DESIGN.md), reviewed 2026-11-21.
 
 
@@ -132,6 +136,11 @@ One release, two parts.
 - Older agents keep working; new fields are optional server-side.
 
 ### R0.4 "What BurnWatch knows about me" page · S
+
+Status: built on `feat/r0.4-transparency`, at `/privacy` ("My data" in the
+sidebar). Field list walks `RegisterDeviceSchema` and `UsagePayloadSchema`;
+who-can-see lives in `apps/dashboard/src/lib/transparency.ts`, and its test
+fails when a schema field has no description or no audience.
 
 - Every field collected, who can see it (self / manager / admin), and a plain
   statement that prompts and code are never collected.
@@ -238,12 +247,11 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R0.3 agent path privacy plus the remaining v0.4 transcript fields (agent 0.4.0).
+R0.5 onboarding cleanup: bulk CSV invite, close BW-42, decide BW-21.
 
 ```
-BurnWatch rollout R0.3: agent path privacy + new transcript fields.
-Send repo name + normalised Git remote, never absolute paths; decide and migrate
-paths already stored. Add attributionSkill, isSidechain, permissionMode,
-entrypoint, version, hashed accountUuid, gitBranch as optional fields.
-Ships as agent 0.4.0. See tasks/ROLLOUT-ROADMAP.md R0.3.
+BurnWatch rollout R0.5: onboarding cleanup.
+Bulk invite from CSV on the Admin page (email, role, team). Close BW-42.
+Decide BW-21 Copilot: ship as "unverified" if no Copilot Business org.
+See tasks/ROLLOUT-ROADMAP.md R0.5.
 ```
