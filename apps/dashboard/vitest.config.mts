@@ -11,6 +11,8 @@ import { defineConfig } from 'vitest/config'
  * root workspace already carries vitest.
  */
 export default defineConfig({
+  // tsconfig keeps `jsx: preserve` for Next; tests need the JSX compiled.
+  oxc: { jsx: { runtime: 'automatic' } },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

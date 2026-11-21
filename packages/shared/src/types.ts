@@ -433,3 +433,38 @@ export interface CopilotSeatsResponse {
    */
   ambiguousLogins: string[]
 }
+
+// GET /v1/dashboard/governance/free-tier (B1). Admins see the org, managers
+// their own teams. `reason` says why the agent flagged the row: an agent with
+// only a free tier, or a model ccusage has no price for.
+export type FreeTierReason = 'free-tier-agent' | 'unpriced-model'
+
+export interface FreeTierRow {
+  userId: string
+  /** Null when the user row is gone. */
+  userName: string | null
+  userEmail: string | null
+  /** Names of the viewer's visible teams this user is in. */
+  teams: string[]
+  agent: AgentName
+  modelName: string
+  reason: FreeTierReason
+  /** Distinct days with free-tier use in the range. */
+  days: number
+  tokens: number
+  firstDate: string
+  lastDate: string
+}
+
+export interface FreeTierTeamTotal {
+  /** Null for users in none of the viewer's visible teams. */
+  teamId: string | null
+  teamName: string | null
+  users: number
+  tokens: number
+}
+
+export interface FreeTierResponse {
+  rows: FreeTierRow[]
+  byTeam: FreeTierTeamTotal[]
+}

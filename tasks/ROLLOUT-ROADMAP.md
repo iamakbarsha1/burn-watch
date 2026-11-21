@@ -172,7 +172,7 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 
 | ID | Build | Note |
 |---|---|---|
-| B1 | Free-tier usage list (`isFreeTier`), per user and team | Pure read |
+| B1 | Free-tier usage list (`isFreeTier`), per user and team | ✅ Built, web-v0.4.0 (`/governance`). Design: `tasks/R1-B1-FREE-TIER-DESIGN.md`. Gemini gap is BW-43 (R2) |
 | B3 | MCP server inventory from `mcpUsage`, allowlist, flag unapproved | Needs org fact #3 |
 | B2 | Approved agents/models policy, violation list, dashboard alert | Push alerts wait for a channel |
 | A1 | Idle seats: no usage for 14+ days, per agent | Uses R0.1 seats |
@@ -251,12 +251,14 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R0 is code-complete. Before announcing it: walk the signed-in checks (`/privacy`,
-Projects remote line, R0.1 seats, CSV invite), and settle Vercel Pro (Risks).
-Then R1 quick wins, starting with B1.
+R1 B1 is built and shipped as web-v0.4.0 (Governance page, free-tier list).
+Still open from R0: the signed-in prod checks (`/privacy`, Projects remote line,
+R0.1 seats, CSV invite, and now `/governance`) need a real login, and Vercel Pro
+is undecided (Risks). Next R1 item is B3 (MCP server inventory). Its allowlist
+needs org fact #3; the inventory half does not.
 
 ```
-BurnWatch: R0 signed-in browser checks, then start R1.
-Walk /privacy, Projects remote line, R0.1 seats views and the CSV invite on prod.
-Then plan R1 B1. See tasks/ROLLOUT-ROADMAP.md R1.
+BurnWatch: plan R1 B3 (MCP server inventory from mcpUsage, allowlist, flag unapproved).
+Add it as a section on /governance. See tasks/ROLLOUT-ROADMAP.md R1.
+If signed in, walk the open prod checks first, including /governance.
 ```

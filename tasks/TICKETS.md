@@ -2682,3 +2682,27 @@ lockfile and `apps/agent/package.json` both say 0.4.0. `npm install
 unchanged. One trap remains: npm 10 (Node 22's bundled npm) strips the `libc`
 fields npm 11 writes, so a contributor on npm 10 still gets a spurious
 lockfile diff. Use the `packageManager` version, or discard that hunk.
+
+### BW-43 · Gemini free-tier use is never flagged
+**Size S** · R2 · found while designing R1 B1 on 2026-11-22
+
+The agent sets `isFreeTier` as `FREE_TIER_AGENTS.has(agent) || cost === 0`
+(`apps/agent/src/collectors/ccusage.ts`), and `FREE_TIER_AGENTS` holds only
+`qwen`. Gemini CLI signed in with a personal Google account is free, and that
+tier may allow Google to train on inputs. ccusage still prices those tokens at
+list rate, so the row carries a cost and `isFreeTier: false`. Prod confirms it:
+all Gemini rows are `isFreeTier: false` with a non-zero cost.
+
+So the B1 Governance list cannot show Gemini free-tier use, which is one of the
+two cases the rollout proposal names. B1 ships with a note on the page saying so.
+
+**Suggested fix.** In the agent, read Gemini CLI's auth type (believed to be
+`selectedAuthType` in `~/.gemini/settings.json`; confirm against a real install
+before building) and set `isFreeTier: true` for personal Google login. Send no
+new field and no settings content, only the boolean.
+
+**Acceptance**
+- [ ] Gemini usage on a personal Google login syncs with `isFreeTier: true`
+- [ ] Gemini usage on an API key or Vertex syncs with `isFreeTier: false`
+- [ ] Missing or unreadable settings file falls back to today's behavior
+- [ ] B1 page note about the Gemini gap is removed

@@ -20,6 +20,7 @@ import type {
   SeatInput,
   SeatAssignAll,
   AgentName,
+  FreeTierResponse,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -258,6 +259,11 @@ export async function removeTeamMember(teamId: string, userId: string): Promise<
 }
 
 /* ---------- Seats (R0.1) ---------- */
+
+// B1. Admins get the org, managers their own teams; a developer gets 403.
+export async function fetchFreeTier(from: string, to: string, teamId?: string): Promise<FreeTierResponse> {
+  return apiFetch(`/v1/dashboard/governance/free-tier?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
 
 export async function fetchSeats(): Promise<Seat[]> {
   return apiFetch('/v1/dashboard/seats')

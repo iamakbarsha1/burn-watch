@@ -2,6 +2,13 @@ import { z } from 'zod'
 
 export const AgentNameSchema = z.enum(['claude', 'qwen', 'gemini', 'codex', 'copilot'])
 
+/**
+ * Agents whose only tier is free. Mirrors FREE_TIER_AGENTS in
+ * apps/agent/src/collectors/ccusage.ts, which sets isFreeTier; the API uses
+ * this copy to say why a row was flagged. Change both together.
+ */
+export const FREE_TIER_AGENTS: ReadonlySet<z.infer<typeof AgentNameSchema>> = new Set(['qwen'])
+
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 
 // `.describe()` text on every field the agent sends is what the R0.4
