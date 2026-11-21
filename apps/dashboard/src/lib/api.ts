@@ -140,6 +140,16 @@ export async function createInvite(
   return apiPost('/v1/auth/admin/invites', { email, role })
 }
 
+export type BulkInviteResult =
+  | { ok: true; email: string; role: string; token: string; expiresAt: string }
+  | { ok: false; email: string; error: string }
+
+export async function createInvites(
+  rows: { email: string; role?: string; team?: string }[],
+): Promise<{ results: BulkInviteResult[] }> {
+  return apiPost('/v1/auth/admin/invites/bulk', { rows })
+}
+
 export async function acceptInvite(
   token: string,
   name: string,

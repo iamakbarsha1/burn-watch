@@ -11,6 +11,7 @@ import {
 } from '@/lib/api'
 import { formatCost, formatTokens, formatAgo, today } from '@/lib/format'
 import { InviteForm } from './InviteForm'
+import { BulkInviteForm } from './BulkInviteForm'
 import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
 import { CopilotPanel } from './CopilotPanel'
 import { CreateTeamForm, TeamsList } from './TeamsPanel'
@@ -164,6 +165,13 @@ export default async function AdminPage() {
           <InviteForm />
         </Section>
 
+        <Section
+          title="Invite from CSV"
+          description="Creates one link per row. Each person joins their team when they accept."
+        >
+          <BulkInviteForm />
+        </Section>
+
         {invites.length > 0 && (
           <section>
             <h2 className="mb-3 text-sm font-semibold tracking-tight text-ink">
@@ -243,7 +251,15 @@ export default async function AdminPage() {
 
         <Section
           title="GitHub Copilot integration"
-          description="Connect a GitHub organization to pull its Copilot seat and usage figures. Copilot usage stays at zero until one is connected. Business and Enterprise plans only."
+          description={
+            <>
+              <Badge tone="warn">Unverified</Badge>{' '}
+              Built and tested against GitHub&apos;s published formats, but never run against a real
+              Copilot Business org. Treat the first sync&apos;s figures with care. Connect a GitHub
+              organization to pull its Copilot seat and usage figures. Copilot usage stays at zero
+              until one is connected. Business and Enterprise plans only.
+            </>
+          }
         >
           <CopilotPanel status={copilotStatus} />
         </Section>

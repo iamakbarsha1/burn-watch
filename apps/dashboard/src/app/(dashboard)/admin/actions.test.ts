@@ -20,12 +20,14 @@ const updateBudgetAlert = vi.fn()
 const setSeat = vi.fn()
 const removeSeat = vi.fn()
 const assignSeatToAll = vi.fn()
+const createInvites = vi.fn()
 vi.mock('@/lib/api', () => ({
   connectCopilot,
   disconnectCopilot,
   syncCopilot,
   // Imported by the module under test, never reached by these tests.
   createInvite: vi.fn(),
+  createInvites,
   createBudgetAlert,
   updateBudgetAlert,
   deleteBudgetAlert: vi.fn(),
@@ -53,6 +55,7 @@ const {
   setSeatAction,
   removeSeatAction,
   assignSeatToAllAction,
+  bulkInviteAction,
 } = await import('./actions.js')
 
 function form(fields: Record<string, string> = {}): FormData {
@@ -86,6 +89,7 @@ describe('admin role gate', () => {
     ['connectCopilotAction', connectCopilotAction, connectCopilot, { org: 'a', token: 't' }],
     ['disconnectCopilotAction', disconnectCopilotAction, disconnectCopilot, {}],
     ['syncCopilotAction', syncCopilotAction, syncCopilot, {}],
+    ['bulkInviteAction', bulkInviteAction, createInvites, { csv: 'a@b.c' }],
   ] as const
 
   for (const [name, action, apiFn, fields] of cases) {
@@ -417,5 +421,39 @@ describe('seat actions', () => {
     setSeat.mockRejectedValueOnce(new Error('User not found in this organization'))
     const state = await setSeatAction(null, form(SEAT))
     expect(state).toEqual({ ok: false, message: 'User not found in this organization' })
+  })
+})
+
+describe('bulkInviteAction', () => {
+  it('sends parsed rows and returns invite paths, never full URLs', async () => {
+    createInvites.mockResolvedValue({
+      results: [
+        { ok: true, email: 'a@b.c', role: 'manager', token: 'tok', expiresAt: '2026-11-29T00:00:00Z' },
+        { ok: false, email: 'bad', error: 'Not a valid email' },
+      ],
+    })
+
+    const state = await bulkInviteAction(null, form({ csv: 'email,role,team\na@b.c,manager,Platform\nbad,,' }))
+
+    expect(createInvites).toHaveBeenCalledWith([
+      { email: 'a@b.c', role: 'manager', team: 'Platform' },
+      { email: 'bad', role: undefined, team: undefined },
+    ])
+    expect(state).toEqual({
+      ok: true,
+      message: '1 of 2 invites created.',
+      results: [
+        { email: 'a@b.c', ok: true, path: '/invite/tok' },
+        { email: 'bad', ok: false, error: 'Not a valid email' },
+      ],
+    })
+    expect(revalidatePath).toHaveBeenCalledWith('/admin')
+  })
+
+  it('refuses an empty upload and one over 200 rows without calling the API', async () => {
+    expect((await bulkInviteAction(null, form({ csv: '\n' }))).ok).toBe(false)
+    const csv = Array.from({ length: 201 }, (_, i) => `u${i}@b.c`).join('\n')
+    expect((await bulkInviteAction(null, form({ csv }))).message).toContain('limit is 200')
+    expect(createInvites).not.toHaveBeenCalled()
   })
 })

@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import {
   createInvite,
+  createInvites,
   createBudgetAlert,
   updateBudgetAlert,
   deleteBudgetAlert,
@@ -20,6 +21,7 @@ import {
   assignSeatToAll,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
+import { parseInviteCsv } from '@/lib/csv'
 import type { AgentName, CopilotSeatsResponse, CopilotSyncResult } from '@burn-watch/shared'
 
 export interface InviteState {
@@ -63,6 +65,39 @@ export async function inviteAction(
     }
   } catch (err: any) {
     return { ok: false, message: err.message ?? 'Failed to create invite' }
+  }
+}
+
+export interface BulkInviteState {
+  ok: boolean
+  message: string
+  // Paths, not URLs, for the same reason as InviteState.
+  results?: ({ email: string; ok: true; path: string } | { email: string; ok: false; error: string })[]
+}
+
+export async function bulkInviteAction(
+  _prev: BulkInviteState | null,
+  formData: FormData,
+): Promise<BulkInviteState> {
+  if ((await getUserRole()) !== 'admin') return { ok: false, message: 'Admin role required' }
+
+  const rows = parseInviteCsv((formData.get('csv') as string | null) ?? '')
+  if (rows.length === 0) return { ok: false, message: 'Paste or choose a CSV with at least one email' }
+  if (rows.length > 200) return { ok: false, message: `${rows.length} rows. The limit is 200 per upload` }
+
+  try {
+    const { results } = await createInvites(rows)
+    revalidatePath('/admin')
+    const made = results.filter((r) => r.ok).length
+    return {
+      ok: made > 0,
+      message: `${made} of ${results.length} invites created.`,
+      results: results.map((r) =>
+        r.ok ? { email: r.email, ok: true, path: `/invite/${r.token}` } : { email: r.email, ok: false, error: r.error },
+      ),
+    }
+  } catch (err: any) {
+    return { ok: false, message: err.message ?? 'Failed to create invites' }
   }
 }
 
