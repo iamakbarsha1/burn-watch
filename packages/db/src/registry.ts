@@ -1,6 +1,7 @@
 import type { Document } from 'mongodb'
 import type {
   AgentPolicyDoc,
+  AuditEventDoc,
   BudgetAlertDoc,
   ClaudeEnrichmentDoc,
   DailySnapshotDoc,
@@ -130,6 +131,14 @@ export const COLLECTIONS = {
   rateLimits: spec<RateLimitDoc>([
     // Replaces the SWEEP_EVERY counter and its delete in plugins/rate-limit-store.ts.
     { name: 'rateLimits_ttl', key: { expiresAt: 1 }, expireAfterSeconds: 0 },
+  ]),
+
+  auditEvents: spec<AuditEventDoc>([
+    // The audit page reads one org, newest first, by range.
+    { name: 'auditEvents_org_at', key: { orgId: 1, at: -1 } },
+    // Retention lives in each doc's expiresAt, not here, so B9 changes a
+    // constant rather than a live index. Null expiresAt never expires.
+    { name: 'auditEvents_ttl', key: { expiresAt: 1 }, expireAfterSeconds: 0 },
   ]),
 } satisfies Record<string, CollectionSpec<Document>>
 

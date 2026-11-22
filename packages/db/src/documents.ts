@@ -1,5 +1,13 @@
 import type { ObjectId } from 'mongodb'
-import type { ActivityEntry, AgentName, LeaderboardSettings, ProjectEntry, SessionEntry } from '@burn-watch/shared'
+import type {
+  ActivityEntry,
+  AgentName,
+  AuditAction,
+  AuditTarget,
+  LeaderboardSettings,
+  ProjectEntry,
+  SessionEntry,
+} from '@burn-watch/shared'
 import type {
   AgentPolicyKey,
   DayKey,
@@ -276,4 +284,30 @@ export interface DailySnapshotDoc {
   cacheHitRate: number | null
   modelsUsed: string[]
   updatedAt: Date
+}
+
+/**
+ * One admin action or one day of views (R1 B8). Append-only from the API's
+ * side: only apps/api/src/audit.ts writes here, and only the TTL deletes.
+ * Actions use newId(); views use `view:org:viewer:surface:scope:day` so a
+ * day's repeat views fold into one doc with a count.
+ */
+export interface AuditEventDoc {
+  _id: string
+  orgId: OrgId
+  kind: 'action' | 'view'
+  action: AuditAction
+  actorId: UserId
+  actorRole: 'device' | 'admin' | 'manager' | 'developer'
+  target: AuditTarget
+  /** Small, never secrets (tokens, invite or device codes, JWTs). */
+  detail: Record<string, unknown> | null
+  /** Views: first view that day. */
+  at: Date
+  /** Views only. */
+  lastAt: Date | null
+  /** 1 for actions; views per day. */
+  count: number
+  /** TTL. Null = kept: actions until B9 picks a period; views at + 365 days. */
+  expiresAt: Date | null
 }

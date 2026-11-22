@@ -207,6 +207,21 @@ export const LeaderboardSettingsSchema = z.object({
 })
 export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
 
+// R1 B8. The audit log's `action` filter is a prefix from this closed list.
+export const AUDIT_ACTION_PREFIXES = [
+  'device.', 'user.', 'invite.', 'team.', 'seat.', 'alert.', 'policy.', 'mcp.', 'org.', 'copilot.', 'view.',
+] as const
+export const AuditQuerySchema = z.object({
+  from: z.string().regex(dateRegex).optional(),
+  to: z.string().regex(dateRegex).optional(),
+  kind: z.enum(['action', 'view', 'all']).default('all'),
+  actorId: z.string().uuid().optional(),
+  action: z.enum(AUDIT_ACTION_PREFIXES).optional(),
+  targetId: z.string().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+  offset: z.coerce.number().int().min(0).default(0),
+})
+
 // z.input: what a client sends, so a field with a default stays optional.
 export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
 export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>
@@ -214,6 +229,7 @@ export type SeatInput = z.infer<typeof SeatInputSchema>
 export type SeatAssignAll = z.infer<typeof SeatAssignAllSchema>
 export type AgentPolicyInput = z.input<typeof AgentPolicyInputSchema>
 export type McpApprovalInput = z.input<typeof McpApprovalInputSchema>
+export type AuditQuery = z.input<typeof AuditQuerySchema>
 
 export type UsageEventInput = z.infer<typeof UsageEventSchema>
 export type ClaudeEnrichmentInput = z.infer<typeof ClaudeEnrichmentSchema>

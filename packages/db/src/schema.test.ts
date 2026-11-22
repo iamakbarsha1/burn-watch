@@ -78,6 +78,22 @@ describe('the health checks with no MONGODB_URI', () => {
   })
 })
 
+describe('the registry', () => {
+  it('declares auditEvents with its org/at index and a TTL on expiresAt (R1 B8)', () => {
+    expect(COLLECTIONS.auditEvents.indexes).toEqual([
+      { name: 'auditEvents_org_at', key: { orgId: 1, at: -1 } },
+      { name: 'auditEvents_ttl', key: { expiresAt: 1 }, expireAfterSeconds: 0 },
+    ])
+  })
+
+  it('names a missing auditEvents collection as drift, so /health stays 503 until sync', () => {
+    const o = current()
+    o.collections.delete('auditEvents')
+    o.indexes.delete('auditEvents')
+    expect(diffStructure(observed(o)).missingCollections).toEqual(['auditEvents'])
+  })
+})
+
 describe('diffStructure', () => {
   // Without this the fixture could be wrong in a way that makes every "detects
   // X" case below pass for the wrong reason.
