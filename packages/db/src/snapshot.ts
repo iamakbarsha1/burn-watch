@@ -32,7 +32,7 @@ export function agentSourceTotalsPipeline(userId: UserId, date: IsoDate): Docume
 
 /**
  * Earlier entry wins. Two sources report the same developer's Copilot spend
- * (ccusage on their machine and the org-level pull), and counting both doubles
+ * (the agent on their machine and the org-level pull), and counting both doubles
  * it. The machine knows which models and how many tokens, so it wins.
  */
 export const SOURCE_PRECEDENCE: readonly UsageSource[] = ['agent', 'copilot-org']

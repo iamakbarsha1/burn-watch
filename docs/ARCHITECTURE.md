@@ -57,7 +57,7 @@ read goes to MongoDB on every request.
 |------|---------|
 | `src/index.ts` | Commander CLI entry point (`register`, `sync`, `status`, `install-cron`, `uninstall`) |
 | `src/commands/sync.ts` | Orchestrates both collectors, POSTs to API |
-| `src/collectors/ccusage.ts` | Tier 1: runs ccusage CLI, parses JSON output |
+| `src/collectors/reference.ts` | Tier 1: runs the reference collector CLI, parses its JSON output |
 | `src/collectors/codeburn.ts` | Tier 2: parses JSONL files for Claude enrichment |
 | `src/lib/cron.ts` | Dispatches the 6 PM daily sync schedule to a platform backend: launchd plist (macOS) |
 | `src/lib/cron-linux.ts` | Schedule backend: systemd user service + timer (Linux) |

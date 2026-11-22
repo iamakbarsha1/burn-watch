@@ -10,10 +10,10 @@ import { delimiter, join } from 'path'
 const spawnMock = vi.fn()
 vi.mock('child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }))
 
-const { CcusageCollector, withCommandDirOnPath } = await import('./ccusage.js')
+const { ReferenceCollector, withCommandDirOnPath } = await import('./reference.js')
 
 const fixture = readFileSync(
-  join(import.meta.dirname, '..', '..', 'test', 'fixtures', 'ccusage-daily.json'),
+  join(import.meta.dirname, '..', '..', 'test', 'fixtures', 'reference-daily.json'),
   'utf8',
 )
 
@@ -39,9 +39,9 @@ beforeEach(() => {
   spawnMock.mockImplementation(() => fakeChild(fixture))
 })
 
-describe('CcusageCollector.collect', () => {
-  it('strips dashes from the date for the ccusage CLI', async () => {
-    await new CcusageCollector().collect('2026-11-05')
+describe('ReferenceCollector.collect', () => {
+  it('strips dashes from the date for the reference CLI', async () => {
+    await new ReferenceCollector().collect('2026-11-05')
     const [, args] = spawnMock.mock.calls[0]
     expect(args).toEqual([
       'ccusage@latest',
@@ -54,8 +54,8 @@ describe('CcusageCollector.collect', () => {
     ])
   })
 
-  it('emits one row per model when ccusage reports a breakdown', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+  it('emits one row per model when the reference reports a breakdown', async () => {
+    const events = await new ReferenceCollector().collect('2026-11-05')
     const claude = events.filter((e) => e.agent === 'claude')
     expect(claude.map((e) => e.modelName)).toEqual([
       'claude-opus-5',
@@ -66,22 +66,22 @@ describe('CcusageCollector.collect', () => {
   })
 
   it('maps the "gemini cli" agent label onto the gemini agent', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     expect(events.some((e) => e.agent === 'gemini')).toBe(true)
   })
 
   it('falls back to the model name when the agent label is "all"', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     // The "all" row only names gpt-5-codex, which resolves to codex.
     const codex = events.find((e) => e.agent === 'codex')
     expect(codex?.modelName).toBe('gpt-5-codex')
   })
 
-  // ccusage labels every row `all` and names the real agent in metadata.agents.
+  // The reference labels every row `all` and names the real agent in metadata.agents.
   // Copilot reports Claude model names, so a miss here does not just lose the
   // row, it invites the model-name fallback to bill Copilot's spend to Claude.
   it('keeps copilot rows and does not bill them to claude', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     const copilot = events.find((e) => e.costUsd === 5.22)
     expect(copilot?.agent).toBe('copilot')
     expect(events.filter((e) => e.agent === 'claude').map((e) => e.modelName)).not.toContain(
@@ -90,56 +90,56 @@ describe('CcusageCollector.collect', () => {
   })
 
   it('drops entries for agents it does not recognise', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     expect(events.some((e) => e.modelName === 'cursor-small')).toBe(false)
   })
 
   it('drops entries from other dates in the same response', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     expect(events.every((e) => e.date === '2026-11-05')).toBe(true)
     expect(events.some((e) => e.costUsd === 1.11)).toBe(false)
   })
 
   it('marks qwen as free tier', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     const qwen = events.find((e) => e.agent === 'qwen')
     expect(qwen?.isFreeTier).toBe(true)
     expect(qwen?.costUsd).toBe(0)
   })
 
   it('marks a paid agent as free tier only when its cost is zero', async () => {
-    const events = await new CcusageCollector().collect('2026-11-05')
+    const events = await new ReferenceCollector().collect('2026-11-05')
     expect(events.find((e) => e.modelName === 'claude-opus-5')?.isFreeTier).toBe(false)
     expect(events.find((e) => e.agent === 'gemini')?.isFreeTier).toBe(false)
   })
 
-  it('returns no events when ccusage exits non-zero', async () => {
+  it('returns no events when the reference exits non-zero', async () => {
     spawnMock.mockImplementation(() => fakeChild('', 1))
-    expect(await new CcusageCollector().collect('2026-11-05')).toEqual([])
+    expect(await new ReferenceCollector().collect('2026-11-05')).toEqual([])
   })
 
-  it('returns no events when ccusage prints something that is not JSON', async () => {
+  it('returns no events when the reference prints something that is not JSON', async () => {
     spawnMock.mockImplementation(() => fakeChild('npm ERR! could not determine executable'))
-    expect(await new CcusageCollector().collect('2026-11-05')).toEqual([])
+    expect(await new ReferenceCollector().collect('2026-11-05')).toEqual([])
   })
 })
 
-describe('CcusageCollector.collectRange', () => {
+describe('ReferenceCollector.collectRange', () => {
   it('spawns once for the whole range, bounded by the first and last date', async () => {
-    await new CcusageCollector().collectRange(['2026-11-05', '2026-11-03', '2026-11-04'])
+    await new ReferenceCollector().collectRange(['2026-11-05', '2026-11-03', '2026-11-04'])
     expect(spawnMock).toHaveBeenCalledTimes(1)
     const [, args] = spawnMock.mock.calls[0]
     expect(args.slice(-4)).toEqual(['--since', '20261103', '--until', '20261105'])
   })
 
   it('buckets events by their own period, not by the requested date', async () => {
-    const byDate = await new CcusageCollector().collectRange(['2026-11-04', '2026-11-05'])
+    const byDate = await new ReferenceCollector().collectRange(['2026-11-04', '2026-11-05'])
     expect([...byDate.keys()].sort()).toEqual(['2026-11-04', '2026-11-05'])
     expect(byDate.get('2026-11-04')).toHaveLength(1)
   })
 
   it('does not spawn at all for an empty date list', async () => {
-    const result = await new CcusageCollector().collectRange([])
+    const result = await new ReferenceCollector().collectRange([])
     expect(result.size).toBe(0)
     expect(spawnMock).not.toHaveBeenCalled()
   })
@@ -158,13 +158,13 @@ describe('spawn options by platform', () => {
 
   it('runs npx through a shell on Windows', async () => {
     fakePlatform('win32')
-    await new CcusageCollector().collect('2026-11-05')
+    await new ReferenceCollector().collect('2026-11-05')
     expect(spawnMock.mock.calls[0][2]).toMatchObject({ shell: true })
   })
 
   it('does not reach for a shell anywhere else', async () => {
     fakePlatform('darwin')
-    await new CcusageCollector().collect('2026-11-05')
+    await new ReferenceCollector().collect('2026-11-05')
     expect(spawnMock.mock.calls[0][2]).toMatchObject({ shell: false })
   })
 })
@@ -178,7 +178,7 @@ describe('PATH for the spawned npx', () => {
 
   it('puts the directory of an absolute npx first, so its node is found', async () => {
     process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
-    await new CcusageCollector('/usr/local/bin/npx').collect('2026-11-05')
+    await new ReferenceCollector('/usr/local/bin/npx').collect('2026-11-05')
     const { env } = spawnMock.mock.calls[0][2] as { env: NodeJS.ProcessEnv }
     expect(env.PATH?.split(delimiter)).toEqual(['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
   })

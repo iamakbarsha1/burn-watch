@@ -4,7 +4,7 @@ export const AgentNameSchema = z.enum(['claude', 'qwen', 'gemini', 'codex', 'cop
 
 /**
  * Agents whose only tier is free. Mirrors FREE_TIER_AGENTS in
- * apps/agent/src/collectors/ccusage.ts, which sets isFreeTier; the API uses
+ * apps/agent/src/collectors/reference.ts, which sets isFreeTier; the API uses
  * this copy to say why a row was flagged. Change both together.
  */
 export const FREE_TIER_AGENTS: ReadonlySet<z.infer<typeof AgentNameSchema>> = new Set(['qwen'])
@@ -24,6 +24,9 @@ export const UsageEventSchema = z.object({
   totalTokens: z.number().int().nonnegative().describe('Sum of the four token counts'),
   costUsd: z.number().nonnegative().describe('API-equivalent cost, USD'),
   isFreeTier: z.boolean().describe('Whether the usage was on a free tier'),
+  unpriced: z.boolean().optional().describe(
+    'True when the model has no known price, so costUsd is 0 for that reason and not because the usage was free',
+  ),
 })
 
 export const ActivityEntrySchema = z.object({
@@ -225,6 +228,37 @@ export const AuditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 })
+
+// Price table (own-collector design, Part 1 "Pricing"). USD per token. A model
+// with no known price is absent, never 0, so a lookup miss means "unpriced".
+const usdPerToken = z.number().positive()
+
+export const ModelPriceSchema = z.object({
+  input: usdPerToken,
+  output: usdPerToken,
+  cacheWrite5m: usdPerToken.optional(),
+  cacheWrite1h: usdPerToken.optional(),
+  cacheRead: usdPerToken.optional(),
+  // Applies per request once its prompt is over 200k tokens.
+  above200k: z.object({
+    input: usdPerToken,
+    output: usdPerToken,
+    cacheWrite5m: usdPerToken.optional(),
+    cacheWrite1h: usdPerToken.optional(),
+    cacheRead: usdPerToken.optional(),
+  }).strict().optional(),
+}).strict()
+
+export const PriceTableSchema = z.object({
+  version: z.string().min(1),
+  source: z.string().min(1),
+  models: z.record(z.string(), ModelPriceSchema),
+  // Dated or provider-prefixed name -> key in `models`.
+  aliases: z.record(z.string(), z.string()),
+}).strict()
+
+export type ModelPrice = z.infer<typeof ModelPriceSchema>
+export type PriceTable = z.infer<typeof PriceTableSchema>
 
 // z.input: what a client sends, so a field with a default stays optional.
 export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>

@@ -8,6 +8,25 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.12.0 (2026-11-23)
+
+Groundwork for the agent's own usage collector (phase 0). Nothing reads
+the new pieces yet, and no agent release is needed.
+
+- `GET /v1/prices` serves a model price table: input, output, 5-minute
+  and 1-hour cache writes, cache reads and the above-200k tier, per token.
+  It comes from LiteLLM's price file at a pinned commit (`18fe30f`,
+  2026-11-22) and covers 213 Anthropic, OpenAI, Gemini, Qwen and Copilot
+  models. A model with no known price is left out, never listed at $0.
+  The endpoint is public, sends the table version as its ETag and answers
+  304 when the caller already has it.
+- Usage events take an optional `unpriced` flag for a model with no known
+  price. `/privacy` lists it. The server stores it only when true; such a
+  row has cost 0, so it stays out of spend totals.
+- The agent's usage collector is renamed inside the code. Its output is
+  unchanged.
+- No schema sync.
+
 ## Agent v0.4.2 (2026-11-23)
 
 - Claude enrichment no longer counts a request more than once. Claude Code

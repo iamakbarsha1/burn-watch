@@ -8,6 +8,7 @@ describe('transparency field list', () => {
   it('walks nested schemas, including R0.3 fields', () => {
     const paths = schemaFields(UsagePayloadSchema).map((f) => f.path)
     expect(paths).toContain('events[].modelName')
+    expect(paths).toContain('events[].unpriced')
     expect(paths).toContain('enrichment.projectBreakdown[].remote')
     expect(paths).toContain('enrichment.projectBreakdown[].branches[].name')
     expect(paths).toContain('enrichment.accountHashes')
