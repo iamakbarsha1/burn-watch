@@ -34,6 +34,16 @@ export async function audit(
   e: { action: AuditAction; target: AuditTarget; detail?: Record<string, unknown> | null; actor?: Actor },
 ): Promise<void> {
   const actor = e.actor ?? request.user
+  let target = e.target
+  if (target.type === 'org' && !target.label) {
+    // Callers holding only the org id: label it with the name, so /audit never shows a bare UUID.
+    try {
+      const org = await getStore().organizations.findOne({ _id: actor.orgId as OrgId }, { projection: { name: 1 } })
+      target = { ...target, label: org?.name ?? null }
+    } catch {
+      // The label is cosmetic; a failed read must not cost the event.
+    }
+  }
   const event: AuditEventDoc = {
     _id: newId(),
     orgId: actor.orgId as OrgId,
@@ -41,7 +51,7 @@ export async function audit(
     action: e.action,
     actorId: actor.userId as UserId,
     actorRole: actor.role,
-    target: e.target,
+    target,
     detail: e.detail ?? null,
     at: new Date(),
     lastAt: null,

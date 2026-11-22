@@ -58,6 +58,20 @@ describe('audit', () => {
     expect(doc.at).toBeInstanceOf(Date)
   })
 
+  it('labels an org target with the org name, and still writes when that read fails', async () => {
+    state.docs.organizations = [{ _id: ORG, name: 'Acme' }]
+    const { request } = req()
+    await audit(request, { action: 'org.leaderboard_settings', target: { type: 'org', id: ORG, label: null } })
+    state.failOn = 'organizations.findOne'
+    await audit(request, { action: 'seat.assign_all', target: { type: 'org', id: ORG, label: null } })
+
+    const inserts = callsTo(state, 'auditEvents', 'insertOne') as [Record<string, unknown>][]
+    expect(inserts.map(([doc]) => doc.target)).toEqual([
+      { type: 'org', id: ORG, label: 'Acme' },
+      { type: 'org', id: ORG, label: null },
+    ])
+  })
+
   it('swallows a failed insert and logs audit_write_failed with the full event', async () => {
     state.failOn = 'auditEvents.insertOne'
     const { request, error } = req()
