@@ -2,8 +2,38 @@ import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { delimiter, dirname, isAbsolute, join } from 'path'
-import type { UsageEvent, CcusageOutput, CcusageDailyEntry, AgentName } from '@burn-watch/shared'
+import type { UsageEvent, AgentName } from '@burn-watch/shared'
 import type { UsageCollector } from './base.js'
+
+// The reference collector's `daily --json` output. Private to this file; the
+// whole file goes when our own collector takes over (design phase 3).
+interface RefOutput {
+  daily: RefDailyEntry[]
+  totals: Record<string, unknown>
+}
+
+interface RefModelBreakdown {
+  modelName: string
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  cost: number
+}
+
+interface RefDailyEntry {
+  agent: string              // 'all' | agent name (lowercase)
+  period: string             // 'YYYY-MM-DD'
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+  totalCost: number
+  modelsUsed: string[]
+  modelBreakdowns: RefModelBreakdown[]
+  metadata?: { agents?: string[] }
+}
 
 const AGENT_MAP: Record<string, AgentName> = {
   claude: 'claude',
@@ -63,7 +93,7 @@ function runCommand(cmd: string, args: string[], timeout: number): Promise<{ std
   })
 }
 
-function buildEventsForEntry(entry: CcusageDailyEntry, agent: AgentName, date: string): UsageEvent[] {
+function buildEventsForEntry(entry: RefDailyEntry, agent: AgentName, date: string): UsageEvent[] {
   if (entry.modelBreakdowns?.length) {
     return entry.modelBreakdowns.map((model) => {
       const totalTokens = model.inputTokens + model.outputTokens +
@@ -94,7 +124,7 @@ function buildEventsForEntry(entry: CcusageDailyEntry, agent: AgentName, date: s
   }]
 }
 
-function resolveAgent(entry: CcusageDailyEntry): AgentName | null {
+function resolveAgent(entry: RefDailyEntry): AgentName | null {
   // If agent is not 'all', map directly
   if (entry.agent !== 'all') {
     return AGENT_MAP[entry.agent.toLowerCase()] ?? null
@@ -113,7 +143,7 @@ function resolveAgent(entry: CcusageDailyEntry): AgentName | null {
   return null
 }
 
-export class CcusageCollector implements UsageCollector {
+export class ReferenceCollector implements UsageCollector {
   constructor(private npxPath: string = 'npx') {}
 
   async isAvailable(): Promise<boolean> {
@@ -123,7 +153,7 @@ export class CcusageCollector implements UsageCollector {
     )
   }
 
-  private parseOutput(output: CcusageOutput, date: string): UsageEvent[] {
+  private parseOutput(output: RefOutput, date: string): UsageEvent[] {
     const events: UsageEvent[] = []
     for (const entry of output.daily) {
       if (entry.period && entry.period !== date) continue
@@ -135,45 +165,46 @@ export class CcusageCollector implements UsageCollector {
     return events
   }
 
-  private async runCcusage(since: string, until: string): Promise<CcusageOutput | null> {
+  private async runReference(since: string, until: string): Promise<RefOutput | null> {
     let result: { stdout: string; stderr: string; exitCode: number }
     try {
+      // Phase 3 of the own-collector design deletes this call and the package name below.
       result = await runCommand(
         this.npxPath,
         ['ccusage@latest', 'daily', '--json', '--since', since, '--until', until],
         120_000,
       )
     } catch (err: any) {
-      console.error('[burnwatch][ccusage] spawn error:', err.message)
+      console.error('[burnwatch][reference] spawn error:', err.message)
       return null
     }
     if (result.exitCode !== 0) {
-      console.error('[burnwatch][ccusage] exit', result.exitCode, result.stderr)
+      console.error('[burnwatch][reference] exit', result.exitCode, result.stderr)
       return null
     }
     try {
       return JSON.parse(result.stdout)
     } catch {
-      console.error('[burnwatch][ccusage] failed to parse JSON:', result.stdout.slice(0, 200))
+      console.error('[burnwatch][reference] failed to parse JSON:', result.stdout.slice(0, 200))
       return null
     }
   }
 
   async collect(date: string): Promise<UsageEvent[]> {
     const ccDate = date.replace(/-/g, '')
-    const output = await this.runCcusage(ccDate, ccDate)
+    const output = await this.runReference(ccDate, ccDate)
     if (!output?.daily) return []
     return this.parseOutput(output, date)
   }
 
-  // Single ccusage call for all dates — O(1) instead of O(N) spawns
+  // Single call for all dates — O(1) instead of O(N) spawns
   async collectRange(dates: string[]): Promise<Map<string, UsageEvent[]>> {
     if (dates.length === 0) return new Map()
     const sorted = [...dates].sort()
     const since = sorted[0].replace(/-/g, '')
     const until = sorted[sorted.length - 1].replace(/-/g, '')
 
-    const output = await this.runCcusage(since, until)
+    const output = await this.runReference(since, until)
     const result = new Map<string, UsageEvent[]>()
     if (!output?.daily) return result
 

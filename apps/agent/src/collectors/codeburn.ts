@@ -169,8 +169,8 @@ export class CodeburnCollector implements EnrichmentCollector {
   // Single pass over all JSONL files, accumulates data for all requested dates simultaneously.
   //
   // `claudeCostByDate` carries the authoritative per-day Claude spend from
-  // ccusage. The transcripts hold token counts but no prices, and the project
-  // sees ccusage as the only source of a cost figure, so per-project cost is
+  // the reference collector. The transcripts hold token counts but no prices, and the project
+  // sees that collector as the only source of a cost figure, so per-project cost is
   // that day's total split by each project's share of the day's tokens — never
   // priced here independently.
   async collectRange(

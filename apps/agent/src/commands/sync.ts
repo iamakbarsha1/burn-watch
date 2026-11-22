@@ -1,10 +1,10 @@
 import { ApiClient } from '../lib/api.js'
 import { loadConfig, updateConfig } from '../lib/config.js'
-import { CcusageCollector } from '../collectors/ccusage.js'
+import { ReferenceCollector } from '../collectors/reference.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
 import { AGENT_VERSION } from '../version.js'
 
-// ccusage is the only source of a cost figure. The codeburn pass needs the
+// The reference collector is the only source of a cost figure. The codeburn pass needs the
 // day's Claude spend to split it across projects.
 function claudeCost(events: import('@burn-watch/shared').UsageEvent[]): number {
   return events.reduce((sum, e) => (e.agent === 'claude' ? sum + e.costUsd : sum), 0)
@@ -82,14 +82,14 @@ export async function syncCommand(options: {
     process.exit(1)
   }
 
-  const ccusage = new CcusageCollector(config.npxPath ?? 'npx')
+  const reference = new ReferenceCollector(config.npxPath ?? 'npx')
   const codeburn = new CodeburnCollector(undefined, config.orgId)
 
-  const ccAvailable = await ccusage.isAvailable()
+  const ccAvailable = await reference.isAvailable()
   const cbAvailable = await codeburn.isAvailable()
 
   if (!ccAvailable) {
-    console.warn('[burnwatch] ccusage not available — no local AI log directories found')
+    console.warn('[burnwatch] Usage collector not available — no local AI log directories found')
   }
 
   console.log(`[burnwatch] Syncing ${dates.length} date(s)...`)
@@ -100,9 +100,9 @@ export async function syncCommand(options: {
 
   if (dates.length > 1) {
     if (ccAvailable) {
-      console.log('[burnwatch] Fetching ccusage for full date range (single call)...')
-      eventsMap = await ccusage.collectRange(dates)
-      console.log(`[burnwatch] Found ccusage data for ${eventsMap.size} date(s)`)
+      console.log('[burnwatch] Fetching usage for full date range (single call)...')
+      eventsMap = await reference.collectRange(dates)
+      console.log(`[burnwatch] Found usage data for ${eventsMap.size} date(s)`)
     }
     if (cbAvailable) {
       console.log('[burnwatch] Scanning JSONL files (single pass)...')
@@ -120,7 +120,7 @@ export async function syncCommand(options: {
 
     const events = eventsMap
       ? (eventsMap.get(date) ?? [])
-      : ccAvailable ? await ccusage.collect(date) : []
+      : ccAvailable ? await reference.collect(date) : []
     const enrichment = enrichmentMap
       ? (enrichmentMap.get(date) ?? null)
       : cbAvailable ? await codeburn.collect(date, claudeCost(events)) : null

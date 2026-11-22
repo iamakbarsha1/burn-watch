@@ -77,7 +77,7 @@ describe('UsageEventSchema', () => {
   })
 
   it('rejects a date that is not YYYY-MM-DD', () => {
-    // ccusage is fed `--since 20261105`, so a collector leaking that format
+    // The reference collector is fed `--since 20261105`, so a collector leaking that format
     // straight through is the realistic way this field goes wrong.
     expect(UsageEventSchema.safeParse({ ...usageEvent, date: '20261105' }).success).toBe(false)
   })

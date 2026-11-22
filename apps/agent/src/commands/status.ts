@@ -1,5 +1,5 @@
 import { hasConfig, loadConfig } from '../lib/config.js'
-import { CcusageCollector } from '../collectors/ccusage.js'
+import { ReferenceCollector } from '../collectors/reference.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
 import { isScheduleInstalled } from '../lib/cron.js'
 import { AGENT_VERSION } from '../version.js'
@@ -11,7 +11,7 @@ export async function statusCommand() {
   }
 
   const config = loadConfig()
-  const ccusage = new CcusageCollector(config.npxPath ?? 'npx')
+  const usage = new ReferenceCollector(config.npxPath ?? 'npx')
   const codeburn = new CodeburnCollector()
 
   console.log('[burnwatch] Status')
@@ -20,7 +20,7 @@ export async function statusCommand() {
   console.log('  API URL:  ', config.apiUrl)
   console.log('  Last sync:', config.lastSyncAt ?? 'never')
   console.log('  Schedule: ', isScheduleInstalled() ? 'installed (6 PM daily)' : 'not installed')
-  console.log('  ccusage:  ', await ccusage.isAvailable() ? 'available' : 'not available')
+  console.log('  Usage:    ', await usage.isAvailable() ? 'available' : 'not available')
   console.log('  codeburn: ', await codeburn.isAvailable() ? 'available' : 'not available')
   // From the last sync, not probed here: a shell has its own privacy grant, so
   // it can read ~/Desktop when the scheduled job cannot.

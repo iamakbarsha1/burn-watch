@@ -1,35 +1,6 @@
 import type { z } from 'zod'
 import type { BranchEntrySchema, ClaudeEnrichmentSchema, ProjectEntrySchema, SessionEntrySchema } from './schemas.js'
 
-// Raw output from `npx ccusage@latest daily --json`
-export interface CcusageOutput {
-  daily: CcusageDailyEntry[]
-  totals: Record<string, unknown>
-}
-
-export interface CcusageModelBreakdown {
-  modelName: string
-  inputTokens: number
-  outputTokens: number
-  cacheCreationTokens: number
-  cacheReadTokens: number
-  cost: number
-}
-
-export interface CcusageDailyEntry {
-  agent: string              // 'all' | agent name (lowercase)
-  period: string             // 'YYYY-MM-DD'
-  inputTokens: number
-  outputTokens: number
-  cacheCreationTokens: number
-  cacheReadTokens: number
-  totalTokens: number
-  totalCost: number
-  modelsUsed: string[]
-  modelBreakdowns: CcusageModelBreakdown[]
-  metadata?: { agents?: string[] }
-}
-
 export type AgentName = 'claude' | 'qwen' | 'gemini' | 'codex' | 'copilot'
 
 // Normalized event for DB insertion
@@ -496,7 +467,7 @@ export interface CopilotSeatsResponse {
 
 // GET /v1/dashboard/governance/free-tier (B1). Admins see the org, managers
 // their own teams. `reason` says why the agent flagged the row: an agent with
-// only a free tier, or a model ccusage has no price for.
+// only a free tier, or a model the collector has no price for.
 export type FreeTierReason = 'free-tier-agent' | 'unpriced-model'
 
 export interface FreeTierRow {

@@ -257,7 +257,7 @@ describe('CodeburnCollector', () => {
     // alpha holds 2600 of 3000 tokens, so it carries 2600/3000 of the $30.
     expect(alpha?.cost).toBeCloseTo(26, 10)
     expect(beta?.cost).toBeCloseTo(4, 10)
-    // The split is exhaustive: the parts add back up to what ccusage reported.
+    // The split is exhaustive: the parts add back up to what the reference collector reported.
     expect((alpha?.cost ?? 0) + (beta?.cost ?? 0)).toBeCloseTo(30, 10)
 
     expect(alpha?.sessions).toBe(2)
@@ -266,7 +266,7 @@ describe('CodeburnCollector', () => {
     expect(beta?.overheadK).toBe(0)
   })
 
-  it('reports no cost rather than a priced guess when ccusage gave none', async () => {
+  it('reports no cost rather than a priced guess when the reference collector gave none', async () => {
     writeSession('a.jsonl', [turn({ session: 's1', cwd: '/work/alpha', input: 100 })])
     const enrichment = await new CodeburnCollector(root).collect(DATE)
     expect(enrichment?.projectBreakdown).toEqual([
