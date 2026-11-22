@@ -1,6 +1,6 @@
 # R1 · A3 Adoption funnel per team: design
 
-Status: decisions made 2026-11-22 (see "Decisions"), ready to build. Ship target web-v0.8.0.
+Status: built 2026-11-22 as web-v0.8.0 (decisions in "Decisions").
 Roadmap: `tasks/ROLLOUT-ROADMAP.md` R1. Second section of `/adoption`, after
 A1 idle seats (`tasks/R1-A1-IDLE-SEATS-DESIGN.md`). Uses R0.2 teams and the
 same role rules as A1, B1, B2 and B3.
