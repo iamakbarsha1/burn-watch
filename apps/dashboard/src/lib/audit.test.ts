@@ -43,6 +43,8 @@ describe('auditSentence', () => {
     ['mcp.approve', { detail: { server: 'Neon', note: null } }, 'Approved MCP server Neon'],
     ['mcp.unapprove', { detail: { server: 'Neon' } }, 'Removed the approval for MCP server Neon'],
     ['org.leaderboard_settings', { detail: { developerView: 'full', showNames: false, showOthersCost: true } }, "Changed leaderboard settings: developers see the whole list, names off, others' cost on"],
+    ['org.min_claude_version', { detail: { minClaudeVersion: '2.1.0' } }, 'Set the minimum Claude Code version to 2.1.0'],
+    ['org.min_claude_version', { detail: { minClaudeVersion: null } }, 'Cleared the minimum Claude Code version'],
     ['copilot.connect', { detail: { org: 'acme' } }, 'Connected Copilot for GitHub org acme'],
     ['copilot.disconnect', {}, 'Disconnected Copilot'],
     ['copilot.sync', { detail: { day: '2026-11-09', reportPublished: true, written: 4 } }, 'Ran a Copilot sync for 2026-11-09: 4 rows written'],

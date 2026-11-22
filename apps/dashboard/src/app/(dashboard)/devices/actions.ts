@@ -1,7 +1,8 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { approveDevice, revokeDevice } from '@/lib/api'
+import { DeviceSettingsSchema } from '@burn-watch/shared'
+import { approveDevice, revokeDevice, updateDeviceSettings } from '@/lib/api'
 import { getApiToken, getSession, getUserRole } from '@/lib/session'
 
 const CODE = /^[A-Z0-9]{6}$/
@@ -62,5 +63,31 @@ export async function revokeDeviceAction(
     }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : 'Failed to revoke device' }
+  }
+}
+
+/** Set or clear the org's minimum Claude Code version. Admin only; the API checks again. */
+export async function deviceSettingsAction(
+  _prev: { ok: boolean; message: string } | null,
+  formData: FormData,
+): Promise<{ ok: boolean; message: string }> {
+  if ((await getUserRole()) !== 'admin') return { ok: false, message: 'Admin role required' }
+
+  // Clear is its own button, so an empty Save is a typo, not a request to clear.
+  const clear = formData.get('intent') === 'clear'
+  const parsed = DeviceSettingsSchema.safeParse({
+    minClaudeVersion: clear ? null : String(formData.get('minClaudeVersion') ?? '').trim(),
+  })
+  if (!parsed.success) return { ok: false, message: 'Enter a version like 2.1.0' }
+
+  try {
+    const { minClaudeVersion } = await updateDeviceSettings(parsed.data)
+    revalidatePath('/devices')
+    return {
+      ok: true,
+      message: minClaudeVersion ? `Minimum set to ${minClaudeVersion}.` : 'Minimum cleared.',
+    }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Failed to save the minimum' }
   }
 }

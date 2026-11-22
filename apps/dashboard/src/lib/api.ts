@@ -11,6 +11,7 @@ import type {
   OrgProjectSummary,
   AdminUserRow,
   AdminDeviceRow,
+  DeviceSettings,
   PendingInvite,
   BudgetAlert,
   BudgetAlertInput,
@@ -195,6 +196,15 @@ export async function approveDevice(code: string): Promise<{ hostname: string; p
 
 export async function fetchAdminDevices(): Promise<AdminDeviceRow[]> {
   return apiFetch('/v1/auth/admin/devices')
+}
+
+export async function fetchDeviceSettings(): Promise<DeviceSettings> {
+  return apiFetch('/v1/auth/admin/device-settings')
+}
+
+// Admin only; the API answers 403 to anyone else.
+export async function updateDeviceSettings(input: DeviceSettings): Promise<DeviceSettings> {
+  return apiMutate('PUT', '/v1/auth/admin/device-settings', input)
 }
 
 export async function revokeDevice(deviceId: string): Promise<{ deviceId: string; revoked: number }> {
