@@ -18,7 +18,7 @@ import { COLLECTIONS, type CollectionSpec } from './registry.js'
 /** The ten driver calls the apps use, with the session already applied. */
 export interface Bound<T extends Document> {
   findOne(filter: Filter<T>, opts?: { projection?: Document; sort?: Sort }): Promise<T | null>
-  find(filter: Filter<T>, opts?: { projection?: Document; sort?: Sort; limit?: number }): Promise<T[]>
+  find(filter: Filter<T>, opts?: { projection?: Document; sort?: Sort; limit?: number; skip?: number }): Promise<T[]>
   aggregate<R extends Document = Document>(pipeline: Document[]): Promise<R[]>
   insertOne(doc: OptionalUnlessRequiredId<T>): Promise<void>
   updateOne(

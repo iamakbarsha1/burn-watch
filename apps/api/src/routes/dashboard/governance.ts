@@ -31,6 +31,7 @@ import {
 } from '@burn-watch/shared'
 import { comparableTeams, readScope, requireAdmin, type JwtPayload } from '../../plugins/jwt.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
+import { audit, auditView } from '../../audit.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { daysBefore, today } from './dates.js'
 
@@ -241,6 +242,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
 
     const scope = await readScope(request.user, parsed.data.teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const orgId = request.user.orgId as OrgId
     const groups = await getStore().usageEvents.aggregate<UsageGroup>(freeTierPipeline(orgId, from, to, scope))
@@ -261,6 +263,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     }
     const scope = await readScope(request.user, parsed.data.teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId
@@ -314,6 +317,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     }
     const scope = await readScope(request.user, parsed.data.teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId
@@ -372,6 +376,11 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       },
       { upsert: true },
     )
+    await audit(request, {
+      action: 'policy.set',
+      target: { type: 'agent', id: agent, label: agent },
+      detail: { agent, rule: body.rule, models: body.rule === 'models' ? [...new Set(body.models)] : [], note: body.note || null },
+    })
     return { agent, rule: body.rule }
   })
 
@@ -381,6 +390,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const orgId = request.user.orgId as OrgId
     const deleted = await getStore().agentPolicies.deleteOne({ _id: agentPolicyKey(orgId, agent), orgId })
     if (deleted === 0) return reply.status(404).send({ error: 'No rule set for this agent' })
+    await audit(request, { action: 'policy.unset', target: { type: 'agent', id: agent, label: agent }, detail: { agent } })
     return { agent, rule: 'unset' }
   })
 
@@ -396,6 +406,11 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       },
       { upsert: true },
     )
+    await audit(request, {
+      action: 'mcp.approve',
+      target: { type: 'mcp', id: server, label: server },
+      detail: { server, note: note || null },
+    })
     return { server, approved: true }
   })
 
@@ -405,6 +420,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const orgId = request.user.orgId as OrgId
     const deleted = await getStore().mcpApprovals.deleteOne({ _id: mcpApprovalKey(orgId, server), orgId })
     if (deleted === 0) return reply.status(404).send({ error: 'Approval not found' })
+    await audit(request, { action: 'mcp.unapprove', target: { type: 'mcp', id: server, label: server }, detail: { server } })
     return { server, approved: false }
   })
 }

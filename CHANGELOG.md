@@ -8,6 +8,35 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.10.0 (2026-11-22)
+
+- New admin-only Audit log page (`/audit`, sidebar entry for admins). It
+  answers who changed what and who looked at whose data.
+- Changes logged: device approve and revoke (admin and `burnwatch
+  uninstall`), org bootstrap, user create, invites (single, CSV upload as
+  one event, accept), teams (create, rename, delete, add or change a
+  member's team role, remove a member), seats (set, remove, assign to
+  all), budget alerts, agent policies, MCP approvals, leaderboard
+  settings, and Copilot connect, disconnect and sync. No tokens, invite
+  codes or device codes are stored in an event.
+- Views logged: Leaderboard, Governance, Adoption, the admin people lists
+  (users, devices, Copilot seats), team comparison, and Overview or
+  Trends with a team filter, plus the audit page itself. One row per
+  person, page, scope and UTC day, with a count. A read that shows only
+  your own data is not logged. "Hide my name on the leaderboard" is never
+  logged.
+- Filters: kind (changes or views), person and area, with the page date
+  range. View events expire after 365 days. Changes are kept until a
+  retention period is picked (B9).
+- `/privacy` says admins can see who opened views that include team or
+  person data.
+- Not logged: an org role edited by hand in Mongo. There is no endpoint
+  that changes `users.role` yet; it is set at invite, bootstrap or user
+  create, and those are logged.
+- New `auditEvents` collection with two indexes. Run
+  `npm run sync -w @burn-watch/db` against prod before the deploy, or
+  `/health` answers 503.
+
 ## web-v0.9.0 (2026-11-22)
 
 - Leaderboard (`/users`) now ranks by active days, not dollars. Columns:

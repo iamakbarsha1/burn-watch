@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
 import { getStore, newId, runInTxn, teamMemberKey, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
+import { audit } from '../../audit.js'
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -82,7 +83,13 @@ export async function inviteRoutes(fastify: FastifyInstance) {
         return reply.status(409).send({ error: 'A user with this email already exists' })
       }
 
-      return issueInvite(jwt.orgId as OrgId, email, body.role, null)
+      const invited = await issueInvite(jwt.orgId as OrgId, email, body.role, null)
+      await audit(request, {
+        action: 'invite.create',
+        target: { type: 'invite', id: invited.inviteId, label: email },
+        detail: { role: body.role },
+      })
+      return invited
     },
   )
 
@@ -110,6 +117,8 @@ export async function inviteRoutes(fastify: FastifyInstance) {
 
       const seen = new Set<string>()
       const results = []
+      // One event per upload (Decision 6). Never the invite tokens.
+      const created: { email: string; role: string; team: string | null }[] = []
       for (const [i, row] of rows.entries()) {
         const email = emails[i]
         const fail = (error: string) => ({ email, ok: false as const, error })
@@ -125,7 +134,15 @@ export async function inviteRoutes(fastify: FastifyInstance) {
         else {
           seen.add(email)
           results.push({ ok: true as const, ...(await issueInvite(orgId, email, role.data, teamId)) })
+          created.push({ email, role: role.data, team: teamId ? teamName : null })
         }
+      }
+      if (created.length > 0) {
+        await audit(request, {
+          action: 'invite.bulk',
+          target: { type: 'org', id: orgId, label: null },
+          detail: { created, failed: rows.length - created.length },
+        })
       }
       return { results }
     },
@@ -162,7 +179,9 @@ export async function inviteRoutes(fastify: FastifyInstance) {
       const body = AcceptInviteSchema.parse(request.body)
 
       const now = new Date()
+      let joinedTeam: TeamId | null = null
       const result = await runInTxn(getStore(), async (tx) => {
+        joinedTeam = null
         // Find and claim in one operation. Unused and unexpired are part of
         // the filter, not a later branch, so an expired or spent invite cannot
         // be redeemed by a code path that forgets to check. Two requests racing
@@ -198,6 +217,7 @@ export async function inviteRoutes(fastify: FastifyInstance) {
             role: invite.role === 'manager' ? 'manager' : 'member',
             createdAt: now,
           })
+          joinedTeam = invite.teamId
         }
 
         return { userId, orgId: invite.orgId, email, role: invite.role }
@@ -209,6 +229,13 @@ export async function inviteRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Invalid or expired invite' })
       }
 
+      // Public route: the new user is the actor. This is where an org role is first set.
+      await audit(request, {
+        action: 'invite.accept',
+        target: { type: 'user', id: result.userId, label: result.email },
+        detail: { role: result.role, teamId: joinedTeam },
+        actor: { userId: result.userId, orgId: result.orgId, role: result.role },
+      })
       return result
     },
   )

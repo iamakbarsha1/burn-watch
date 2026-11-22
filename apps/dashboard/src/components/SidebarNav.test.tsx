@@ -23,6 +23,12 @@ describe('SidebarNav', () => {
     }
   })
 
+  it('shows Audit log to admins only', () => {
+    expect(hrefs('admin')).toContain('/audit')
+    expect(hrefs('manager')).not.toContain('/audit')
+    expect(hrefs('developer')).not.toContain('/audit')
+  })
+
   it('hides Adoption from a developer', () => {
     expect(hrefs('developer')).not.toContain('/adoption')
   })

@@ -252,7 +252,9 @@ describe('dashboard routes — viewer scoping', () => {
   it.each(SCOPED_URLS)('lets an admin read the whole org on %s', async (url) => {
     managerOfTeam()
     await expectScope(url, 'admin', undefined)
-    expect(inspect(mongoState.calls, { depth: null }), url).not.toContain(USER_A)
+    // The audit event names the viewer as actor by design; no data read may.
+    const reads = mongoState.calls.filter((c) => c.collection !== 'auditEvents')
+    expect(inspect(reads, { depth: null }), url).not.toContain(USER_A)
   })
 })
 
@@ -423,7 +425,8 @@ describe('team management routes', () => {
     const res = await send('DELETE', `/v1/dashboard/teams/${TEAM_A}`)
     expect(res.statusCode).toBe(200)
     const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
-    expect(ops).toEqual(['teamMembers.deleteMany', 'teams.deleteOne'])
+    // The label read comes first so the audit event can still name the team.
+    expect(ops).toEqual(['teams.findOne', 'teamMembers.deleteMany', 'teams.deleteOne', 'auditEvents.insertOne'])
     expect(callsTo(mongoState, 'teamMembers', 'deleteMany')[0][0]).toEqual({ teamId: TEAM_A, orgId: ORG_A })
   })
 
@@ -2549,7 +2552,8 @@ describe('invites', () => {
       await accept({ token: 'good-token', name: 'New Dev' })
 
       const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
-      expect(ops).toEqual(['.transaction', 'invites.findOneAndUpdate', 'users.insertOne'])
+      // The audit event lands after the transaction body, never inside it.
+      expect(ops).toEqual(['.transaction', 'invites.findOneAndUpdate', 'users.insertOne', 'auditEvents.insertOne'])
     })
 
     it('adds the new user to the invite team, as manager for a manager invite', async () => {
@@ -3670,5 +3674,479 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
   it('answers 404 to a team outside the org before reading people', async () => {
     expect((await get('admin', `${URL}&teamId=${TEAM_B}`)).statusCode).toBe(404)
     expect(callsTo(mongoState, 'users', 'aggregate')).toEqual([])
+  })
+})
+
+describe('audit log (R1 B8)', () => {
+  const call = (
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    url: string,
+    payload?: object,
+    role: JwtPayload['role'] = 'admin',
+  ) => app.inject({ method, url, payload, headers: auth(token({ role })) })
+  const actions = () => mongoCalls('auditEvents', 'insertOne').map(([doc]) => doc as Record<string, unknown>)
+  const views = () =>
+    mongoCalls('auditEvents', 'updateOne').map(([filter, update]): Record<string, unknown> => ({
+      _id: (filter as { _id: string })._id,
+      ...((update as { $setOnInsert: Record<string, unknown> }).$setOnInsert),
+    }))
+  const teamOf = (managerRole: 'manager' | 'member' = 'manager') => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { _id: `${TEAM_A}:${USER_A}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: managerRole },
+      { _id: `${TEAM_A}:${USER_B}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+  }
+
+  describe('devices and invites', () => {
+    it('records device.approve without the verification code', async () => {
+      mongoState.docs.users = [{ _id: USER_A, email: 'dev@example.com' }]
+      mongoState.docs.pendingDevices = [{ _id: 'pending-1', hostname: 'laptop.local', platform: 'darwin' }]
+      const res = await call('POST', '/v1/auth/approve-device', { code: 'ABC123' }, 'developer')
+      expect(res.statusCode).toBe(200)
+      const [e] = actions()
+      expect(e).toMatchObject({
+        action: 'device.approve',
+        actorId: USER_A,
+        actorRole: 'developer',
+        target: { type: 'user', id: USER_A, label: 'dev@example.com' },
+        detail: { hostname: 'laptop.local', platform: 'darwin', pendingId: 'pending-1' },
+      })
+      expect(JSON.stringify(e)).not.toContain('ABC123')
+    })
+
+    it('records nothing for a code that does not match', async () => {
+      mongoState.docs.users = [{ _id: USER_A, email: 'dev@example.com' }]
+      expect((await call('POST', '/v1/auth/approve-device', { code: 'ABC123' }, 'developer')).statusCode).toBe(400)
+      expect(actions()).toEqual([])
+    })
+
+    it('records device.revoke with owner and hostname, and nothing for a 404', async () => {
+      expect((await call('POST', '/v1/auth/admin/devices/revoke', { deviceId: DEVICE_A })).statusCode).toBe(404)
+      expect(actions()).toEqual([])
+
+      mongoState.docs.devices = [{ _id: DEVICE_A, userId: USER_B, hostname: 'laptop.local' }]
+      mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A }]
+      expect((await call('POST', '/v1/auth/admin/devices/revoke', { deviceId: DEVICE_A })).statusCode).toBe(200)
+      expect(actions()).toEqual([
+        expect.objectContaining({
+          action: 'device.revoke',
+          target: { type: 'device', id: DEVICE_A, label: 'laptop.local' },
+          detail: { ownerId: USER_B, hostname: 'laptop.local' },
+        }),
+      ])
+    })
+
+    it('records device.self_revoke with the device token as actor', async () => {
+      liveDeviceToken()
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/revoke-device',
+        headers: auth(token({ role: 'device', deviceId: DEVICE_A })),
+      })
+      expect(res.statusCode).toBe(200)
+      expect(actions()).toEqual([
+        expect.objectContaining({ action: 'device.self_revoke', actorRole: 'device', target: { type: 'device', id: DEVICE_A, label: null } }),
+      ])
+    })
+
+    it('records user.create, and nothing for another org', async () => {
+      expect((await call('POST', '/v1/auth/admin/users', { email: 'x@example.com', name: 'X', orgId: ORG_B })).statusCode).toBe(403)
+      expect(actions()).toEqual([])
+      expect((await call('POST', '/v1/auth/admin/users', { email: 'X@example.com', name: 'X' })).statusCode).toBe(200)
+      expect(actions()[0]).toMatchObject({ action: 'user.create', detail: { email: 'x@example.com', role: 'developer' } })
+    })
+
+    it('records invite.create with the role and never the token', async () => {
+      const res = await call('POST', '/v1/auth/admin/invites', { email: 'new@example.com', role: 'manager' })
+      expect(res.statusCode).toBe(200)
+      const [e] = actions()
+      expect(e).toMatchObject({
+        action: 'invite.create',
+        target: { type: 'invite', id: res.json().inviteId, label: 'new@example.com' },
+        detail: { role: 'manager' },
+      })
+      expect(JSON.stringify(e)).not.toContain(res.json().token)
+    })
+
+    it('records nothing when the invitee already has an account', async () => {
+      mongoState.docs.users = [{ _id: USER_B, email: 'new@example.com' }]
+      expect((await call('POST', '/v1/auth/admin/invites', { email: 'new@example.com' })).statusCode).toBe(409)
+      expect(actions()).toEqual([])
+    })
+
+    it('records one invite.bulk event per upload, with no tokens', async () => {
+      const res = await call('POST', '/v1/auth/admin/invites/bulk', {
+        rows: [{ email: 'a@example.com' }, { email: 'b@example.com', role: 'manager' }, { email: 'not-an-email' }],
+      })
+      expect(res.statusCode).toBe(200)
+      const events = actions()
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({
+        action: 'invite.bulk',
+        detail: {
+          created: [
+            { email: 'a@example.com', role: 'developer', team: null },
+            { email: 'b@example.com', role: 'manager', team: null },
+          ],
+          failed: 1,
+        },
+      })
+      const tokens = res.json().results.filter((r: { ok: boolean }) => r.ok).map((r: { token: string }) => r.token)
+      for (const t of tokens) expect(JSON.stringify(events)).not.toContain(t)
+    })
+
+    it('records invite.accept with the new user as actor, after the transaction', async () => {
+      mongoState.docs.invites = [{ _id: 'invite-1', orgId: ORG_A, email: 'a@b.c', role: 'manager', teamId: TEAM_A }]
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+      const res = await app.inject({ method: 'POST', url: '/v1/auth/invites/accept', payload: { token: 'good-token', name: 'New' } })
+      expect(res.statusCode).toBe(200)
+      expect(actions()).toEqual([
+        expect.objectContaining({
+          action: 'invite.accept',
+          actorId: res.json().userId,
+          actorRole: 'manager',
+          orgId: ORG_A,
+          detail: { role: 'manager', teamId: TEAM_A },
+        }),
+      ])
+      expect(JSON.stringify(actions())).not.toContain('good-token')
+    })
+
+    it('records org.bootstrap with the new admin as actor', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/admin/bootstrap',
+        payload: { orgName: 'Acme', orgSlug: 'acme', email: 'boss@acme.dev', name: 'Boss' },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(actions()[0]).toMatchObject({
+        action: 'org.bootstrap',
+        actorId: res.json().userId,
+        actorRole: 'admin',
+        orgId: res.json().orgId,
+        detail: { orgName: 'Acme' },
+      })
+    })
+  })
+
+  describe('teams', () => {
+    it('records team.create with the admin as actor', async () => {
+      const res = await call('POST', '/v1/dashboard/teams', { name: 'Platform' })
+      expect(res.statusCode).toBe(201)
+      expect(actions()).toEqual([
+        expect.objectContaining({
+          orgId: ORG_A,
+          kind: 'action',
+          action: 'team.create',
+          actorId: USER_A,
+          actorRole: 'admin',
+          target: { type: 'team', id: res.json().id, label: 'Platform' },
+          count: 1,
+        }),
+      ])
+    })
+
+    it('records team.member_set with the role, and nothing for a 404 or a 403', async () => {
+      const url = `/v1/dashboard/teams/${TEAM_A}/members/${USER_B}`
+      expect((await call('PUT', url, { role: 'manager' })).statusCode).toBe(404)
+      teamOf()
+      mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A, name: 'Priya' }]
+      expect((await call('PUT', url, { role: 'manager' }, 'manager')).statusCode).toBe(403)
+      expect(actions()).toEqual([])
+
+      expect((await call('PUT', url, { role: 'manager' })).statusCode).toBe(200)
+      expect(actions()[0]).toMatchObject({
+        action: 'team.member_set',
+        target: { type: 'team', id: TEAM_A, label: 'Platform' },
+        detail: { userId: USER_B, userName: 'Priya', role: 'manager' },
+      })
+    })
+
+    it('records rename, delete and member removal', async () => {
+      teamOf()
+      await call('PATCH', `/v1/dashboard/teams/${TEAM_A}`, { name: 'Core' })
+      await call('DELETE', `/v1/dashboard/teams/${TEAM_A}/members/${USER_B}`)
+      await call('DELETE', `/v1/dashboard/teams/${TEAM_A}`)
+      expect(actions().map((e) => [e.action, e.target])).toEqual([
+        ['team.rename', { type: 'team', id: TEAM_A, label: 'Core' }],
+        ['team.member_remove', { type: 'team', id: TEAM_A, label: null }],
+        ['team.delete', { type: 'team', id: TEAM_A, label: 'Platform' }],
+      ])
+    })
+  })
+
+  describe('seats', () => {
+    const url = `/v1/dashboard/seats/${USER_B}/claude`
+
+    it('records seat.set after the transaction, never inside it', async () => {
+      mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A, email: 'b@example.com' }]
+      expect((await call('PUT', url, { monthlyPriceUsd: 20, startDate: DATE })).statusCode).toBe(200)
+      const ops = mongoState.calls.map((c) => `${c.collection}.${c.op}`)
+      expect(ops.indexOf('auditEvents.insertOne')).toBeGreaterThan(ops.indexOf('seats.updateOne'))
+      expect(actions()[0]).toMatchObject({
+        action: 'seat.set',
+        target: { type: 'seat', id: `${USER_B}:claude`, label: 'b@example.com' },
+        detail: { userId: USER_B, agent: 'claude', monthlyPriceUsd: 20, startDate: DATE },
+      })
+    })
+
+    it('a failed audit write neither rolls back the seat nor fails the request', async () => {
+      mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A, email: 'b@example.com' }]
+      mongoState.failOn = 'auditEvents.insertOne'
+      const logged = vi.spyOn(app.log, 'error')
+      const res = await call('PUT', url, { monthlyPriceUsd: 20, startDate: DATE })
+      expect(res.statusCode).toBe(200)
+      expect(mongoState.calls.some((c) => c.op === 'rollback')).toBe(false)
+      expect(logged).toHaveBeenCalledWith(
+        expect.objectContaining({ event: expect.objectContaining({ action: 'seat.set', actorId: USER_A }) }),
+        'audit_write_failed',
+      )
+    })
+
+    it('records seat.remove, and nothing for a seat that is not there', async () => {
+      expect((await call('DELETE', url)).statusCode).toBe(404)
+      expect(actions()).toEqual([])
+      mongoState.docs.seats = [{ _id: `${USER_B}:claude` }]
+      expect((await call('DELETE', url)).statusCode).toBe(200)
+      expect(actions()[0]).toMatchObject({ action: 'seat.remove', detail: { userId: USER_B, agent: 'claude' } })
+    })
+
+    it('records seat.assign_all with the count created', async () => {
+      mongoState.docs.users = [{ _id: USER_B }]
+      mongoState.bulk = { upsertedCount: 1, matchedCount: 0 }
+      const res = await call('POST', '/v1/dashboard/seats/assign-all', { agent: 'claude', monthlyPriceUsd: 20, startDate: DATE })
+      expect(res.statusCode).toBe(200)
+      expect(actions()[0]).toMatchObject({ action: 'seat.assign_all', detail: { agent: 'claude', created: 1 } })
+    })
+  })
+
+  describe('budget alerts', () => {
+    it('records alert.create with the parsed body', async () => {
+      const res = await call('POST', '/v1/dashboard/budget-alerts', { monthlyLimitUsd: 500 })
+      expect(res.statusCode).toBe(201)
+      expect(actions()[0]).toMatchObject({
+        action: 'alert.create',
+        target: { type: 'alert', id: res.json().id },
+        detail: { monthlyLimitUsd: 500, type: 'api-spend' },
+      })
+    })
+
+    it('records alert.update with the patch, and nothing for a 404 delete', async () => {
+      expect((await call('DELETE', `/v1/dashboard/budget-alerts/${ALERT_A}`)).statusCode).toBe(404)
+      expect(actions()).toEqual([])
+      mongoState.docs.budgetAlerts = [{ _id: ALERT_A, orgId: ORG_A, type: 'api-spend', monthlyLimitMicros: 1 }]
+      expect((await call('PATCH', `/v1/dashboard/budget-alerts/${ALERT_A}`, { threshold: 0.5 })).statusCode).toBe(200)
+      expect((await call('DELETE', `/v1/dashboard/budget-alerts/${ALERT_A}`)).statusCode).toBe(200)
+      expect(actions().map((e) => [e.action, e.detail])).toEqual([
+        ['alert.update', { threshold: 0.5 }],
+        ['alert.delete', null],
+      ])
+    })
+  })
+
+  describe('governance', () => {
+    it('records policy.set and mcp.approve, and nothing for a 404 unapprove', async () => {
+      expect((await call('DELETE', '/v1/dashboard/governance/mcp-approvals?server=Neon')).statusCode).toBe(404)
+      expect(actions()).toEqual([])
+      await call('PUT', '/v1/dashboard/governance/agent-policy/claude', { rule: 'models', models: ['opus', 'opus'] })
+      await call('PUT', '/v1/dashboard/governance/mcp-approvals', { server: 'Neon', note: 'ok' })
+      expect(actions().map((e) => [e.action, e.detail])).toEqual([
+        ['policy.set', { agent: 'claude', rule: 'models', models: ['opus'], note: null }],
+        ['mcp.approve', { server: 'Neon', note: 'ok' }],
+      ])
+    })
+
+    it('records policy.unset and mcp.unapprove', async () => {
+      mongoState.docs.agentPolicies = [{ _id: 'x' }]
+      mongoState.docs.mcpApprovals = [{ _id: 'y' }]
+      await call('DELETE', '/v1/dashboard/governance/agent-policy/qwen')
+      await call('DELETE', '/v1/dashboard/governance/mcp-approvals?server=Neon')
+      expect(actions().map((e) => e.action)).toEqual(['policy.unset', 'mcp.unapprove'])
+    })
+  })
+
+  describe('leaderboard settings', () => {
+    it('records org.leaderboard_settings with the three settings', async () => {
+      const body = { developerView: 'full', showNames: false, showOthersCost: true }
+      expect((await call('PUT', '/v1/dashboard/leaderboard/settings', body)).statusCode).toBe(200)
+      expect(actions()).toEqual([expect.objectContaining({ action: 'org.leaderboard_settings', detail: body })])
+    })
+
+    it('never records a person hiding their own name', async () => {
+      expect((await call('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard: true }, 'developer')).statusCode).toBe(200)
+      expect(mongoState.calls.filter((c) => c.collection === 'auditEvents')).toEqual([])
+    })
+  })
+
+  describe('the write procedure', () => {
+    it('answers normally and logs audit_write_failed with the event when the insert fails', async () => {
+      mongoState.failOn = 'auditEvents.insertOne'
+      const logged = vi.spyOn(app.log, 'error')
+      const res = await call('POST', '/v1/dashboard/teams', { name: 'Platform' })
+      expect(res.statusCode).toBe(201)
+      expect(logged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: expect.any(Error),
+          event: expect.objectContaining({ action: 'team.create', actorId: USER_A, orgId: ORG_A }),
+        }),
+        'audit_write_failed',
+      )
+    })
+
+    it('has the audit row stored when the response arrives, so the write is awaited', async () => {
+      const coll = getStore().auditEvents
+      const original = coll.insertOne
+      let landed = false
+      // Slower than the handler's own work: an unawaited write would land after the response.
+      coll.insertOne = async (doc) => {
+        await new Promise((r) => setTimeout(r, 30))
+        landed = true
+        return original(doc)
+      }
+      try {
+        const res = await call('POST', '/v1/dashboard/teams', { name: 'Platform' })
+        expect(res.statusCode).toBe(201)
+        expect(landed).toBe(true)
+      } finally {
+        coll.insertOne = original
+      }
+    })
+  })
+
+  describe('views', () => {
+    const lb = `/v1/dashboard/leaderboard?from=${DATE}&to=${DATE}`
+
+    it('records view.leaderboard for an admin, scope org', async () => {
+      await call('GET', lb)
+      expect(views()).toEqual([
+        expect.objectContaining({
+          _id: `view:${ORG_A}:${USER_A}:leaderboard:all:${today()}`,
+          action: 'view.leaderboard',
+          target: { type: 'scope', id: null, label: 'org' },
+          detail: null,
+        }),
+      ])
+    })
+
+    it('records nothing for a developer in own mode', async () => {
+      expect((await call('GET', lb, undefined, 'developer')).statusCode).toBe(200)
+      expect(views()).toEqual([])
+    })
+
+    it('records a developer in full mode as an org view (Decision 2)', async () => {
+      mongoState.docs.organizations = [{ _id: ORG_A, leaderboard: { developerView: 'full', showNames: true, showOthersCost: false } }]
+      await call('GET', lb, undefined, 'developer')
+      expect(views()).toEqual([expect.objectContaining({ action: 'view.leaderboard', actorRole: 'developer' })])
+    })
+
+    it('records the team for a manager reading with teamId', async () => {
+      teamOf()
+      const res = await call('GET', `/v1/dashboard/overview?from=${DATE}&to=${DATE}&teamId=${TEAM_A}`, undefined, 'manager')
+      expect(res.statusCode).toBe(200)
+      expect(views()).toEqual([
+        expect.objectContaining({
+          _id: `view:${ORG_A}:${USER_A}:overview:${TEAM_A}:${today()}`,
+          action: 'view.overview',
+          target: { type: 'team', id: TEAM_A, label: 'Platform' },
+          detail: { people: 2 },
+        }),
+      ])
+    })
+
+    it('records nothing for overview without a team filter', async () => {
+      await call('GET', `/v1/dashboard/overview?from=${DATE}&to=${DATE}`)
+      expect(views()).toEqual([])
+    })
+
+    it('records nothing for a refused team read', async () => {
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+      const res = await call('GET', `/v1/dashboard/governance/free-tier?from=${DATE}&to=${DATE}&teamId=${TEAM_A}`, undefined, 'manager')
+      expect(res.statusCode).toBe(403)
+      expect(views()).toEqual([])
+    })
+
+    it('folds the three Governance reads into one _id', async () => {
+      for (const path of ['free-tier', 'mcp', 'violations']) {
+        expect((await call('GET', `/v1/dashboard/governance/${path}?from=${DATE}&to=${DATE}`)).statusCode).toBe(200)
+      }
+      const ids = views().map((v) => v._id)
+      expect(ids).toHaveLength(3)
+      expect(new Set(ids)).toEqual(new Set([`view:${ORG_A}:${USER_A}:governance:all:${today()}`]))
+    })
+
+    it('records adoption, people and team comparison reads', async () => {
+      await call('GET', '/v1/dashboard/adoption/idle-seats')
+      await call('GET', '/v1/auth/admin/users')
+      await call('GET', '/v1/auth/admin/devices')
+      teamOf()
+      await call('GET', `/v1/dashboard/teams/compare?from=${DATE}&to=${DATE}`)
+      expect(views().map((v) => v.action)).toEqual(['view.adoption', 'view.people', 'view.people', 'view.team_compare'])
+    })
+  })
+
+  describe('GET /v1/dashboard/audit', () => {
+    it.each(['developer', 'manager'] as const)('answers 403 to a %s and reads nothing', async (role) => {
+      const res = await call('GET', '/v1/dashboard/audit', undefined, role)
+      expect(res.statusCode).toBe(403)
+      expect(mongoState.calls.filter((c) => c.collection === 'auditEvents')).toEqual([])
+    })
+
+    it('builds the find from the filters, always on the caller org', async () => {
+      const res = await call(
+        'GET',
+        `/v1/dashboard/audit?from=2026-11-01&to=2026-11-05&kind=action&actorId=${USER_B}&action=team.&targetId=${TEAM_A}&limit=50&offset=50`,
+      )
+      expect(res.statusCode).toBe(200)
+      expect(mongoCalls('auditEvents', 'find')[0]).toEqual([
+        {
+          orgId: ORG_A,
+          at: { $gte: new Date('2026-11-01T00:00:00.000Z'), $lt: new Date('2026-11-06T00:00:00.000Z') },
+          kind: 'action',
+          actorId: USER_B,
+          action: { $regex: '^team\\.' },
+          'target.id': TEAM_A,
+        },
+        { sort: { at: -1 }, skip: 50, limit: 50 },
+      ])
+    })
+
+    it('defaults to the last 30 days, every kind, 100 rows', async () => {
+      await call('GET', '/v1/dashboard/audit')
+      const [filter, opts] = mongoCalls('auditEvents', 'find')[0] as [Record<string, unknown>, unknown]
+      expect(filter).toEqual({
+        orgId: ORG_A,
+        at: { $gte: new Date(`${daysBefore(today(), 29)}T00:00:00.000Z`), $lt: expect.any(Date) },
+      })
+      expect(opts).toEqual({ sort: { at: -1 }, skip: 0, limit: 100 })
+    })
+
+    it('rejects an action prefix outside the closed list', async () => {
+      expect((await call('GET', '/v1/dashboard/audit?action=%5E.*')).statusCode).toBe(400)
+    })
+
+    it('resolves actor names with one users.find in the caller org, and logs its own read', async () => {
+      const at = new Date('2026-11-05T09:12:00.000Z')
+      mongoState.docs.auditEvents = [
+        { _id: 'e1', orgId: ORG_A, kind: 'action', action: 'team.create', actorId: USER_B, actorRole: 'admin', target: { type: 'team', id: TEAM_A, label: 'Platform' }, detail: { name: 'Platform' }, at, lastAt: null, count: 1, expiresAt: null },
+        { _id: 'e2', orgId: ORG_A, kind: 'view', action: 'view.governance', actorId: USER_B, actorRole: 'admin', target: { type: 'scope', id: null, label: 'org' }, detail: null, at, lastAt: at, count: 4, expiresAt: at },
+      ]
+      mongoState.docs.users = [{ _id: USER_B, name: 'Priya' }]
+      const res = await call('GET', '/v1/dashboard/audit')
+      expect(res.statusCode).toBe(200)
+      expect(mongoCalls('users', 'find')).toEqual([[{ _id: { $in: [USER_B] }, orgId: ORG_A }, { projection: { name: 1 } }]])
+      expect(res.json()[1]).toEqual({
+        id: 'e2',
+        at: at.toISOString(),
+        lastAt: at.toISOString(),
+        count: 4,
+        kind: 'view',
+        action: 'view.governance',
+        actor: { id: USER_B, name: 'Priya', role: 'admin' },
+        target: { type: 'scope', id: null, label: 'org' },
+        detail: null,
+      })
+      expect(views().map((v) => v.action)).toEqual(['view.audit'])
+    })
   })
 })

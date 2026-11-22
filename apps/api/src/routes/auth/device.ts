@@ -13,6 +13,7 @@ import {
   type JwtPayload,
 } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
+import { audit, auditView } from '../../audit.js'
 
 const BootstrapSchema = z.object({
   orgName: z.string().min(1),
@@ -241,6 +242,12 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid or expired verification code' })
     }
 
+    // No verification code in detail; pendingId names the attempt.
+    await audit(request, {
+      action: 'device.approve',
+      target: { type: 'user', id: jwt.userId, label: user.email },
+      detail: { hostname: approved.hostname, platform: approved.platform, pendingId: approved._id },
+    })
     return { hostname: approved.hostname, platform: approved.platform }
   })
 
@@ -408,6 +415,14 @@ export async function authRoutes(fastify: FastifyInstance) {
     if (!result) {
       return reply.status(403).send({ error: 'Bootstrap already completed. Use /admin/users to add users.' })
     }
+    // Unauthenticated: the new admin is the actor.
+    const { orgName } = BootstrapSchema.parse(request.body)
+    await audit(request, {
+      action: 'org.bootstrap',
+      target: { type: 'org', id: result.orgId, label: orgName },
+      detail: { orgName },
+      actor: { userId: result.userId, orgId: result.orgId, role: 'admin' },
+    })
     return result
   })
 
@@ -425,6 +440,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     // 500 rows at most, so the sort is cheaper here, and localeCompare keeps
     // the name order the Postgres version had.
     result.sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.name.localeCompare(b.name))
+    await auditView(request, 'people', undefined)
     return result
   })
 
@@ -444,19 +460,18 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
 
     const userId = newId<UserId>()
+    const email = body.email.trim().toLowerCase()
     try {
       await getStore().users.insertOne({
         _id: userId,
         orgId: orgId as OrgId,
-        email: body.email.trim().toLowerCase(),
+        email,
         name: body.name,
         githubUsername: null,
         role: 'developer',
         isActive: true,
         createdAt: new Date(),
       })
-
-      return { userId }
     } catch (err: unknown) {
       // 11000 is the users_email unique index.
       if (err instanceof Error && 'code' in err && (err as { code: unknown }).code === 11000) {
@@ -464,6 +479,12 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
       throw err
     }
+    await audit(request, {
+      action: 'user.create',
+      target: { type: 'user', id: userId, label: email },
+      detail: { email, role: 'developer' },
+    })
+    return { userId }
   })
 
   // GET /v1/auth/admin/devices returns every device in the caller's org, with
@@ -472,7 +493,9 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.get('/admin/devices', { preHandler: requireAdmin(fastify) }, async (request) => {
     const jwt = request.user as JwtPayload
 
-    return getStore().users.aggregate<AdminDeviceRow>(adminDevicesPipeline(jwt.orgId as OrgId))
+    const rows = await getStore().users.aggregate<AdminDeviceRow>(adminDevicesPipeline(jwt.orgId as OrgId))
+    await auditView(request, 'people', undefined)
+    return rows
   })
 
   // POST /v1/auth/admin/devices/revoke lets an admin end a device's access, the
@@ -487,7 +510,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     // The device must hang off a user in the caller's own org.
     const device = await getStore().devices.findOne(
       { _id: body.deviceId as DeviceId },
-      { projection: { userId: 1 } },
+      { projection: { userId: 1, hostname: 1 } },
     )
     const owner =
       device &&
@@ -502,7 +525,13 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'Device not found' })
     }
 
-    return revokeTokensFor(body.deviceId)
+    const result = await revokeTokensFor(body.deviceId)
+    await audit(request, {
+      action: 'device.revoke',
+      target: { type: 'device', id: body.deviceId, label: device.hostname ?? null },
+      detail: { ownerId: device.userId, hostname: device.hostname ?? null },
+    })
+    return result
   })
 
   // POST /v1/auth/revoke-device lets a device end its own access. `burnwatch
@@ -517,6 +546,8 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: 'Device role required' })
     }
 
-    return revokeTokensFor(jwt.deviceId)
+    const result = await revokeTokensFor(jwt.deviceId)
+    await audit(request, { action: 'device.self_revoke', target: { type: 'device', id: jwt.deviceId, label: null } })
+    return result
   })
 }

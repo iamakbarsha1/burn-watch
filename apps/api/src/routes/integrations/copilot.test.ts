@@ -239,7 +239,8 @@ const WRITES = new Set([
   'deleteMany',
 ])
 
-const writeOps = () => mongoState.calls.filter((c) => WRITES.has(c.op))
+// The audit event is not a data write; its own tests cover it.
+const writeOps = () => mongoState.calls.filter((c) => WRITES.has(c.op) && c.collection !== 'auditEvents')
 
 describe('GET /v1/integrations/copilot/status', () => {
   it('reports missing-key, and answers 200 rather than 500, with no key configured', async () => {
@@ -1302,5 +1303,43 @@ describe('copilot integration routes — the token never leaves', () => {
     expect(res.payload).not.toContain(TOKEN)
     // GitHub's own response body is not echoed either.
     expect(res.payload).not.toContain('github says no')
+  })
+})
+
+describe('copilot integration routes — audit (R1 B8)', () => {
+  const audited = () => mongoCalls('auditEvents', 'insertOne').map(([doc]) => doc as Record<string, unknown>)
+
+  it('records connect, sync and disconnect, and never the token, not even a prefix', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    const day = '2026-11-09'
+
+    const put = await app.inject({ method: 'PUT', url: CONNECTION_URL, headers: admin(), payload: { org: ORG, token: TOKEN } })
+    expect(put.statusCode).toBe(200)
+
+    connect()
+    github.downloadLinks = [DOWNLOAD]
+    github.ndjson = userDayLine('alice', day)
+    members({ id: USER_A, login: 'alice' })
+    const sync = await app.inject({ method: 'POST', url: SYNC_URL, headers: admin(), payload: { day } })
+    expect(sync.statusCode).toBe(200)
+
+    const del = await app.inject({ method: 'DELETE', url: CONNECTION_URL, headers: admin() })
+    expect(del.statusCode).toBe(204)
+
+    const events = audited()
+    expect(events.map((e) => e.action)).toEqual(['copilot.connect', 'copilot.sync', 'copilot.disconnect'])
+    expect(events[0]).toMatchObject({ actorId: USER_A, orgId: ORG_A, detail: { org: ORG } })
+    expect(events[1].detail).toMatchObject({ day, reportPublished: true, matched: 1, written: expect.any(Number) })
+    const all = JSON.stringify(mongoCalls('auditEvents', 'insertOne'))
+    expect(all).not.toContain(TOKEN)
+    expect(all).not.toContain(TOKEN.slice(0, 12))
+  })
+
+  it('records nothing when GitHub refuses the token', async () => {
+    process.env.COPILOT_ENCRYPTION_KEY = KEY
+    github.seatsStatus = 401
+    const res = await app.inject({ method: 'PUT', url: CONNECTION_URL, headers: admin(), payload: { org: ORG, token: TOKEN } })
+    expect(res.statusCode).toBe(400)
+    expect(audited()).toEqual([])
   })
 })

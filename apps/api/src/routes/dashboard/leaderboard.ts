@@ -23,6 +23,7 @@ import {
 } from '@burn-watch/shared'
 import { dateQueryShape, scopeError, teamIdField } from './query-schema.js'
 import { readScope, requireAdmin } from '../../plugins/jwt.js'
+import { audit, auditView } from '../../audit.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { today } from './dates.js'
 import { streaks } from './streaks.js'
@@ -182,6 +183,8 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       const widened = isDeveloper && settings.developerView !== 'own' && !teamId
       const scope = widened ? undefined : await readScope(viewer, teamId)
       if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+      // A widened developer has scope undefined, so the whole-org rule covers them.
+      await auditView(request, 'leaderboard', scope, teamId)
       // Server side, so a developer cannot read anyone's spend by sorting on it.
       const othersCost = !isDeveloper || settings.showOthersCost
       const sort = parsed.data.sort === 'cost' && !othersCost ? 'activeDays' : parsed.data.sort
@@ -389,14 +392,20 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
   })
 
   // PUT /leaderboard/settings — admin only, all three at once.
-  // Gets the same audit treatment as other admin settings once B8 lands.
   fastify.put('/leaderboard/settings', { preHandler: requireAdmin(fastify) }, async (request) => {
     const body = LeaderboardSettingsSchema.parse(request.body)
     await getStore().organizations.updateOne({ _id: request.user.orgId as OrgId }, { $set: { leaderboard: body } })
+    await audit(request, {
+      action: 'org.leaderboard_settings',
+      target: { type: 'org', id: request.user.orgId, label: null },
+      detail: body,
+    })
     return body
   })
 
   // PUT /leaderboard/me — the caller's own "Hide my name on the leaderboard".
+  // Never audited: a person's own privacy choice, and a log of it would hand
+  // admins a list of who hid themselves.
   fastify.put('/leaderboard/me', async (request) => {
     const { hideOnLeaderboard } = HideOnLeaderboardSchema.parse(request.body)
     await getStore().users.updateOne(

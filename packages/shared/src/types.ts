@@ -642,3 +642,73 @@ export interface FunnelResponse {
   /** Everyone short of power user, same scope as the counts. */
   stuck: StuckPerson[]
 }
+
+// R1 B8 audit log. A closed list, so a typo in a call site is a compile error.
+export type AuditAction =
+  | 'device.approve'
+  | 'device.revoke'
+  | 'device.self_revoke'
+  | 'org.bootstrap'
+  | 'user.create'
+  | 'invite.create'
+  | 'invite.bulk'
+  | 'invite.accept'
+  | 'team.create'
+  | 'team.rename'
+  | 'team.delete'
+  | 'team.member_set'
+  | 'team.member_remove'
+  | 'seat.set'
+  | 'seat.remove'
+  | 'seat.assign_all'
+  | 'alert.create'
+  | 'alert.update'
+  | 'alert.delete'
+  | 'policy.set'
+  | 'policy.unset'
+  | 'mcp.approve'
+  | 'mcp.unapprove'
+  | 'org.leaderboard_settings'
+  | 'copilot.connect'
+  | 'copilot.disconnect'
+  | 'copilot.sync'
+  | `view.${AuditSurface}`
+
+/** Reads that show other people's data, logged once per viewer, surface, scope and UTC day. */
+export type AuditSurface =
+  | 'leaderboard'
+  | 'governance'
+  | 'adoption'
+  | 'people'
+  | 'team_compare'
+  | 'overview'
+  | 'trends'
+  | 'audit'
+
+export type AuditTargetType =
+  | 'user' | 'device' | 'invite' | 'team' | 'seat' | 'alert'
+  | 'agent' | 'mcp' | 'org' | 'integration' | 'scope'
+
+/** `label` is a snapshot at write time (email, team name, hostname), so a later rename or delete still reads. */
+export interface AuditTarget {
+  type: AuditTargetType
+  id: string | null
+  label: string | null
+}
+
+// GET /v1/dashboard/audit. Admin only, newest first.
+export interface AuditRow {
+  id: string
+  /** Views: the first view that UTC day. */
+  at: string
+  /** Views: the last view that day. Null for actions. */
+  lastAt: string | null
+  /** 1 for actions; views per day. */
+  count: number
+  kind: 'action' | 'view'
+  action: AuditAction
+  /** Name resolved at read time; null when the user row is gone. */
+  actor: { id: string; name: string | null; role: string }
+  target: AuditTarget
+  detail: Record<string, unknown> | null
+}

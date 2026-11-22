@@ -13,6 +13,7 @@ import {
 } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
 import { evaluateSeatAlerts } from '../../services/budget-alert.service.js'
+import { audit } from '../../audit.js'
 import { today } from './dates.js'
 
 const SeatParams = z.object({ userId: z.string().uuid(), agent: AgentNameSchema })
@@ -52,7 +53,8 @@ export async function seatsRoutes(fastify: FastifyInstance) {
     const orgId = request.user.orgId as OrgId
 
     // Same check budget-alerts POST does: never seat another org's user.
-    if (!(await store.users.findOne({ _id: userId as UserId, orgId }))) {
+    const user = await store.users.findOne({ _id: userId as UserId, orgId })
+    if (!user) {
       return reply.status(400).send({ error: 'User not found in this organization' })
     }
 
@@ -67,6 +69,12 @@ export async function seatsRoutes(fastify: FastifyInstance) {
       )
       await evaluateSeatAlerts(tx, orgId, today())
     })
+    // After the transaction: an audit failure must never roll back the seat.
+    await audit(request, {
+      action: 'seat.set',
+      target: { type: 'seat', id: seatKey(userId as UserId, agent), label: user.email },
+      detail: { userId, agent, monthlyPriceUsd: body.monthlyPriceUsd, startDate: body.startDate },
+    })
     return { userId, agent }
   })
 
@@ -80,6 +88,11 @@ export async function seatsRoutes(fastify: FastifyInstance) {
       return n
     })
     if (deleted === 0) return reply.status(404).send({ error: 'Seat not found' })
+    await audit(request, {
+      action: 'seat.remove',
+      target: { type: 'seat', id: seatKey(userId as UserId, agent), label: null },
+      detail: { userId, agent },
+    })
     return { userId, agent }
   })
 
@@ -117,6 +130,11 @@ export async function seatsRoutes(fastify: FastifyInstance) {
       )
       await evaluateSeatAlerts(tx, orgId, today())
       return r.upsertedCount
+    })
+    await audit(request, {
+      action: 'seat.assign_all',
+      target: { type: 'org', id: orgId, label: null },
+      detail: { agent: body.agent, monthlyPriceUsd: body.monthlyPriceUsd, startDate: body.startDate, created },
     })
     return { created }
   })

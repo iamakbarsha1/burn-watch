@@ -14,6 +14,7 @@ import {
   type UserId,
 } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
+import { audit, auditView } from '../../audit.js'
 import { credentialCrypto } from '../../credential-crypto.js'
 import { listCopilotSeats, fetchCopilotUserDays } from '../../services/copilot.service.js'
 import type { CopilotReport, CopilotUserDay } from '../../services/copilot.service.js'
@@ -290,6 +291,12 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         })
       }
 
+      // Never the token, not even a prefix of it.
+      await audit(request, {
+        action: 'copilot.connect',
+        target: { type: 'integration', id: PROVIDER, label: body.org },
+        detail: { org: body.org },
+      })
       // The token never travels back, not even a prefix of it. `connected` is
       // the whole of what the caller needs to know.
       return { connected: true, org: body.org }
@@ -306,6 +313,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const orgId = request.user.orgId as OrgId
       await getStore().orgIntegrations.deleteOne({ _id: integrationKey(orgId, PROVIDER) })
+      await audit(request, { action: 'copilot.disconnect', target: { type: 'integration', id: PROVIDER, label: null } })
       return reply.status(204).send()
     },
   )
@@ -490,6 +498,18 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
       )
     }
 
+    await audit(request, {
+      action: 'copilot.sync',
+      target: { type: 'integration', id: PROVIDER, label: githubOrg },
+      detail: {
+        day,
+        reportPublished: report.published,
+        matched,
+        written,
+        skipped,
+        unmatched: logins.length - claimed.size,
+      },
+    })
     return {
       day,
       // False means GitHub has no report for this day yet, which is the
@@ -644,6 +664,7 @@ export async function copilotIntegrationRoutes(fastify: FastifyInstance) {
         .map((s) => s.login)
         .sort(),
     }
+    await auditView(request, 'people', undefined)
     return response
   })
 }

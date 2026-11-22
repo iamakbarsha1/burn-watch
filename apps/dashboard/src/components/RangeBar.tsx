@@ -11,7 +11,7 @@ import { DateRangePicker } from './DateRangePicker'
  * and Admin are not time-sliced, and a control that visibly does nothing is
  * worse than no control.
  */
-const RANGE_SCOPED = new Set(['/', '/users', '/trends', '/activity', '/projects', '/adoption'])
+const RANGE_SCOPED = new Set(['/', '/users', '/trends', '/activity', '/projects', '/adoption', '/audit'])
 
 export function RangeBar() {
   const pathname = usePathname()

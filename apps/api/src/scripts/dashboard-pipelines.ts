@@ -32,6 +32,7 @@
  */
 import { strict as assert } from 'node:assert'
 import { MongoClient } from 'mongodb'
+import type { FastifyRequest } from 'fastify'
 import type { AdminDeviceRow, AdminUserRow, ProjectEntry } from '@burn-watch/shared'
 import {
   dayKey,
@@ -43,6 +44,7 @@ import {
   seatKey,
   seatLastUsed,
   seatedKeys,
+  getClient,
   storeFor,
   syncSchema,
   type ClaudeEnrichmentDoc,
@@ -330,6 +332,7 @@ async function clean(store: Store) {
   await store.rateLimits.deleteMany({ _id: RATE_KEY })
   await store.users.deleteMany(orgs)
   await store.organizations.deleteMany({ _id: { $in: [MINE, THEIRS] } })
+  await store.auditEvents.deleteMany(orgs)
 }
 
 const checks: string[] = []
@@ -878,6 +881,59 @@ async function rateLimit(store: Store) {
   })
 }
 
+/**
+ * R1 B8. The helper's upsert against a real server: a field in both
+ * $setOnInsert and $set/$inc is a conflict MongoDB refuses and the fake does
+ * not, so only here does "two views fold into one doc" mean anything.
+ * audit.ts writes through getStore(), which reads the same MONGODB_URI.
+ */
+async function auditLog(store: Store) {
+  const { audit, auditView } = await import('../audit.js')
+  const failures: unknown[] = []
+  const request = (orgId: OrgId) =>
+    ({
+      user: { userId: USERS[0]._id, orgId, role: 'admin' },
+      log: { error: (o: unknown) => failures.push(o) },
+    }) as unknown as FastifyRequest
+
+  await auditView(request(MINE), 'governance', undefined)
+  await auditView(request(MINE), 'governance', undefined)
+  await audit(request(MINE), { action: 'team.create', target: { type: 'team', id: 't', label: 'Platform' } })
+  await audit(request(THEIRS), { action: 'team.create', target: { type: 'team', id: 't', label: 'Other' } })
+
+  const views = await store.auditEvents.find({ orgId: MINE, kind: 'view' })
+  check('audit: two views on one day fold into one doc with count 2 and a year of TTL', () => {
+    assert.deepEqual(failures, [])
+    assert.equal(views.length, 1)
+    const [v] = views
+    assert.equal(v.count, 2)
+    assert.equal(v.action, 'view.governance')
+    assert.ok(v.lastAt!.getTime() >= v.at.getTime())
+    assert.equal(v.expiresAt!.getTime() - v.at.getTime(), 365 * 86_400_000)
+  })
+
+  const day = new Date().toISOString().slice(0, 10)
+  const found = await store.auditEvents.find(
+    {
+      orgId: MINE,
+      at: { $gte: new Date(`${day}T00:00:00.000Z`), $lt: new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000) },
+      action: { $regex: '^team\\.' },
+    },
+    { sort: { at: -1 }, skip: 0, limit: 100 },
+  )
+  check('audit: the GET /audit filter matches by prefix, range and org, and actions never expire', () => {
+    assert.equal(found.length, 1)
+    assert.equal(found[0].target.label, 'Platform')
+    assert.equal(found[0].expiresAt, null)
+  })
+
+  const indexes = await getClient().db().collection('auditEvents').indexes()
+  check('audit: TTL index on expiresAt at 0 seconds', () => {
+    const ttl = indexes.find((i) => i.name === 'auditEvents_ttl')
+    assert.equal(ttl?.expireAfterSeconds, 0)
+  })
+}
+
 async function main() {
   const uri = process.env.MONGODB_URI
   if (!uri) throw new Error('MONGODB_URI is not set')
@@ -906,9 +962,12 @@ async function main() {
     await adminDevices(store)
     await seats(store)
     await rateLimit(store)
+    await auditLog(store)
   } finally {
     await clean(store)
     await client.close()
+    // audit.ts writes through getStore(), which has its own client.
+    await getClient().close()
   }
 
   for (const what of checks) console.log(`  ok  ${what}`)
