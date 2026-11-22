@@ -41,6 +41,10 @@ export default function PrivacyPage() {
         yet. Admins with database access can still read them.
       </p>
 
+      <p className="text-sm text-ink-2">
+        Admins can see a log of who opened views that include team or person data.
+      </p>
+
       {FIELD_GROUPS.map((group) => (
         <section key={group.title}>
           <h2 className="text-sm font-semibold tracking-tight text-ink">{group.title}</h2>
