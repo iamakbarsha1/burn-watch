@@ -57,7 +57,7 @@ import {
   type UserId,
 } from '@burn-watch/db'
 import { toolUsageTotals } from '../routes/dashboard/activity.js'
-import { leaderboardPipeline } from '../routes/dashboard/leaderboard.js'
+import { leaderboardPipeline, mcpServersPipeline } from '../routes/dashboard/leaderboard.js'
 import { dayBefore } from '../routes/dashboard/dates.js'
 import { overviewPipeline } from '../routes/dashboard/overview.js'
 import { projectTotals } from '../routes/dashboard/projects.js'
@@ -210,6 +210,7 @@ const ENRICHMENT: ClaudeEnrichmentDoc[] = [
   enrichment(ZED, THEIRS, D1, {
     limitHitCount: 50,
     toolUsage: { bash: 1_000 },
+    mcpUsage: { github: 9 },
     projectBreakdown: [project('acme/widgets', 500, 50)],
   }),
 ]
@@ -415,19 +416,35 @@ async function overview(store: Store) {
 }
 
 async function leaderboard(store: Store) {
-  const [facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 100, 0))
+  // A zero-token day for DI, inside the range: it must not count as active.
+  await store.dailySnapshots.insertOne(snapshot(DI, MINE, D1, { gemini: slice(0, 0) }, 1))
+  let facet
+  try {
+    ;[facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2))
+  } finally {
+    await store.dailySnapshots.deleteOne({ _id: dayKey(DI, D1) })
+  }
   const users = facet.users as {
     _id: string
     totalCostMicros: number
     totalTokens: number
     sessions: number
+    activeDays: number
   }[]
 
-  check('leaderboard ranks by spend and excludes other orgs', () => {
+  check('leaderboard ranks by active days, ties on tokens, and excludes other orgs', () => {
     assert.deepEqual(
       users.map((u) => u._id),
-      [DI, ADA, BO],
-      'DI was inserted after ADA and BO and outspends both, so this order is the sort rather than the insertion',
+      [ADA, BO, DI],
+      'ADA has two days; BO and DI one each, and BO moved more tokens. DI outspends both, so this is not spend',
+    )
+  })
+
+  check('leaderboard counts only days with tokens as active', () => {
+    assert.deepEqual(
+      users.map((u) => u.activeDays),
+      [2, 1, 1],
+      'DI has a zero-token day in range',
     )
   })
 
@@ -465,34 +482,38 @@ async function leaderboard(store: Store) {
     assert.equal(agents.some((a) => a._id.userId === ZED), false)
   })
 
-  const [paged] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 1, 1))
-  check('leaderboard pages in the database, not in node', () => {
-    assert.deepEqual(
-      (paged.users as { _id: string }[]).map((u) => u._id),
-      [ADA],
-      'offset 1 of the spend ranking: DI, then ADA, then BO',
-    )
+  // Two people level on days and tokens: `_id` decides, the same way every time.
+  const TIE = [newId<UserId>(), newId<UserId>()].sort()
+  for (const id of [...TIE].reverse()) await store.dailySnapshots.insertOne(snapshot(id, MINE, D1, { claude: slice(50, 1) }, 1))
+  let tied
+  try {
+    ;[tied] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2))
+  } finally {
+    await store.dailySnapshots.deleteMany({ userId: { $in: TIE } })
+  }
+  check('leaderboard breaks a tie on days and tokens by id, so paging is stable', () => {
+    const ids = (tied.users as { _id: string }[]).map((u) => u._id)
+    assert.deepEqual(ids.slice(-2), TIE, 'inserted in reverse id order')
   })
 
-  const [top] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 1, 0))
-  check('leaderboard sorts before it pages', () => {
-    // DI is the last of the three inserted and the highest spender. A pipeline
-    // that skips and limits an unsorted `$group` stream and sorts the page
-    // afterwards returns whoever the server emitted first, which is not DI.
-    assert.deepEqual(
-      (top.users as { _id: string }[]).map((u) => u._id),
-      [DI],
-    )
-  })
-
-  check('leaderboard sees everyone in range on every page, not just that page', () => {
-    // The integrity check the route runs is only page-independent if this
-    // branch is. Page 1 holds ADA alone and must still carry DI's and BO's
-    // ids, or an orphan sorted onto page 0 would be invisible from page 1 and
-    // the request would answer 200 with a silently short ranking.
-    const everyone = (paged.everyone as { ids: string[] }[])[0].ids
+  check('leaderboard sees everyone in range, including people with no active day', () => {
+    // The integrity check the route runs reads this branch, so a person with
+    // only zero-token days is still resolved against `users`.
+    const everyone = (facet.everyone as { ids: string[] }[])[0].ids
     assert.deepEqual([...everyone].sort(), [ADA, BO, DI].sort())
     assert.equal(everyone.includes(ZED), false)
+  })
+
+  const mcp = await store.claudeEnrichment.aggregate<{ _id: string; servers: string[] }>(
+    mcpServersPipeline({ orgId: MINE, from: D1, to: D2 }),
+  )
+  const scopedMcp = await store.claudeEnrichment.aggregate<{ _id: string; servers: string[] }>(
+    mcpServersPipeline({ orgId: MINE, userIds: [BO], from: D1, to: D2 }),
+  )
+  check('leaderboard MCP servers: distinct keys per person, other orgs and other people left out', () => {
+    const byUser = Object.fromEntries(mcp.map((r) => [r._id, [...r.servers].sort()]))
+    assert.deepEqual(byUser, { [ADA]: ['neon'], [BO]: ['neon'] }, 'ZED has github in the other org')
+    assert.deepEqual(scopedMcp.map((r) => r._id), [BO])
   })
 }
 
@@ -518,12 +539,10 @@ async function orphans(store: Store) {
     }),
   )
   try {
-    const [facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2, 1, 0))
-    check('leaderboard surfaces an orphan from any page, not only the one it lands on', () => {
-      const page = (facet.users as { _id: string }[]).map((u) => u._id)
-      assert.deepEqual(page, [DI], 'the ghost spent less than DI, so it is not on page 0')
+    const [facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2))
+    check('leaderboard surfaces an orphan for the integrity check', () => {
       const everyone = (facet.everyone as { ids: string[] }[])[0].ids
-      assert.equal(everyone.includes(GHOST), true, 'and the check still sees it')
+      assert.equal(everyone.includes(GHOST), true)
     })
 
     const rows = await store.claudeEnrichment.aggregate<{ tool: string; count: number }>(

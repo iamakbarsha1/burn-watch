@@ -72,7 +72,7 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.topSessions': 'none',
   'enrichment.toolUsage': 'scoped', // Activity
   'enrichment.shellUsage': 'scoped', // Activity
-  'enrichment.mcpUsage': 'scoped', // Activity
+  'enrichment.mcpUsage': 'scoped', // Activity, Leaderboard
   'enrichment.limitHitCount': 'admin', // limit-hit alerts
   'enrichment.claudeVersions': 'none',
   'enrichment.entrypointCounts': 'none',

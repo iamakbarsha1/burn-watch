@@ -8,6 +8,31 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.9.0 (2026-11-22)
+
+- Leaderboard (`/users`) now ranks by active days, not dollars. Columns:
+  active days ("12 of 30"), score, current streak with the best below,
+  agents and MCP servers tried (names on hover), tokens and sessions. The
+  empty Cache hit column is gone. On "All time" the day count starts at
+  the first usage day.
+- Sort by active days (default), score, current streak, tokens or value.
+  Ties share a rank. Score is 0-100: active days, current streak, tokens
+  and features tried, each against the top person in the list, weighted
+  40/30/20/10. Cost is not in the score.
+- Streaks are all time. Weekends never break one, and today and yesterday
+  never break the current one, since they are usually not synced yet.
+- Cost is hidden by default. "Show cost" adds value, actual cost, multiple
+  and per-agent value.
+- Team picker, as on Overview and Adoption.
+- Admin > Leaderboard: what developers see (own row, own row and rank, or
+  the whole list), show names (off shows "Person 1, 2..."), and whether
+  developers see cost on other people's rows. Defaults: own row, names on,
+  others' cost off. The API withholds names and cost, not only the page.
+- "Hide my name on the leaderboard" on `/users`: others see "Anonymous",
+  admins still see the name. The row and rank stay.
+- Two optional fields (`organizations.leaderboard`,
+  `users.hideOnLeaderboard`), no validator. No schema sync needed.
+
 ## web-v0.8.0 (2026-11-22)
 
 - Adoption page: new "Funnel" section below Idle seats. It counts people at

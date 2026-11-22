@@ -21,7 +21,9 @@ const setSeat = vi.fn()
 const removeSeat = vi.fn()
 const assignSeatToAll = vi.fn()
 const createInvites = vi.fn()
+const saveLeaderboardSettings = vi.fn()
 vi.mock('@/lib/api', () => ({
+  saveLeaderboardSettings,
   connectCopilot,
   disconnectCopilot,
   syncCopilot,
@@ -56,6 +58,7 @@ const {
   removeSeatAction,
   assignSeatToAllAction,
   bulkInviteAction,
+  leaderboardSettingsAction,
 } = await import('./actions.js')
 
 function form(fields: Record<string, string> = {}): FormData {
@@ -455,5 +458,27 @@ describe('bulkInviteAction', () => {
     const csv = Array.from({ length: 201 }, (_, i) => `u${i}@b.c`).join('\n')
     expect((await bulkInviteAction(null, form({ csv }))).message).toContain('limit is 200')
     expect(createInvites).not.toHaveBeenCalled()
+  })
+})
+
+describe('leaderboardSettingsAction', () => {
+  it('refuses a manager without calling the API', async () => {
+    getUserRole.mockResolvedValue('manager')
+    expect((await leaderboardSettingsAction(null, form({ developerView: 'full' }))).ok).toBe(false)
+    expect(saveLeaderboardSettings).not.toHaveBeenCalled()
+  })
+
+  it('sends all three, reading an unchecked box as off', async () => {
+    getUserRole.mockResolvedValue('admin')
+    const state = await leaderboardSettingsAction(null, form({ developerView: 'rank', showNames: 'on' }))
+    expect(state.ok).toBe(true)
+    expect(saveLeaderboardSettings).toHaveBeenCalledWith({ developerView: 'rank', showNames: true, showOthersCost: false })
+    expect(revalidatePath).toHaveBeenCalledWith('/users')
+  })
+
+  it('rejects an unknown developer view', async () => {
+    getUserRole.mockResolvedValue('admin')
+    expect((await leaderboardSettingsAction(null, form({ developerView: 'all' }))).message).toBe('Pick what developers see')
+    expect(saveLeaderboardSettings).not.toHaveBeenCalled()
   })
 })

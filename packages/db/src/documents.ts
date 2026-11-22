@@ -1,5 +1,5 @@
 import type { ObjectId } from 'mongodb'
-import type { ActivityEntry, AgentName, ProjectEntry, SessionEntry } from '@burn-watch/shared'
+import type { ActivityEntry, AgentName, LeaderboardSettings, ProjectEntry, SessionEntry } from '@burn-watch/shared'
 import type {
   AgentPolicyKey,
   DayKey,
@@ -21,6 +21,8 @@ export interface OrganizationDoc {
   slug: string
   githubOrg: string | null
   createdAt: Date
+  /** R1 A8. Absent = developerView own, showNames true, showOthersCost false. */
+  leaderboard?: LeaderboardSettings
 }
 
 export interface UserDoc {
@@ -32,6 +34,8 @@ export interface UserDoc {
   role: 'admin' | 'manager' | 'developer'
   isActive: boolean
   createdAt: Date
+  /** R1 A8. Shows as "Anonymous" on the leaderboard to everyone but admins and themselves. */
+  hideOnLeaderboard?: boolean
 }
 
 export interface DeviceDoc {
