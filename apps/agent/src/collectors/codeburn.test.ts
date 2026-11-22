@@ -75,11 +75,45 @@ function turn(opts: {
   })
 }
 
-const toolUse = (name: string, input: Record<string, unknown> = {}) => ({
+const toolUse = (name: string, input: Record<string, unknown> = {}, id?: string) => ({
   type: 'tool_use',
+  ...(id ? { id } : {}),
   name,
   input,
 })
+
+// One line of a streamed reply. Claude Code writes a line per content block,
+// each repeating the message id, request id and the full usage.
+function streamed(opts: {
+  msg?: string
+  req?: string
+  session: string
+  cwd: string
+  block: unknown
+  input?: number
+  output?: number
+  cacheCreate?: number
+  cacheRead?: number
+}) {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: `${DATE}T10:00:00.000Z`,
+    sessionId: opts.session,
+    cwd: opts.cwd,
+    ...(opts.req ? { requestId: opts.req } : {}),
+    message: {
+      ...(opts.msg ? { id: opts.msg } : {}),
+      role: 'assistant',
+      content: [opts.block],
+      usage: {
+        input_tokens: opts.input ?? 0,
+        output_tokens: opts.output ?? 0,
+        cache_creation_input_tokens: opts.cacheCreate ?? 0,
+        cache_read_input_tokens: opts.cacheRead ?? 0,
+      },
+    },
+  })
+}
 
 let root: string
 
@@ -327,6 +361,56 @@ describe('limit-hit counting', () => {
 })
 
 // Synthetic transcript records for the 0.4 fields. IDs are made up.
+describe('streamed duplicate lines', () => {
+  const r1 = { msg: 'msg_1', req: 'req_1', session: 's1', cwd: '/work/alpha', input: 100, cacheCreate: 200, cacheRead: 1000, output: 50 }
+  const r2 = { msg: 'msg_2', req: 'req_2', session: 's2', cwd: '/work/beta', input: 400, output: 250 }
+
+  it('counts each request once across lines, files and subagent transcripts', async () => {
+    writeSession('a.jsonl', [
+      streamed({ ...r1, block: { type: 'thinking', thinking: '' } }),
+      streamed({ ...r1, block: { type: 'text', text: 'x' } }),
+      streamed({ ...r1, block: toolUse('Bash', { command: 'git status' }, 'toolu_1') }),
+      streamed({ ...r2, block: { type: 'text', text: 'y' } }),
+      streamed({ ...r2, block: toolUse('Read', {}, 'toolu_2') }),
+    ])
+    // A subagent file that replays the first request and its tool call.
+    const sub = join(root, 'my-project', 's1', 'subagents')
+    mkdirSync(sub, { recursive: true })
+    writeFileSync(join(sub, 'agent-1.jsonl'), streamed({ ...r1, block: toolUse('Bash', { command: 'git status' }, 'toolu_1') }))
+
+    const e = await new CodeburnCollector(root).collect(DATE, 20)
+
+    expect(e?.callCount).toBe(2)
+    expect(e?.writtenTokens).toBe(300)
+    // 1000 cache reads over 1700 read in, as if each request were one line.
+    expect(e?.cacheHitRate).toBeCloseTo((1000 / 1700) * 100, 10)
+    expect(e?.sessionCount).toBe(2)
+
+    const alpha = e?.projectBreakdown.find((p) => p.path === 'alpha')
+    const beta = e?.projectBreakdown.find((p) => p.path === 'beta')
+    // alpha burned 1350 of 2000 tokens, beta 650.
+    expect(alpha?.cost).toBeCloseTo(13.5, 10)
+    expect(beta?.cost).toBeCloseTo(6.5, 10)
+    expect(alpha?.overheadK).toBe(1)
+    expect(alpha?.sessions).toBe(1)
+
+    // Tool calls sit on separate lines of one reply: each counts once.
+    expect(e?.shellUsage).toEqual({ git: 1 })
+    expect(e?.toolUsage).toEqual({ read: 1 })
+  })
+
+  it('counts every line that lacks a message id or request id, as before', async () => {
+    writeSession('a.jsonl', [
+      streamed({ ...r1, req: undefined, block: { type: 'text', text: 'x' } }),
+      streamed({ ...r1, req: undefined, block: { type: 'text', text: 'x' } }),
+      streamed({ ...r1, msg: undefined, block: { type: 'text', text: 'x' } }),
+    ])
+    const e = await new CodeburnCollector(root).collect(DATE)
+    expect(e?.callCount).toBe(3)
+    expect(e?.writtenTokens).toBe(150)
+  })
+})
+
 const ACCOUNT = '00000000-0000-4000-8000-00000000000a'
 const CLAUDE_ORG = '00000000-0000-4000-8000-00000000000b'
 
