@@ -254,26 +254,17 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 is done and B8 shipped (web-v0.10.0), with fixes in web-v0.10.1 and
-agent v0.4.1. R2 B5 (agent and Claude Code versions per device) is built
-as web-v0.11.0 on branch `feat/r2-b5-agent-versions`, pushed, no PR yet.
-To ship: open the PR, merge after CI, tag `web-v0.11.0` with
-`--latest=false`, then smoke test on prod: set the minimum to `2.1.0` on
-`/devices`, see one device OK and the rest unknown with "Update agent",
-then see the change on `/audit`. No schema sync.
-
-First, the 18:00 sync check for agent v0.4.1: after the scheduled sync on
-the machine with a repo under `~/Desktop`, confirm `burnwatch status`
-shows the macOS privacy warning naming the blocked folder, and that the
-day's usage still landed.
-
-Next: R2 A5 (feature matrix per team). Write its design before code. Use
-B5's summary line on `/devices` to watch the agent 0.4 share. Still open:
-the signed-in prod checks, seat prices (org fact #1) and the Vercel Pro
-decision (Risks).
+Shipped 2026-11-22/23: R1 B8 (web-v0.10.0), prod-check fixes (web-v0.10.1, agent
+v0.4.1), R2 B5 (web-v0.11.0), enrichment dedupe (agent v0.4.2), own collector
+phase 0 (web-v0.12.0). Next: own collector phase 1 (build order step 4:
+`parsers/claude.ts`, `pricing.ts`, `usage.ts`) per
+`tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md`. Still open: confirm or rule out the
+macOS `~/Desktop` block after an 18:00 sync on agent 0.4.1+ (`burnwatch status`,
+`projectBreakdown.remote`), re-send past days on 0.4.2 to correct doubled
+enrichment, `/users` and `/devices` table width, seat prices (org fact #1),
+Vercel Pro, `COPILOT_ENCRYPTION_KEY` on prod, R2 A5 design.
 
 ```
-BurnWatch: ship R2 B5 from branch feat/r2-b5-agent-versions: PR, CI, merge, release web-v0.11.0 (--latest=false), smoke test the minimum on /devices and /audit.
-Check the 18:00 scheduled sync on agent v0.4.1: burnwatch status shows the macOS privacy warning, usage still landed.
-Then draft the R2 A5 (feature matrix per team) design before code.
+BurnWatch: check `burnwatch status` and projectBreakdown.remote after the 18:00 sync (macOS ~/Desktop block).
+Then own collector phase 1, build order step 4: parsers/claude.ts, pricing.ts, usage.ts with tests per tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md.
 ```
