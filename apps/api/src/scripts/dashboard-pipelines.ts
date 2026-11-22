@@ -241,13 +241,20 @@ const ZETA = newId<DeviceId>()
 const DI_BOX = newId<DeviceId>()
 const ZED_BOX = newId<DeviceId>()
 
-const device = (_id: DeviceId, userId: UserId, hostname: string, lastSeenAt: string): DeviceDoc => ({
+const device = (
+  _id: DeviceId,
+  userId: UserId,
+  hostname: string,
+  lastSeenAt: string,
+  agentVersion = '0.1.0',
+  claudeVersion: string | null = null,
+): DeviceDoc => ({
   _id,
   userId,
   hostname,
   platform: 'darwin',
-  agentVersion: '0.1.0',
-  claudeVersion: null,
+  agentVersion,
+  claudeVersion,
   lastSeenAt: new Date(lastSeenAt),
   createdAt: new Date(),
 })
@@ -256,7 +263,7 @@ const device = (_id: DeviceId, userId: UserId, hostname: string, lastSeenAt: str
 // the per-user max both have something to do. BO owns none.
 const DEVICES = [
   device(ZETA, ADA, 'zeta', '2026-06-02T10:00:00.789Z'),
-  device(ALPHA, ADA, 'alpha', '2026-06-01T08:00:00.000Z'),
+  device(ALPHA, ADA, 'alpha', '2026-06-01T08:00:00.000Z', '0.4.0', '2.1.330'),
   device(DI_BOX, DI, 'di-box', '2026-06-03T00:00:00.000Z'),
   device(ZED_BOX, ZED, 'zed-box', '2026-06-09T00:00:00.000Z'),
 ]
@@ -318,6 +325,8 @@ async function seed(store: Store) {
   for (const s of SNAPSHOTS) await store.dailySnapshots.insertOne(s)
   for (const e of ENRICHMENT) await store.claudeEnrichment.insertOne(e)
   for (const d of DEVICES) await store.devices.insertOne(d)
+  // A device registered before R0.3 has no claudeVersion field at all.
+  await store.devices.updateOne({ _id: DI_BOX }, { $unset: { claudeVersion: '' } })
   for (const t of TOKENS) await store.deviceTokens.insertOne(t)
   for (const s of SEATS) await store.seats.insertOne(s)
 }
@@ -812,11 +821,11 @@ async function adoptionFunnel(store: Store) {
 async function adminDevices(store: Store) {
   const rows = await store.users.aggregate<AdminDeviceRow>(adminDevicesPipeline(MINE))
 
-  check('admin devices lists the org newest first, with revoked derived from tokens', () => {
+  check('admin devices lists the org newest first, with revoked derived from tokens and both versions', () => {
     assert.deepEqual(rows, [
-      { id: DI_BOX, hostname: 'di-box', platform: 'darwin', lastSeenAt: '2026-06-03T00:00:00Z', userName: 'Di', userEmail: 'di@example.invalid', revoked: true },
-      { id: ZETA, hostname: 'zeta', platform: 'darwin', lastSeenAt: '2026-06-02T10:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: true },
-      { id: ALPHA, hostname: 'alpha', platform: 'darwin', lastSeenAt: '2026-06-01T08:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: false },
+      { id: DI_BOX, hostname: 'di-box', platform: 'darwin', lastSeenAt: '2026-06-03T00:00:00Z', userName: 'Di', userEmail: 'di@example.invalid', revoked: true, agentVersion: '0.1.0', claudeVersion: null },
+      { id: ZETA, hostname: 'zeta', platform: 'darwin', lastSeenAt: '2026-06-02T10:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: true, agentVersion: '0.1.0', claudeVersion: null },
+      { id: ALPHA, hostname: 'alpha', platform: 'darwin', lastSeenAt: '2026-06-01T08:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: false, agentVersion: '0.4.0', claudeVersion: '2.1.330' },
     ])
   })
 }
