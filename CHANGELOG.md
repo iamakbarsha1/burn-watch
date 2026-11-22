@@ -8,6 +8,23 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## Agent v0.4.2 (2026-11-23)
+
+- Claude enrichment no longer counts a request more than once. Claude Code
+  writes one transcript line per block of a streamed reply, each repeating
+  the same usage, so callCount, written tokens, per-project and per-branch
+  tokens (and with them the per-project cost split and overhead), cache
+  figures, versions, entry points, skills and sidechain messages were about
+  double. Each request now counts once, keyed on `message.id` and
+  `requestId`, across all files including subagent transcripts. A line
+  missing either id still counts on its own. Tool, shell and MCP counts
+  count each tool call once by its id, which also drops tool calls a resumed
+  session copied from an earlier file. Days are still bucketed by UTC date.
+- Enrichment already stored for past days stays doubled until those days
+  are sent again. The server replaces a user-day's enrichment on each
+  submit, so `burnwatch sync --days N` on 0.4.2 corrects the last N days,
+  as long as the transcripts for them are still on disk.
+
 ## web-v0.11.0 (2026-11-22)
 
 - `/devices` (admins): Registered devices gains Claude Code and Agent

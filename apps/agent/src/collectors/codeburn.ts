@@ -185,6 +185,13 @@ export class CodeburnCollector implements EnrichmentCollector {
     // session-owner records carry no timestamp, so they are joined to days
     // through sessionId after the pass.
     const owners = new Map<string, { accountUuid?: unknown; organizationUuid?: unknown }>()
+    // Claude Code writes one line per content block of a streamed reply, each
+    // with the same message.id, requestId and usage, and a resumed or forked
+    // session copies earlier lines into its own file. Count each request once
+    // across the whole run, keeping the first line seen, and each tool call
+    // once by its tool_use id, since the blocks of one reply sit on different lines.
+    const seenRequests = new Set<string>()
+    const seenToolUses = new Set<string>()
 
     for (const file of files) {
       const stat = statSync(file)
@@ -216,6 +223,35 @@ export class CodeburnCollector implements EnrichmentCollector {
           if (entry.type === 'user') tally(b.permissionModeCounts, entry.permissionMode)
 
           if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
+            const content = entry.message.content ?? []
+            for (const block of content) {
+              if (block.type !== 'tool_use') continue
+              if (typeof block.id === 'string' && block.id) {
+                if (seenToolUses.has(block.id)) continue
+                seenToolUses.add(block.id)
+              }
+              const toolName = (block.name ?? '').toLowerCase()
+              if (toolName === 'bash') {
+                // Basename: a command run by absolute path would carry the user's folders.
+                const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0].split(/[\\/]/).pop()
+                if (cmd) b.shellUsage[cmd] = (b.shellUsage[cmd] ?? 0) + 1
+              } else if (toolName.startsWith('mcp__') || (block.name ?? '').startsWith('mcp__')) {
+                const server = (block.name ?? '').split('__')[1] ?? ''
+                if (server) b.mcpUsage[server] = (b.mcpUsage[server] ?? 0) + 1
+              } else {
+                b.toolUsage[toolName] = (b.toolUsage[toolName] ?? 0) + 1
+              }
+            }
+
+            // A line missing either id is counted, as before.
+            const msgId = entry.message.id
+            const reqId = entry.requestId
+            if (typeof msgId === 'string' && msgId && typeof reqId === 'string' && reqId) {
+              const key = `${msgId}:${reqId}`
+              if (seenRequests.has(key)) continue
+              seenRequests.add(key)
+            }
+
             b.callCount++
 
             const sessionId: string = entry.sessionId ?? entry.session_id ?? ''
@@ -270,23 +306,6 @@ export class CodeburnCollector implements EnrichmentCollector {
                 }
                 if (sessionId) br.sessions.add(sessionId)
                 br.tokens += tokens
-              }
-            }
-
-            const content = entry.message.content ?? []
-            for (const block of content) {
-              if (block.type === 'tool_use') {
-                const toolName = (block.name ?? '').toLowerCase()
-                if (toolName === 'bash') {
-                  // Basename: a command run by absolute path would carry the user's folders.
-                  const cmd = (block.input?.command ?? '').trim().split(/\s+/)[0].split(/[\\/]/).pop()
-                  if (cmd) b.shellUsage[cmd] = (b.shellUsage[cmd] ?? 0) + 1
-                } else if (toolName.startsWith('mcp__') || (block.name ?? '').startsWith('mcp__')) {
-                  const server = (block.name ?? '').split('__')[1] ?? ''
-                  if (server) b.mcpUsage[server] = (b.mcpUsage[server] ?? 0) + 1
-                } else {
-                  b.toolUsage[toolName] = (b.toolUsage[toolName] ?? 0) + 1
-                }
               }
             }
           }
