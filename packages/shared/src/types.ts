@@ -546,3 +546,49 @@ export interface IdleSeatsResponse {
   /** Seats the org has at all, so the page can tell "none entered" from "none idle". Admins only; null for managers. */
   orgSeats: number | null
 }
+
+// GET /v1/dashboard/adoption/funnel (R1 A3). How many people reached each step
+// in the page's date range. Admins see the org, managers their own teams.
+export interface FunnelCounts {
+  /** Registered users plus people with an unused invite, so each stage is a subset of the one before. */
+  invited: number
+  registered: number
+  /** Registered users with a device. A sub-line under first sync, not a stage. */
+  deviceLinked: number
+  firstSync: number
+  active: number
+  powerUser: number
+}
+
+/** The last stage a person reached, when it is not power user. */
+export type FunnelStop = 'invited' | 'registered' | 'firstSync' | 'active'
+
+export interface StuckPerson {
+  stoppedAt: FunnelStop
+  /** Null for an unused invite. */
+  userId: string | null
+  name: string | null
+  /** The invite email when there is no user. */
+  email: string | null
+  /** Names of the viewer's visible teams this person is in. */
+  teams: string[]
+  /** Invite sent, account created, or last day with tokens, by stage. */
+  lastStepDate: string
+}
+
+export interface FunnelResponse {
+  from: string
+  to: string
+  rangeDays: number
+  /** Thresholds in use: active days for "active" and for "power user". */
+  activeDays: number
+  powerDays: number
+  /** Each person once, even when in two teams. */
+  total: FunnelCounts
+  /** Visible teams by name. A person in two teams counts in both. */
+  teams: ({ teamId: string; teamName: string } & FunnelCounts)[]
+  /** People in no visible team. Admins only, with no team filter; null otherwise. */
+  noTeam: FunnelCounts | null
+  /** Everyone short of power user, same scope as the counts. */
+  stuck: StuckPerson[]
+}

@@ -63,6 +63,7 @@ import { overviewPipeline } from '../routes/dashboard/overview.js'
 import { projectTotals } from '../routes/dashboard/projects.js'
 import { trendsPipeline } from '../routes/dashboard/trends.js'
 import { adminDevicesPipeline, adminUsersPipeline } from '../routes/auth/device.js'
+import { funnelUsersPipeline } from '../routes/dashboard/adoption.js'
 import { hitPipeline } from '../plugins/rate-limit-store.js'
 
 const D1 = '2026-06-01' as IsoDate
@@ -759,6 +760,33 @@ async function adminUsers(store: Store) {
   })
 }
 
+async function adoptionFunnel(store: Store) {
+  // An inactive user with usage, and a zero-token day before BO's first real one.
+  const NEO = newId<UserId>()
+  await store.users.insertOne({ ...user(NEO, MINE, 'Neo'), isActive: false })
+  await store.dailySnapshots.insertOne(snapshot(NEO, MINE, D1, { claude: slice(500, 1) }, 1))
+  await store.dailySnapshots.insertOne(snapshot(BO, MINE, D1, { qwen: slice(0, 0) }, 1))
+  const rows = await store.users.aggregate(funnelUsersPipeline(MINE, D1, D2))
+  const scoped = await store.users.aggregate(funnelUsersPipeline(MINE, D1, D2, [ADA, ZED]))
+  await store.dailySnapshots.deleteMany({ userId: { $in: [NEO, BO] }, date: D1 })
+  await store.users.deleteOne({ _id: NEO })
+
+  const facts = (id: UserId) => {
+    const r = rows.find((x) => x.userId === id)!
+    return [r.hasDevice, r.firstSync, r.lastSync, r.activeDays]
+  }
+  check('adoption funnel: active users of the org only, scope narrows', () => {
+    assert.deepEqual(rows.map((r) => r.userId).sort(), [ADA, BO, CY, DI].sort())
+    assert.deepEqual(scoped.map((r) => r.userId), [ADA])
+  })
+  check('adoption funnel: device, first and last sync, active days in range, zero-token days ignored', () => {
+    assert.deepEqual(facts(ADA), [true, D1, D2, 2], 'two devices still one flag; two days in range')
+    assert.deepEqual(facts(BO), [false, D2, D2, 1], 'the zero-token D1 is not a sync')
+    assert.deepEqual(facts(CY), [false, D3, D3, 0], 'synced, but after the range')
+    assert.deepEqual(facts(DI), [true, D2, D2, 1])
+  })
+}
+
 async function adminDevices(store: Store) {
   const rows = await store.users.aggregate<AdminDeviceRow>(adminDevicesPipeline(MINE))
 
@@ -855,6 +883,7 @@ async function main() {
     await projects(store)
     await orphans(store)
     await adminUsers(store)
+    await adoptionFunnel(store)
     await adminDevices(store)
     await seats(store)
     await rateLimit(store)

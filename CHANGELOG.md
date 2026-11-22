@@ -8,6 +8,24 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.8.0 (2026-11-22)
+
+- Adoption page: new "Funnel" section below Idle seats. It counts people at
+  each step, per team: invited, registered, first sync, active and power
+  user. Each cell shows the count and the share of the previous step. The
+  first sync cell also shows how many people linked a device.
+- The funnel follows the page date range. Active means tokens on 2 or more
+  days, power user on 5 of every 7 days, scaled to the range (22 of 30 days
+  for a 30-day range). The line under the table names the numbers in use.
+  A range that starts before the org's first usage day starts on that day
+  instead, so "All time" does not push power user out of reach.
+- Invited counts registered users plus unused invites, once per email. An
+  unused invite sits in its invite team, else in "No team".
+- A collapsed "Who is stuck" list shows everyone short of power user,
+  grouped by where they stopped, with team and the date of their last step.
+- Admins see the org with a "No team" row, managers their own teams.
+- No new collection or index. No schema sync needed.
+
 ## web-v0.7.0 (2026-11-22)
 
 - New Adoption page (admins and managers) with an "Idle seats" list: every

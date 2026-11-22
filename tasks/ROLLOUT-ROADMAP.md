@@ -176,7 +176,7 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 | B3 | MCP server inventory from `mcpUsage`, allowlist, flag unapproved | ✅ Built, web-v0.5.0 (`/governance`, `mcpApprovals`). Design: `tasks/R1-B3-MCP-INVENTORY-DESIGN.md`. Admins approve on the page, so org fact #3 is no longer a blocker |
 | B2 | Approved agents/models policy, violation list, dashboard alert | ✅ Built, web-v0.6.0 (`/governance`, `agentPolicies`, nav count + Overview line). Design: `tasks/R1-B2-AGENT-POLICY-DESIGN.md`. Push alerts wait for a channel |
 | A1 | Idle seats: no usage for 14+ days, per agent | ✅ Built, web-v0.7.0 (`/adoption`, `?idleDays` default 14, alert links to it). Design: `tasks/R1-A1-IDLE-SEATS-DESIGN.md`. No schema change. Prod shows the empty state until seats are entered (org fact #1) |
-| A3 | Funnel per team: invited → registered → first sync → weekly active → power user | Uses R0.2 teams |
+| A3 | Funnel per team: invited → registered → first sync → active → power user | ✅ Built, web-v0.8.0 (`/adoption` Funnel section, page date range, who-is-stuck list). Design: `tasks/R1-A3-ADOPTION-FUNNEL-DESIGN.md`. Active 2+ days, power 5 of 7 days (scaled to the range). No schema change. Prod shows the total and "No team" rows until teams exist |
 | A8 | Leaderboard by active days, streaks, features tried; `$` hidden by default | Features-tried improves after R2 |
 | B8 | Admin audit log: device approvals, role changes, who viewed whose data | Moved up from "later": once managers see team data, view logging should exist from day one |
 
@@ -251,20 +251,19 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 A1 shipped as web-v0.7.0: `/adoption` has the idle seats list. Prod has 0
-seats, so it shows the "add them in Admin > Seats" empty state until seat
-prices are entered (org fact #1). Next is R1 A3, the funnel per team (invited,
-registered, first sync, weekly active, power user), as a second section on
-`/adoption`. Write its design doc first, with a read-only prod query for each
-funnel step. Still open: signed-in prod checks (`/privacy`, Projects remote
-line, R0.1 seats, CSV invite, `/governance` with all three sections,
-approve/revoke one MCP server, set one agent rule and see the nav count,
-`/adoption` empty state and the idle-days field) and the Vercel Pro decision
-(Risks).
+R1 A3 is built as web-v0.8.0 on branch `feat/r1-a3-adoption-funnel`: the
+Funnel section and "Who is stuck" list on `/adoption`, which now follows the
+page date range. Not yet pushed. Open the PR, merge after CI, tag
+`web-v0.8.0` with `--latest=false`, then smoke test. Prod has 0 teams and
+0 seats, so expect the total row, the "No team" row, the no-teams note and
+the A1 empty state. Next R1 item is A8 (leaderboard by active days). Still
+open: signed-in prod checks (`/privacy`, Projects remote line, R0.1 seats,
+CSV invite, `/governance` with all three sections, approve/revoke one MCP
+server, set one agent rule and see the nav count, `/adoption`), seat prices
+(org fact #1), and the Vercel Pro decision (Risks).
 
 ```
-BurnWatch: design R1 A3 (funnel per team) as a new section on /adoption.
-Steps: invited, registered, first sync, weekly active, power user. Uses R0.2 teams.
-Write tasks/R1-A3-FUNNEL-DESIGN.md with a read-only prod query per step, then stop for decisions.
-If signed in, walk the open prod checks first, including /adoption.
+BurnWatch: ship R1 A3 from branch feat/r1-a3-adoption-funnel: PR, CI, merge, release web-v0.8.0 (--latest=false), smoke test /adoption.
+Then plan R1 A8 (leaderboard by active days, streaks; $ hidden by default). Draft the design before code.
+If signed in, walk the open prod checks first, including /governance and /adoption.
 ```
