@@ -1,7 +1,7 @@
 import { execFile } from 'child_process'
-import { existsSync } from 'fs'
+import { statSync } from 'fs'
 import { homedir } from 'os'
-import { basename, join } from 'path'
+import { basename, join, relative, sep } from 'path'
 
 /** stdout of a command, or null when it is missing, fails or runs past 5 s. */
 export type Run = (cmd: string, args: string[]) => Promise<string | null>
@@ -69,10 +69,33 @@ export async function normaliseRemote(
   return path && remote.length <= 300 ? remote : null
 }
 
+/**
+ * Whether `dir` holds a `.git`. `existsSync` reports a folder macOS privacy
+ * (TCC) will not let us read as absent, so a blocked repo looked like no repo.
+ */
+export function probeGit(dir: string, stat: (path: string) => unknown = statSync): 'repo' | 'none' | 'denied' {
+  try {
+    stat(join(dir, '.git'))
+    return 'repo'
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'EPERM' || code === 'EACCES' ? 'denied' : 'none'
+  }
+}
+
+/** The top folder a privacy block applies to: `~/Desktop` for anything under it. */
+export function protectedFolder(root: string, home: string = homedir()): string {
+  const rel = relative(home, root)
+  if (rel && !rel.startsWith('..') && !rel.startsWith(sep)) return `~/${rel.split(sep)[0]}`
+  return sep + (root.split(sep).filter(Boolean)[0] ?? '')
+}
+
 export interface RepoIdentity {
   /** Sent as `path`: never a path. */
   name: string
   remote: string | null
+  /** Set when the OS refused to let us look: the folder to grant access to. Never sent. */
+  denied?: string
 }
 
 /** Name and remote for a checkout root from `projectRoot`. */
@@ -81,10 +104,12 @@ export async function repoIdentity(
   runner: Run,
   resolveHost: (host: string) => Promise<string>,
   home: string = homedir(),
+  stat?: (path: string) => unknown,
 ): Promise<RepoIdentity> {
-  const url = existsSync(join(root, '.git')) ? await runner('git', ['-C', root, 'remote', 'get-url', 'origin']) : null
+  const git = probeGit(root, stat)
+  const url = git === 'repo' ? await runner('git', ['-C', root, 'remote', 'get-url', 'origin']) : null
   const remote = url ? await normaliseRemote(url, resolveHost) : null
   // The home folder's basename is the user's login name.
   const name = remote?.split('/').pop() ?? (root === home ? '~' : basename(root) || '~')
-  return { name, remote }
+  return git === 'denied' ? { name, remote, denied: protectedFolder(root, home) } : { name, remote }
 }

@@ -154,6 +154,6 @@ export async function syncCommand(options: {
     }
   }
 
-  updateConfig({ lastSyncAt: new Date().toISOString() })
+  updateConfig({ lastSyncAt: new Date().toISOString(), repoAccessWarning: codeburn.repoWarning })
   console.log('[burnwatch] Done')
 }
