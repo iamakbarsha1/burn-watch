@@ -1,6 +1,6 @@
 # R2 · B5 Agent and Claude Code versions per device: design
 
-Status: decisions locked 2026-11-22, not built. Roadmap: `tasks/ROLLOUT-ROADMAP.md` R2
+Status: built 2026-11-22 as web-v0.11.0 (decisions locked 2026-11-22). Roadmap: `tasks/ROLLOUT-ROADMAP.md` R2
 (first R2 item). Follows B3 (`tasks/R1-B3-MCP-INVENTORY-DESIGN.md`) for the
 "admin sets it on the page" pattern and B8 (`tasks/R1-B8-AUDIT-LOG-DESIGN.md`)
 for audit events.
