@@ -14,6 +14,7 @@ import {
   type UserId,
 } from '@burn-watch/db'
 import { comparableTeams, requireAdmin } from '../../plugins/jwt.js'
+import { audit, auditView } from '../../audit.js'
 import { dateQuerySchema } from './query-schema.js'
 import { AGENTS } from './overview.js'
 
@@ -129,6 +130,7 @@ export async function teamsRoutes(fastify: FastifyInstance) {
     if (teams.length === 0) return [] as TeamComparison[]
     const members = await store.teamMembers.find({ orgId, teamId: { $in: teams.map((t) => t._id) } })
     const ids = [...new Set(members.map((m) => m.userId))]
+    await auditView(request, 'team_compare', request.user.role === 'admin' ? undefined : ids)
 
     const [facet] = ids.length
       ? await store.dailySnapshots.aggregate<CompareFacet>(teamComparePipeline(orgId, from, to, ids))
@@ -195,6 +197,7 @@ export async function teamsRoutes(fastify: FastifyInstance) {
       if (isDuplicateKey(err)) return duplicateName(reply)
       throw err
     }
+    await audit(request, { action: 'team.create', target: { type: 'team', id, label: name }, detail: { name } })
     return reply.status(201).send({ id })
   })
 
@@ -210,6 +213,7 @@ export async function teamsRoutes(fastify: FastifyInstance) {
       if (isDuplicateKey(err)) return duplicateName(reply)
       throw err
     }
+    await audit(request, { action: 'team.rename', target: { type: 'team', id, label: name }, detail: { name } })
     return { id }
   })
 
@@ -220,9 +224,12 @@ export async function teamsRoutes(fastify: FastifyInstance) {
     const { id } = TeamParams.parse(request.params)
     const orgId = request.user.orgId as OrgId
     const store = getStore()
+    // Read first so the log still names the team once it is gone.
+    const team = await store.teams.findOne({ _id: id as TeamId, orgId }, { projection: { name: 1 } })
     await store.teamMembers.deleteMany({ teamId: id as TeamId, orgId })
     const deleted = await store.teams.deleteOne({ _id: id as TeamId, orgId })
     if (deleted === 0) return reply.status(404).send({ error: 'Team not found' })
+    await audit(request, { action: 'team.delete', target: { type: 'team', id, label: team?.name ?? null } })
     return { id }
   })
 
@@ -234,11 +241,13 @@ export async function teamsRoutes(fastify: FastifyInstance) {
     const store = getStore()
     const teamId = id as TeamId
 
-    if (!(await store.teams.findOne({ _id: teamId, orgId }))) {
+    const team = await store.teams.findOne({ _id: teamId, orgId })
+    if (!team) {
       return reply.status(404).send({ error: 'Team not found' })
     }
     // Same check budget-alerts POST does: never attach another org's user.
-    if (!(await store.users.findOne({ _id: userId as UserId, orgId }))) {
+    const user = await store.users.findOne({ _id: userId as UserId, orgId })
+    if (!user) {
       return reply.status(400).send({ error: 'User not found in this organization' })
     }
 
@@ -250,6 +259,12 @@ export async function teamsRoutes(fastify: FastifyInstance) {
       },
       { upsert: true },
     )
+    // Covers "added" and "role changed": team role is the only role the API changes today.
+    await audit(request, {
+      action: 'team.member_set',
+      target: { type: 'team', id: teamId, label: team.name },
+      detail: { userId, userName: user.name, role },
+    })
     return { teamId, userId, role }
   })
 
@@ -262,6 +277,7 @@ export async function teamsRoutes(fastify: FastifyInstance) {
       orgId,
     })
     if (deleted === 0) return reply.status(404).send({ error: 'Member not found' })
+    await audit(request, { action: 'team.member_remove', target: { type: 'team', id, label: null }, detail: { userId } })
     return { teamId: id, userId }
   })
 }

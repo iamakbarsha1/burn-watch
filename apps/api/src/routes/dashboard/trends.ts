@@ -6,6 +6,7 @@ import type { AgentName, TrendPoint } from '@burn-watch/shared'
 import { daysBefore, today } from './dates.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { readScope } from '../../plugins/jwt.js'
+import { auditView } from '../../audit.js'
 
 const QuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).optional(),
@@ -108,6 +109,8 @@ export async function trendsRoutes(fastify: FastifyInstance) {
 
       const scope = await readScope(request.user, parsed.data.teamId)
       if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+      // Team aggregate, so logged only with a team filter.
+      if (parsed.data.teamId) await auditView(request, 'trends', scope, parsed.data.teamId)
 
       const [facet] = await getStore().dailySnapshots.aggregate<TrendsFacet>(
         trendsPipeline(orgId, fromDate, toDate, scope),

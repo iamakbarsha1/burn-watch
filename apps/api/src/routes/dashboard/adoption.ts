@@ -26,6 +26,7 @@ import {
   type StuckPerson,
 } from '@burn-watch/shared'
 import { comparableTeams, readScope } from '../../plugins/jwt.js'
+import { auditView } from '../../audit.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
 
@@ -184,6 +185,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const { idleDays, teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId
@@ -266,7 +268,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     } satisfies IdleSeatsResponse
   })
 
-  // GET /adoption/funnel — A3. Read only, so no audit event.
+  // GET /adoption/funnel — A3.
   fastify.get('/adoption/funnel', async (request, reply) => {
     const { role } = request.user
     if (role !== 'admin' && role !== 'manager') {
@@ -281,6 +283,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const { teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId

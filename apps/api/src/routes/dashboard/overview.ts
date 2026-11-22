@@ -15,6 +15,7 @@ import { dayBefore, today } from './dates.js'
 import { z } from 'zod'
 import { dateQueryShape, scopeError, teamIdField } from './query-schema.js'
 import { readScope } from '../../plugins/jwt.js'
+import { auditView } from '../../audit.js'
 
 const QuerySchema = z
   .object({ ...dateQueryShape, ...teamIdField })
@@ -157,6 +158,8 @@ export async function overviewRoutes(fastify: FastifyInstance) {
 
     const scope = await readScope(request.user, parsed.data.teamId)
     if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    // Team aggregate, so logged only with a team filter.
+    if (parsed.data.teamId) await auditView(request, 'overview', scope, parsed.data.teamId)
 
     const store = getStore()
     const [facet] = await store.dailySnapshots.aggregate<OverviewFacet>(

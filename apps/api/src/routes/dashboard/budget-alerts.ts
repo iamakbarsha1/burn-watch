@@ -17,6 +17,7 @@ import {
 } from '@burn-watch/db'
 import { requireAdmin, viewerScope } from '../../plugins/jwt.js'
 import { evaluateBudgetAlert } from '../../services/budget-alert.service.js'
+import { audit } from '../../audit.js'
 
 const IdParamSchema = z.object({ id: z.string().uuid() })
 
@@ -160,6 +161,7 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
 
       await evaluateBudgetAlert(store, orgId, id, today())
 
+      await audit(request, { action: 'alert.create', target: { type: 'alert', id, label: body.type }, detail: body })
       return reply.status(201).send({ id })
     },
   )
@@ -211,6 +213,8 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
 
       await evaluateBudgetAlert(store, orgId, id, today())
 
+      // The patch as sent (USD, not micros): the fields this update applied.
+      await audit(request, { action: 'alert.update', target: { type: 'alert', id, label: updated.type }, detail: patch })
       return { id }
     },
   )
@@ -228,6 +232,7 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
       if (deleted === 0) {
         return reply.status(404).send({ error: 'Budget alert not found' })
       }
+      await audit(request, { action: 'alert.delete', target: { type: 'alert', id, label: null } })
       return { id }
     },
   )
