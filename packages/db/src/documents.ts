@@ -31,6 +31,8 @@ export interface OrganizationDoc {
   createdAt: Date
   /** R1 A8. Absent = developerView own, showNames true, showOthersCost false. */
   leaderboard?: LeaderboardSettings
+  /** R2 B5. Absent = no minimum, nothing flagged for Claude Code. */
+  minClaudeVersion?: string
 }
 
 export interface UserDoc {

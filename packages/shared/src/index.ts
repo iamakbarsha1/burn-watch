@@ -3,3 +3,4 @@
 // paths that do not exist at runtime.
 export * from './types.js'
 export * from './schemas.js'
+export * from './versions.js'
