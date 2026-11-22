@@ -258,6 +258,11 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         datesByUser.set(row.userId, list)
       }
       const mcpByUser = new Map(mcpRows.map((row) => [row._id as string, [...row.servers].sort()]))
+      // "12 of 30": start the count at the first usage day among the ranked
+      // people, so "All time" does not read "of ~2,500" (as A3's funnel clamp).
+      const first = activeRows.reduce<string>((min, row) => (row.date < min ? row.date : min), toDate)
+      const start = first > fromDate ? first : fromDate
+      const rangeDays = (Date.parse(toDate) - Date.parse(start)) / 86_400_000 + 1
 
       const rows = ranked.map((row) => {
         const agents = [...(spendByUser.get(row._id) ?? new Map<string, AgentTotals>()).values()]
@@ -358,6 +363,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
           valueMultiple: showCost && actualMicros > 0 ? row.totalCostMicros / actualMicros : null,
           rank: ranks[i],
           outOf: rows.length,
+          rangeDays,
           score,
           activeDays: row.activeDays,
           streak,

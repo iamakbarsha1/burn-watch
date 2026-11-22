@@ -54,6 +54,7 @@ const row = (over: Partial<LeaderboardEntry> = {}): LeaderboardEntry => ({
   valueMultiple: 5.9,
   rank: 1,
   outOf: 1,
+  rangeDays: 30,
   score: 87,
   activeDays: 12,
   streak: { current: 4, longest: 18, lastActive: '2026-11-20' },

@@ -245,6 +245,8 @@ export interface LeaderboardEntry {
   rank: number
   /** People ranked, so a lone row can read "#3 of 12". */
   outOf: number
+  /** Days in range, starting at the first usage day of the ranked people, for "12 of 30". */
+  rangeDays: number
   /** 0-100: active days, current streak, tokens, features tried vs the top person, 40/30/20/10. */
   score: number
   /** Days with any tokens, in range. */

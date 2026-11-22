@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 import type { LeaderboardEntry, LeaderboardSort } from '@burn-watch/shared'
 import { fetchLeaderboard, fetchLeaderboardSettings, fetchTeams } from '@/lib/api'
 import { formatCost, formatTokens, formatRange, resolveRange, formatCount, formatMultiple } from '@/lib/format'
-import { DAY_MS, agentById, toUtc } from '@/lib/agents'
+import { agentById } from '@/lib/agents'
 import { pickTeam } from '@/lib/teams'
 import { getOrgId } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
@@ -55,7 +55,6 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
     fetchLeaderboard(from, to, orgId, team?.id, sort).catch(() => null),
     fetchLeaderboardSettings().catch(() => null),
   ])
-  const rangeDays = Math.round((toUtc(to) - toUtc(from)) / DAY_MS) + 1
   const columns = showCost ? 12 : 9
 
   // A sortable header: a link that sets ?sort, marked when it is the current one.
@@ -131,7 +130,7 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
                   {u.email && <div className="text-xs text-ink-3">{u.email}</div>}
                 </Td>
                 <Td numeric className="font-medium text-ink">
-                  {u.activeDays} of {rangeDays}
+                  {u.activeDays} of {u.rangeDays}
                 </Td>
                 <Td numeric className="text-ink-2">
                   {u.score}

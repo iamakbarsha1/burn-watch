@@ -831,6 +831,23 @@ describe('GET /v1/dashboard/leaderboard — ranking and visibility (R1 A8)', () 
     ])
   })
 
+  it('counts range days from the first usage day, so All time does not read "of ~2,500"', async () => {
+    seed()
+    const now = today()
+    const at = async (from: string) =>
+      (
+        await app.inject({
+          method: 'GET',
+          url: `/v1/dashboard/leaderboard?from=${from}&to=${now}`,
+          headers: auth(token({ role: 'admin', userId: USER_A })),
+        })
+      ).json() as Row[]
+    // First usage is daysBefore(now, 2), so All time spans 3 days.
+    expect((await at('2020-01-01')).map((r) => r.rangeDays)).toEqual([3, 3, 3])
+    // A picked start after the first usage day is left alone.
+    expect((await at(daysBefore(now, 1))).map((r) => r.rangeDays)).toEqual([2, 2, 2])
+  })
+
   it('scores 40/30/20/10 against the top person, and fills streak and features', async () => {
     seed()
     const cy = (await get('admin')).find((r) => r.name === 'Cy')!

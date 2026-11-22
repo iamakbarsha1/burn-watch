@@ -13,7 +13,8 @@ A feature bumps the minor version, a fix bumps the patch.
 - Leaderboard (`/users`) now ranks by active days, not dollars. Columns:
   active days ("12 of 30"), score, current streak with the best below,
   agents and MCP servers tried (names on hover), tokens and sessions. The
-  empty Cache hit column is gone.
+  empty Cache hit column is gone. On "All time" the day count starts at
+  the first usage day.
 - Sort by active days (default), score, current streak, tokens or value.
   Ties share a rank. Score is 0-100: active days, current streak, tokens
   and features tried, each against the top person in the list, weighted
