@@ -71,6 +71,18 @@ describe('AuditPage', () => {
     expect(html).toContain('Asha')
   })
 
+  it('shows an org target by its name, or "Organization" for an old row with only the id', async () => {
+    const org: AuditRow = { ...view, kind: 'action', action: 'org.leaderboard_settings', detail: { developerView: 'full', showNames: true, showOthersCost: false } }
+    state.rows = [
+      { ...org, id: 'e1', target: { type: 'org', id: '11111111-1111-4111-8111-111111111111', label: 'Acme' } },
+      { ...org, id: 'e2', target: { type: 'org', id: '11111111-1111-4111-8111-111111111111', label: null } },
+    ]
+    const html = await render()
+    expect(html).toContain('>Acme</td>')
+    expect(html).toContain('>Organization</td>')
+    expect(html).not.toContain('11111111-1111-4111-8111-111111111111')
+  })
+
   it('offers Load more only when a full page came back', async () => {
     expect(await render()).not.toContain('Load more')
     state.rows = Array.from({ length: 100 }, (_, i) => ({ ...view, id: `e${i}` }))

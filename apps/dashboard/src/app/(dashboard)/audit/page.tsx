@@ -135,7 +135,8 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
                     <Badge>{r.actor.role}</Badge>
                   </Td>
                   <Td>{auditSentence(r, names)}</Td>
-                  <Td className="text-ink-2">{r.target.label ?? r.target.id ?? '—'}</Td>
+                  {/* Org rows written before the API labelled them carry only the org id. */}
+                  <Td className="text-ink-2">{r.target.label ?? (r.target.type === 'org' ? 'Organization' : r.target.id) ?? '—'}</Td>
                 </Tr>
               ))
             )}
