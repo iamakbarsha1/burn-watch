@@ -226,6 +226,37 @@ export const AuditQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 })
 
+// Price table (own-collector design, Part 1 "Pricing"). USD per token. A model
+// with no known price is absent, never 0, so a lookup miss means "unpriced".
+const usdPerToken = z.number().positive()
+
+export const ModelPriceSchema = z.object({
+  input: usdPerToken,
+  output: usdPerToken,
+  cacheWrite5m: usdPerToken.optional(),
+  cacheWrite1h: usdPerToken.optional(),
+  cacheRead: usdPerToken.optional(),
+  // Applies per request once its prompt is over 200k tokens.
+  above200k: z.object({
+    input: usdPerToken,
+    output: usdPerToken,
+    cacheWrite5m: usdPerToken.optional(),
+    cacheWrite1h: usdPerToken.optional(),
+    cacheRead: usdPerToken.optional(),
+  }).strict().optional(),
+}).strict()
+
+export const PriceTableSchema = z.object({
+  version: z.string().min(1),
+  source: z.string().min(1),
+  models: z.record(z.string(), ModelPriceSchema),
+  // Dated or provider-prefixed name -> key in `models`.
+  aliases: z.record(z.string(), z.string()),
+}).strict()
+
+export type ModelPrice = z.infer<typeof ModelPriceSchema>
+export type PriceTable = z.infer<typeof PriceTableSchema>
+
 // z.input: what a client sends, so a field with a default stays optional.
 export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
 export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>
