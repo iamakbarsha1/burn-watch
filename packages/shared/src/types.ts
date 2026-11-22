@@ -184,25 +184,73 @@ export interface TeamComparison {
   daily: { date: string; totalCost: number }[]
 }
 
+/** R1 A8. Runs of active days, weekends never break one. See apps/api streaks.ts. */
+export interface Streak {
+  /** Active days in the live run, 0 if broken. */
+  current: number
+  /** Longest run, all time. */
+  longest: number
+  lastActive: string | null
+}
+
+/** R1 A8. Names, so the page can list them and R2 can add skills without a shape change. */
+export interface FeaturesTried {
+  /** byAgent keys with tokens > 0, in range. */
+  agents: AgentName[]
+  /** mcpUsage keys, in range, sorted. */
+  mcpServers: string[]
+}
+
+export type LeaderboardSort = 'activeDays' | 'score' | 'streak' | 'tokens' | 'cost'
+
+/** Org leaderboard settings. Absent on the org = own, true, false. */
+export interface LeaderboardSettings {
+  /** What a developer sees: own row, own row with rank, or the whole list. */
+  developerView: 'own' | 'rank' | 'full'
+  /** Off shows people as "Person N" to managers and developers. */
+  showNames: boolean
+  /** On lets developers see cost on other people's rows. */
+  showOthersCost: boolean
+}
+
+/** GET /leaderboard/settings: the org settings plus the caller's own choice. */
+export interface LeaderboardSettingsResponse extends LeaderboardSettings {
+  hideOnLeaderboard: boolean
+}
+
+/**
+ * One leaderboard row. Every cost field is null on a row the viewer may not
+ * see cost on, and a masked row carries no real name, email or user id.
+ */
 export interface LeaderboardEntry {
   userId: string
   name: string
   email: string
-  claude: { tokens: number; costUsd: number }
-  qwen: { tokens: number; costUsd: number }
-  gemini: { tokens: number; costUsd: number }
-  codex: { tokens: number; costUsd: number }
-  copilot: { tokens: number; costUsd: number }
-  totalCostUsd: number
+  claude: { tokens: number; costUsd: number | null }
+  qwen: { tokens: number; costUsd: number | null }
+  gemini: { tokens: number; costUsd: number | null }
+  codex: { tokens: number; costUsd: number | null }
+  copilot: { tokens: number; costUsd: number | null }
+  totalCostUsd: number | null
   totalTokens: number
   sessions: number
   cacheHitRate: number | null
   /** Prorated seat cost over the range plus apiSpendUsd. */
-  actualCostUsd: number
+  actualCostUsd: number | null
   /** Value of usage on agents this person has no seat for. */
-  apiSpendUsd: number
+  apiSpendUsd: number | null
   /** totalCostUsd ÷ actualCostUsd; null when actual cost is 0. */
   valueMultiple: number | null
+  /** Position under the chosen sort, shared on ties (1, 2, 2, 4). */
+  rank: number
+  /** People ranked, so a lone row can read "#3 of 12". */
+  outOf: number
+  /** 0-100: active days, current streak, tokens, features tried vs the top person, 40/30/20/10. */
+  score: number
+  /** Days with any tokens, in range. */
+  activeDays: number
+  streak: Streak
+  features: FeaturesTried
 }
 
 // One row of the admin team view. Unlike LeaderboardEntry this covers every

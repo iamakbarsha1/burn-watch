@@ -257,7 +257,7 @@ describe('dashboard routes — viewer scoping', () => {
 })
 
 describe('dashboard routes — team filter', () => {
-  const TEAM_ROUTES = ['/v1/dashboard/overview', '/v1/dashboard/trends']
+  const TEAM_ROUTES = ['/v1/dashboard/overview', '/v1/dashboard/trends', '/v1/dashboard/leaderboard']
   const withTeam = (url: string, team = TEAM_A) => `${range(url)}&teamId=${team}`
   const get = (url: string, role: JwtPayload['role']) =>
     app.inject({ method: 'GET', url, headers: auth(token({ role })) })
@@ -640,7 +640,7 @@ describe('GET /v1/dashboard/leaderboard', () => {
   const seed = (over: Record<string, unknown> = {}) => {
     dashboardAggregate('dailySnapshots', [
       {
-        users: [{ _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 7 }],
+        users: [{ _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 7, activeDays: 1 }],
         agents: [],
         everyone: [{ ids: [USER_A] }],
         ...over,
@@ -747,17 +747,198 @@ describe('GET /v1/dashboard/leaderboard', () => {
     })
   })
 
-  it('passes the paging window to the database, not to node', async () => {
-    seed()
-    await app.inject({
-      method: 'GET',
-      url: `/v1/dashboard/leaderboard?date=${DATE}&limit=5&offset=10`,
-      headers: auth(token()),
+  it('ranks every row in scope and pages in node, with rank and outOf over the whole list', async () => {
+    seed({
+      users: [
+        { _id: USER_A, totalCostMicros: 0, totalTokens: 900, sessions: 1, activeDays: 2 },
+        { _id: USER_B, totalCostMicros: 0, totalTokens: 100, sessions: 1, activeDays: 1 },
+      ],
+      everyone: [{ ids: [USER_A, USER_B] }],
     })
-    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [Record<string, never>[]]
-    const rendered = JSON.stringify(pipeline)
-    expect(rendered).toContain('"$limit":5')
-    expect(rendered).toContain('"$skip":10')
+    mongoState.docs.users.push({ _id: USER_B, name: 'Bo', email: 'bo@example.com' })
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/dashboard/leaderboard?date=${DATE}&limit=1&offset=1`,
+      headers: auth(token({ role: 'admin' })),
+    })
+    expect(res.json().map((r: { name: string; rank: number; outOf: number }) => [r.name, r.rank, r.outOf])).toEqual([['Bo', 2, 2]])
+    const rendered = JSON.stringify(mongoCalls('dailySnapshots', 'aggregate')[0])
+    expect(rendered).not.toContain('$limit')
+    expect(rendered).not.toContain('$skip')
+  })
+})
+
+describe('GET /v1/dashboard/leaderboard — ranking and visibility (R1 A8)', () => {
+  const USER_C = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  type Row = Record<string, unknown> & { userId: string; name: string; email: string; rank: number }
+  const get = async (role: JwtPayload['role'], query = '', userId = USER_A) => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `${range('/v1/dashboard/leaderboard')}${query}`,
+      headers: auth(token({ role, userId })),
+    })
+    expect(res.statusCode).toBe(200)
+    return res.json() as Row[]
+  }
+  const names = (rows: Row[]) => rows.map((r) => r.name)
+
+  // B leads on days. A and C tie on days and tokens; `_id` puts A first. C has
+  // the live streak, the most features and the most spend.
+  const seed = (rows: string[] = [USER_A, USER_B, USER_C]) => {
+    const all: Record<string, Record<string, unknown>> = {
+      [USER_A]: { _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 1, activeDays: 2 },
+      [USER_B]: { _id: USER_B, totalCostMicros: 50 * USD, totalTokens: 500, sessions: 1, activeDays: 3 },
+      [USER_C]: { _id: USER_C, totalCostMicros: 60 * USD, totalTokens: 900, sessions: 1, activeDays: 2 },
+    }
+    dashboardAggregate('dailySnapshots', [
+      {
+        users: rows.map((id) => all[id]),
+        agents: [
+          { _id: { userId: USER_A, agent: 'claude' }, tokens: 900, costMicros: 20 * USD },
+          { _id: { userId: USER_B, agent: 'codex' }, tokens: 500, costMicros: 50 * USD },
+          { _id: { userId: USER_C, agent: 'claude' }, tokens: 900, costMicros: 60 * USD },
+        ],
+        everyone: [{ ids: rows }],
+      },
+    ])
+    dashboardAggregate('claudeEnrichment', [{ _id: USER_C, servers: ['neon', 'github'] }])
+    const now = today()
+    mongoState.docs.dailySnapshots = [
+      { userId: USER_A, date: now },
+      ...[0, 1, 2].map((n) => ({ userId: USER_C, date: daysBefore(now, n) })),
+    ]
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada', email: 'ada@example.com' },
+      { _id: USER_B, name: 'Bo', email: 'bo@example.com' },
+      { _id: USER_C, name: 'Cy', email: 'cy@example.com' },
+    ]
+  }
+  const settings = (over: Record<string, unknown>) => {
+    mongoState.docs.organizations = [
+      { _id: ORG_A, leaderboard: { developerView: 'own', showNames: true, showOthersCost: false, ...over } },
+    ]
+  }
+  const pipelineMatch = () =>
+    (mongoCalls('dailySnapshots', 'aggregate')[0][0] as Record<string, Record<string, unknown>>[])[0].$match
+
+  it('ranks by active days by default, sharing a rank on ties', async () => {
+    seed()
+    const rows = await get('admin')
+    expect(rows.map((r) => [r.name, r.rank, r.outOf, r.activeDays])).toEqual([
+      ['Bo', 1, 3, 3],
+      ['Ada', 2, 3, 2],
+      ['Cy', 2, 3, 2],
+    ])
+  })
+
+  it('scores 40/30/20/10 against the top person, and fills streak and features', async () => {
+    seed()
+    const cy = (await get('admin')).find((r) => r.name === 'Cy')!
+    // days 2/3, streak 3/3, tokens 900/900, features 3/3.
+    expect(cy.score).toBe(87)
+    expect(cy.streak).toEqual({ current: 3, longest: 3, lastActive: today() })
+    expect(cy.features).toEqual({ agents: ['claude'], mcpServers: ['github', 'neon'] })
+  })
+
+  it.each([
+    ['score', ['Cy', 'Ada', 'Bo']],
+    ['streak', ['Cy', 'Ada', 'Bo']],
+    ['tokens', ['Ada', 'Cy', 'Bo']],
+    ['cost', ['Cy', 'Bo', 'Ada']],
+  ])('sorts by %s for an admin', async (sort, order) => {
+    seed()
+    expect(names(await get('admin', `&sort=${sort}`))).toEqual(order)
+  })
+
+  it('shares rank 1 on a tokens tie', async () => {
+    seed()
+    expect((await get('admin', '&sort=tokens')).map((r) => r.rank)).toEqual([1, 1, 3])
+  })
+
+  it('rejects an unknown sort', async () => {
+    const res = await app.inject({ method: 'GET', url: `${range('/v1/dashboard/leaderboard')}&sort=spend`, headers: auth(token()) })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('keeps a developer to their own row in own mode, the default', async () => {
+    seed([USER_A])
+    const rows = await get('developer')
+    expect(pipelineMatch().userId).toEqual({ $in: [USER_A] })
+    expect(rows.map((r) => [r.name, r.rank, r.outOf])).toEqual([['Ada', 1, 1]])
+    expect(rows[0].totalCostUsd).toBe(20)
+  })
+
+  it('gives a developer only their own row and its place in rank mode', async () => {
+    settings({ developerView: 'rank' })
+    seed()
+    const rows = await get('developer')
+    expect(pipelineMatch().userId).toBeUndefined()
+    expect(rows.map((r) => [r.name, r.rank, r.outOf])).toEqual([['Ada', 2, 3]])
+    expect(JSON.stringify(rows)).not.toContain('Bo')
+  })
+
+  it('shows a developer the whole list in full mode, with cost on their own row only', async () => {
+    settings({ developerView: 'full' })
+    seed()
+    const rows = await get('developer')
+    expect(names(rows)).toEqual(['Bo', 'Ada', 'Cy'])
+    const [bo, ada] = rows
+    expect(ada).toMatchObject({ totalCostUsd: 20, claude: { tokens: 900, costUsd: 20 } })
+    expect(bo).toMatchObject({
+      totalCostUsd: null,
+      actualCostUsd: null,
+      apiSpendUsd: null,
+      valueMultiple: null,
+      totalTokens: 500,
+      codex: { tokens: 500, costUsd: null },
+      claude: { tokens: 0, costUsd: null },
+    })
+  })
+
+  it('ignores sort=cost for a developer who may not see others cost', async () => {
+    settings({ developerView: 'full' })
+    seed()
+    expect(names(await get('developer', '&sort=cost'))).toEqual(['Bo', 'Ada', 'Cy'])
+  })
+
+  it('shows a developer cost on every row, and sorts by it, once showOthersCost is on', async () => {
+    settings({ developerView: 'full', showOthersCost: true })
+    seed()
+    const rows = await get('developer', '&sort=cost')
+    expect(names(rows)).toEqual(['Cy', 'Bo', 'Ada'])
+    expect(rows[1]).toMatchObject({ totalCostUsd: 50, codex: { costUsd: 50 } })
+  })
+
+  it('keeps cost on every row for a manager', async () => {
+    seed()
+    const rows = await get('manager')
+    expect(rows.every((r) => typeof r.totalCostUsd === 'number')).toBe(true)
+  })
+
+  it('masks names as Person N, stable by rank, when showNames is off, except to admins and the viewer', async () => {
+    settings({ showNames: false })
+    seed()
+    const rows = await get('manager')
+    expect(rows.map((r) => [r.name, r.email, r.userId])).toEqual([
+      ['Person 1', '', 'person-1'],
+      ['Ada', 'ada@example.com', USER_A],
+      ['Person 3', '', 'person-3'],
+    ])
+    const sent = JSON.stringify(rows)
+    for (const leak of ['Bo', 'Cy', 'bo@example.com', USER_B, USER_C]) expect(sent).not.toContain(leak)
+    expect(names(await get('admin'))).toEqual(['Bo', 'Ada', 'Cy'])
+  })
+
+  it('shows a person who hides their name as Anonymous, without moving their row', async () => {
+    settings({ developerView: 'full' })
+    seed()
+    mongoState.docs.users[1].hideOnLeaderboard = true
+    const rows = await get('manager')
+    expect(rows.map((r) => [r.name, r.rank])).toEqual([['Anonymous', 1], ['Ada', 2], ['Cy', 2]])
+    expect(rows[0].email).toBe('')
+    expect(JSON.stringify(rows)).not.toContain(USER_B)
+    expect(names(await get('admin'))[0]).toBe('Bo')
+    expect(names(await get('developer', '', USER_B))[0]).toBe('Bo')
   })
 })
 

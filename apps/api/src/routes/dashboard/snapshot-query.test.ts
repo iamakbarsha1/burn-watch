@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Document } from 'mongodb'
 import type { IsoDate, OrgId } from '@burn-watch/db'
-import { leaderboardPipeline } from './leaderboard.js'
+import { leaderboardPipeline, mcpServersPipeline } from './leaderboard.js'
 import { trendsPipeline } from './trends.js'
 
 /**
@@ -24,7 +24,7 @@ const ORG = 'ORG' as OrgId
 const FROM = '2026-11-01' as IsoDate
 const TO = '2026-11-05' as IsoDate
 
-const leaderboard = leaderboardPipeline(ORG, FROM, TO, 50, 10)
+const leaderboard = leaderboardPipeline(ORG, FROM, TO)
 const trends = trendsPipeline(ORG, FROM, TO)
 
 const facetOf = (pipeline: Document[]): Record<string, Document[]> =>
@@ -75,6 +75,7 @@ describe('the leaderboard pipeline', () => {
       totalCostMicros: { $sum: '$totalCostMicros' },
       totalTokens: { $sum: '$totalTokens' },
       sessions: { $sum: '$sessionCount' },
+      activeDays: { $sum: { $cond: [{ $gt: ['$totalTokens', 0] }, 1, 0] } },
     })
     expect(stage(branches.agents, '$group')).toEqual({
       _id: { userId: '$userId', agent: '$entries.k' },
@@ -83,24 +84,19 @@ describe('the leaderboard pipeline', () => {
     })
   })
 
-  it('ranks by spend descending, and breaks a tie on a stable key', () => {
+  it('ranks by active days, then tokens, then a stable key', () => {
     // Asserted as the whole sort spec rather than "a $sort exists". Removing
-    // the tie-break cannot be caught by a fixture: two people on identical
-    // spend come out of `$group` in whatever order the server chose, which is
-    // as likely to be the sorted one as not. The comment at the sort explains
-    // the page-boundary bug the second term fixes; this is what holds it.
-    expect(stage(branches.users, '$sort')).toEqual({ totalCostMicros: -1, _id: 1 })
+    // a tie-break cannot be caught by a fixture: two people on identical
+    // days come out of `$group` in whatever order the server chose.
+    expect(stage(branches.users, '$sort')).toEqual({ activeDays: -1, totalTokens: -1, _id: 1 })
   })
 
-  it('sorts before it pages, not after', () => {
-    // `$skip`/`$limit` over an unsorted `$group` stream returns arbitrary
-    // people in a plausible-looking order, and survives any fixture whose
-    // insertion order happens to match its spend order.
+  it('drops people with no active day before it sorts, and leaves paging to the route', () => {
     const users = branches.users
-    expect(indexOf(users, '$sort')).toBeLessThan(indexOf(users, '$skip'))
-    expect(indexOf(users, '$skip')).toBeLessThan(indexOf(users, '$limit'))
-    expect(users.at(-2)).toEqual({ $skip: 10 })
-    expect(users.at(-1)).toEqual({ $limit: 50 })
+    expect(stage(users, '$match')).toEqual({ activeDays: { $gt: 0 } })
+    expect(indexOf(users, '$match')).toBeLessThan(indexOf(users, '$sort'))
+    expect(indexOf(users, '$skip')).toBe(-1)
+    expect(indexOf(users, '$limit')).toBe(-1)
   })
 
   it('collects every person in range, so the integrity check is page-independent', () => {
@@ -108,6 +104,19 @@ describe('the leaderboard pipeline', () => {
       _id: null,
       ids: { $addToSet: '$userId' },
     })
+  })
+})
+
+describe('the MCP servers pipeline', () => {
+  const pipeline = mcpServersPipeline({ orgId: ORG, userIds: ['U' as never], from: FROM, to: TO })
+
+  it('opens on the org, the people in scope and the range', () => {
+    expect(pipeline[0]).toEqual({ $match: { orgId: ORG, userId: { $in: ['U'] }, date: { $gte: FROM, $lte: TO } } })
+  })
+
+  it('collects distinct keys per person, treating a null map as none', () => {
+    expect(stage(pipeline, '$project').keys.$map.input).toEqual({ $objectToArray: { $ifNull: ['$mcpUsage', {}] } })
+    expect(stage(pipeline, '$group')).toEqual({ _id: '$userId', servers: { $addToSet: '$keys' } })
   })
 })
 
