@@ -185,6 +185,10 @@ No prod schema sync: no collection or index added.
    length, so a 7-day range gives exactly Decision 1:
    - active: active days ≥ `min(2, rangeDays)`
    - power: active days ≥ `ceil(rangeDays × 5 / 7)`
+   The range start is clamped to the org's first usage day when the picked
+   `from` is earlier (decided 2026-11-22 after build), so "All time" from
+   2020-01-01 does not set power at ~1,800 days. The response `from` is the
+   clamped start.
    For a 30-day range that is 2+ days active and 22+ days power. A 1-day
    range makes both stages "used that day". The page states the two numbers
    in use under the table. (Scaling rule chosen to reconcile the two

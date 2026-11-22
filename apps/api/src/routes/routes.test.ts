@@ -3337,6 +3337,19 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
     expect((await get('admin', `/v1/dashboard/adoption/funnel${q}`)).statusCode).toBe(400)
   })
 
+  it('clamps the range start to the first usage day, so All time keeps power reachable', async () => {
+    mongoState.docs.dailySnapshots = [{ orgId: ORG_A, date: daysBefore(t, 2), totalTokens: 5 }]
+    const res = await get('admin', `/v1/dashboard/adoption/funnel?from=2020-01-01&to=${t}`)
+    expect(res.json()).toMatchObject({ from: daysBefore(t, 2), to: t, rangeDays: 3, activeDays: 2, powerDays: 3 })
+    const [filter, opts] = callsTo(mongoState, 'dailySnapshots', 'find')[0] as [object, object]
+    expect(filter).toEqual({ orgId: ORG_A, totalTokens: { $gt: 0 } })
+    expect(opts).toMatchObject({ sort: { date: 1 }, limit: 1 })
+
+    // A first day before `from` leaves the picked range alone.
+    mongoState.docs.dailySnapshots = [{ orgId: ORG_A, date: daysBefore(t, 30), totalTokens: 5 }]
+    expect((await get('admin')).json()).toMatchObject({ from, rangeDays: 7, powerDays: 5 })
+  })
+
   it('counts the org per team, invites once per email, and lists who is stuck', async () => {
     mongoState.docs.teams = [
       { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },

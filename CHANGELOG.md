@@ -17,6 +17,8 @@ A feature bumps the minor version, a fix bumps the patch.
 - The funnel follows the page date range. Active means tokens on 2 or more
   days, power user on 5 of every 7 days, scaled to the range (22 of 30 days
   for a 30-day range). The line under the table names the numbers in use.
+  A range that starts before the org's first usage day starts on that day
+  instead, so "All time" does not push power user out of reach.
 - Invited counts registered users plus unused invites, once per email. An
   unused invite sits in its invite team, else in "No team".
 - A collapsed "Who is stuck" list shows everyone short of power user,

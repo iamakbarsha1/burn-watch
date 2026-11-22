@@ -228,7 +228,7 @@ function FunnelSection({ data }: { data: FunnelResponse | null }) {
         <>
           <p className="mt-3 text-xs text-ink-2">
             Active: tokens on {plural(data.activeDays, 'day')} or more. Power user: tokens on {data.powerDays} or more of{' '}
-            {plural(data.rangeDays, 'day')}.
+            {plural(data.rangeDays, 'day')} since {data.from}.
           </p>
           {data.stuck.length > 0 && (
             <details className="mt-4">

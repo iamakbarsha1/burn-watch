@@ -163,7 +163,7 @@ describe('AdoptionPage funnel', () => {
     // First sync is 2 of 6 registered, power user 1 of 2 active.
     expect(html).toContain('33%')
     expect(html).toContain('50%')
-    expect(html).toContain('Active: tokens on 2 days or more. Power user: tokens on 5 or more of 7 days.')
+    expect(html).toContain('Active: tokens on 2 days or more. Power user: tokens on 5 or more of 7 days since 2026-11-16.')
     expect(html).toContain('No teams yet. Create them in')
     expect(html).toContain('No team')
     // The total row comes before the No team row.

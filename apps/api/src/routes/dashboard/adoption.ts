@@ -284,12 +284,20 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId
-    const [rows, teams, invites] = await Promise.all([
+    const [rows, teams, invites, firstDay] = await Promise.all([
       store.users.aggregate<FunnelUserRow>(funnelUsersPipeline(orgId, from, to, scope)),
       comparableTeams(request.user),
       // Newest first, so a repeat invite keeps the latest team.
       store.invites.find({ orgId, usedAt: null }, { sort: { createdAt: -1 } }),
+      store.dailySnapshots.find(
+        { orgId, totalTokens: { $gt: 0 } },
+        { projection: { date: 1 }, sort: { date: 1 }, limit: 1 },
+      ),
     ])
+    // Clamp the range start to the org's first usage day, so "All time" does
+    // not set the power threshold at ~1,800 days. No rows exist before it.
+    const first = firstDay[0]?.date as IsoDate | undefined
+    const start = first && first > from && first <= to ? first : from
     const teamName = new Map(teams.map((t) => [t._id, t.name]))
     const ids = rows.map((r) => r.userId)
     const members =
@@ -338,9 +346,9 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       })
     }
 
-    const t = funnelThresholds(from, to)
+    const t = funnelThresholds(start, to)
     return {
-      from,
+      from: start,
       to,
       ...t,
       total: countFunnel(people, t),
