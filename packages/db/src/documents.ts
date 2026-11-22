@@ -230,6 +230,8 @@ export interface UsageEventDoc {
   totalTokens: number
   costMicros: Micros
   isFreeTier: boolean
+  /** Set only when true: the model had no price, so costMicros is 0 for that reason. */
+  unpriced?: true
   submittedAt: Date
 }
 

@@ -24,6 +24,9 @@ export const UsageEventSchema = z.object({
   totalTokens: z.number().int().nonnegative().describe('Sum of the four token counts'),
   costUsd: z.number().nonnegative().describe('API-equivalent cost, USD'),
   isFreeTier: z.boolean().describe('Whether the usage was on a free tier'),
+  unpriced: z.boolean().optional().describe(
+    'True when the model has no known price, so costUsd is 0 for that reason and not because the usage was free',
+  ),
 })
 
 export const ActivityEntrySchema = z.object({

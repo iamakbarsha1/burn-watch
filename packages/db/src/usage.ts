@@ -47,6 +47,8 @@ export async function upsertUsageEvents(
       totalTokens: e.totalTokens,
       costMicros: microsFromUsd(e.costUsd),
       isFreeTier: e.isFreeTier,
+      // Only when set, so rows from agents that never send it look as before.
+      ...(e.unpriced && { unpriced: true as const }),
       submittedAt: now,
     }
     if (source === 'agent') {

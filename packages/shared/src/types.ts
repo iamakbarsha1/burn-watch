@@ -15,6 +15,7 @@ export interface UsageEvent {
   totalTokens: number
   costUsd: number
   isFreeTier: boolean    // true when costUsd=0 due to missing pricing (e.g. Qwen)
+  unpriced?: boolean     // the model has no known price; costUsd is 0 for that reason
 }
 
 // Rich enrichment from codeburn (Claude only)

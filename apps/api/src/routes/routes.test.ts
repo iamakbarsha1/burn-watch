@@ -1796,6 +1796,18 @@ describe('POST /v1/usage', () => {
     expect(mongoCalls('usageEvents', 'find')).toHaveLength(0)
   })
 
+  it('stores unpriced only on a row that says so', async () => {
+    liveDeviceToken()
+    knownUser()
+    await submit({ ...payload, events: [{ ...event, modelName: 'new-model', costUsd: 0, unpriced: true }, event] })
+
+    const [ops] = mongoCalls('usageEvents', 'bulkWrite')[0] as [
+      { updateOne: { update: { $setOnInsert: Record<string, unknown> } } }[],
+    ]
+    expect(ops[0].updateOne.update.$setOnInsert.unpriced).toBe(true)
+    expect(ops[1].updateOne.update.$setOnInsert).not.toHaveProperty('unpriced')
+  })
+
   it('touches the device after the transaction commits', async () => {
     liveDeviceToken()
     knownUser()
@@ -4220,5 +4232,32 @@ describe('audit log (R1 B8)', () => {
       })
       expect(views().map((v) => v.action)).toEqual(['view.audit'])
     })
+  })
+})
+
+describe('GET /v1/prices', () => {
+  it('serves the embedded table without a token, keyed by its version', async () => {
+    const { PRICE_TABLE } = await import('@burn-watch/shared/prices')
+    const res = await app.inject({ method: 'GET', url: '/v1/prices' })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers.etag).toBe(`"${PRICE_TABLE.version}"`)
+    expect(res.headers['cache-control']).toBe('public, max-age=86400')
+    expect(res.json()).toEqual(PRICE_TABLE)
+  })
+
+  it('answers 304 with no body when the caller already has this version', async () => {
+    const first = await app.inject({ method: 'GET', url: '/v1/prices' })
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/prices',
+      headers: { 'if-none-match': String(first.headers.etag) },
+    })
+    expect(res.statusCode).toBe(304)
+    expect(res.body).toBe('')
+  })
+
+  it('sends the full table for a stale version', async () => {
+    const res = await app.inject({ method: 'GET', url: '/v1/prices', headers: { 'if-none-match': '"old"' } })
+    expect(res.statusCode).toBe(200)
   })
 })
