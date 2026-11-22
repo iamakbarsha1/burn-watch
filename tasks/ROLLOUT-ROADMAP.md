@@ -178,10 +178,12 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 | A1 | Idle seats: no usage for 14+ days, per agent | ✅ Built, web-v0.7.0 (`/adoption`, `?idleDays` default 14, alert links to it). Design: `tasks/R1-A1-IDLE-SEATS-DESIGN.md`. No schema change. Prod shows the empty state until seats are entered (org fact #1) |
 | A3 | Funnel per team: invited → registered → first sync → active → power user | ✅ Built, web-v0.8.0 (`/adoption` Funnel section, page date range, who-is-stuck list). Design: `tasks/R1-A3-ADOPTION-FUNNEL-DESIGN.md`. Active 2+ days, power 5 of 7 days (scaled to the range). No schema change. Prod shows the total and "No team" rows until teams exist |
 | A8 | Leaderboard by active days, streaks, features tried; `$` hidden by default | ✅ Built, web-v0.9.0 (`/users` sortable by active days, score, streak, tokens, cost; cost behind `?cost=1`; Admin leaderboard settings; "Hide my name" on `/users`). Design: `tasks/R1-A8-LEADERBOARD-DESIGN.md`. Two optional doc fields, no schema sync. Features-tried improves after R2 |
-| B8 | Admin audit log: device approvals, role changes, who viewed whose data | 📐 Design ready (decisions locked 2026-11-22): `tasks/R1-B8-AUDIT-LOG-DESIGN.md`. New `auditEvents` collection (prod schema sync before deploy), admin-only `/audit` page, views deduped per viewer/surface/scope/day. Writes awaited via one helper, runtime-independent (not tied to Vercel). No org-role endpoint exists yet; that is a separate item |
+| B8 | Admin audit log: device approvals, role changes, who viewed whose data | ✅ Built, web-v0.10.0 (`/audit` admin page, `auditEvents` collection, `audit()`/`auditView()` in `apps/api/src/audit.ts`, `/privacy` line). Design: `tasks/R1-B8-AUDIT-LOG-DESIGN.md`. Prod schema sync before deploy. Hand edits to `users.role` are not logged; an org-role endpoint is its own item |
 
 **R1 done when:** admins have a Governance page (B1, B2, B3), an Adoption page
 (A1, A3), and the leaderboard no longer ranks by dollars.
+
+**R1 status:** ✅ Done. All seven items built (web-v0.4.0 to web-v0.10.0).
 
 ---
 
@@ -251,18 +253,21 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 A8 shipped as web-v0.9.0 (PR #23). R1 B8 design is ready with decisions
-locked: `tasks/R1-B8-AUDIT-LOG-DESIGN.md`. Build it on a feature branch per
-the doc's Steps, following its runtime-independent write procedure. Prod
-needs `npm run sync -w @burn-watch/db` before the deploy (new collection),
-then release web-v0.10.0 with `--latest=false`. B8 closes R1.
-Still open: signed-in prod checks (`/privacy`, Projects remote line, R0.1
-seats, CSV invite, `/governance`, `/adoption` funnel, `/users` A8 table and
-Admin leaderboard settings), seat prices (org fact #1), and the Vercel Pro
-decision (Risks).
+R1 is done. B8 (admin audit log) is built as web-v0.10.0 on branch
+`feat/r1-b8-audit-log`, pushed, no PR yet. Before merge: run
+`npm run check` then `npm run sync -w @burn-watch/db` against prod (new
+`auditEvents` collection), open the PR, merge after CI, tag `web-v0.10.0`
+with `--latest=false`, then smoke test: change a leaderboard setting, open
+`/governance` twice, and see one change and one view (count 2) on `/audit`.
+
+Next: the signed-in prod checks (`/privacy`, Projects remote line, R0.1
+seats, CSV invite, `/governance`, `/adoption` funnel, `/users` A8 table,
+Admin leaderboard settings, `/audit`), then pick the R2 order (B5, A5, B6,
+C4, A6, A7, D6, D5) and write the first R2 design. Still open: seat prices
+(org fact #1) and the Vercel Pro decision (Risks).
 
 ```
-BurnWatch: build R1 B8 (admin audit log) per tasks/R1-B8-AUDIT-LOG-DESIGN.md on a feature branch.
-Prod schema sync before merge, release web-v0.10.0 (--latest=false), smoke test /audit.
-If signed in, walk the open prod checks first, including /governance, /adoption and /users.
+BurnWatch: ship R1 B8 from branch feat/r1-b8-audit-log: prod schema sync, PR, CI, merge, release web-v0.10.0 (--latest=false), smoke test /audit.
+If signed in, walk the open prod checks, including /governance, /adoption, /users and /audit.
+Then pick the R2 order and draft the first R2 design before code.
 ```

@@ -1,6 +1,6 @@
 # R1 · B8 Admin audit log: design
 
-Status: decisions locked 2026-11-22, not built. Roadmap: `tasks/ROLLOUT-ROADMAP.md` R1
+Status: built 2026-11-22 as web-v0.10.0 (decisions locked 2026-11-22). Roadmap: `tasks/ROLLOUT-ROADMAP.md` R1
 (last R1 item). Follows A8 (`tasks/R1-A8-LEADERBOARD-DESIGN.md`), which left
 "leaderboard settings get an audit event" and "per-person view logging" to
 B8, and B2 (`tasks/R1-B2-AGENT-POLICY-DESIGN.md`), which left "history of
