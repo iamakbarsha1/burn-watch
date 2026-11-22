@@ -2,13 +2,14 @@ import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import type { LeaderboardEntry, LeaderboardSort } from '@burn-watch/shared'
-import { fetchLeaderboard, fetchTeams } from '@/lib/api'
+import { fetchLeaderboard, fetchLeaderboardSettings, fetchTeams } from '@/lib/api'
 import { formatCost, formatTokens, formatRange, resolveRange, formatCount, formatMultiple } from '@/lib/format'
 import { DAY_MS, agentById, toUtc } from '@/lib/agents'
 import { pickTeam } from '@/lib/teams'
 import { getOrgId } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
 import { PageHeader, TableFrame, Th, Td, Tr, EmptyRow } from '@/components/ui'
+import { HideNameForm } from './HideNameForm'
 
 type Params = Record<string, string | undefined>
 
@@ -50,7 +51,10 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
 
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
-  const users = await fetchLeaderboard(from, to, orgId, team?.id, sort).catch(() => null)
+  const [users, settings] = await Promise.all([
+    fetchLeaderboard(from, to, orgId, team?.id, sort).catch(() => null),
+    fetchLeaderboardSettings().catch(() => null),
+  ])
   const rangeDays = Math.round((toUtc(to) - toUtc(from)) / DAY_MS) + 1
   const columns = showCost ? 12 : 9
 
@@ -177,6 +181,8 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
         synced yet. Score = 40% active days, 30% current streak, 20% tokens, 10% agents and MCP servers tried,
         each against the top person in this list.
       </p>
+
+      {settings && <HideNameForm hidden={settings.hideOnLeaderboard} />}
     </div>
   )
 }

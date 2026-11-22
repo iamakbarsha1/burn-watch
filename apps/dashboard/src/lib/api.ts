@@ -4,6 +4,8 @@ import type {
   OverviewResponse,
   LeaderboardEntry,
   LeaderboardSort,
+  LeaderboardSettings,
+  LeaderboardSettingsResponse,
   TrendPoint,
   ToolUsageSummary,
   OrgProjectSummary,
@@ -119,6 +121,19 @@ export async function fetchLeaderboard(
 ): Promise<LeaderboardEntry[]> {
   const sortQuery = sort ? `&sort=${sort}` : ''
   return apiFetch(`/v1/dashboard/leaderboard?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}${sortQuery}`)
+}
+
+export async function fetchLeaderboardSettings(): Promise<LeaderboardSettingsResponse> {
+  return apiFetch('/v1/dashboard/leaderboard/settings')
+}
+
+// Admin only; the API answers 403 to anyone else.
+export async function saveLeaderboardSettings(input: LeaderboardSettings): Promise<LeaderboardSettings> {
+  return apiMutate('PUT', '/v1/dashboard/leaderboard/settings', input)
+}
+
+export async function setHideOnLeaderboard(hideOnLeaderboard: boolean): Promise<{ hideOnLeaderboard: boolean }> {
+  return apiMutate('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard })
 }
 
 export async function fetchTrends(

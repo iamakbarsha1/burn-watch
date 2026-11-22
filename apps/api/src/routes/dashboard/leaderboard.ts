@@ -12,14 +12,17 @@ import {
   type UserId,
 } from '@burn-watch/db'
 import {
+  HideOnLeaderboardSchema,
+  LeaderboardSettingsSchema,
   type AgentName,
   type LeaderboardEntry,
   type LeaderboardSettings,
+  type LeaderboardSettingsResponse,
   type LeaderboardSort,
   type Streak,
 } from '@burn-watch/shared'
 import { dateQueryShape, scopeError, teamIdField } from './query-schema.js'
-import { readScope } from '../../plugins/jwt.js'
+import { readScope, requireAdmin } from '../../plugins/jwt.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { today } from './dates.js'
 import { streaks } from './streaks.js'
@@ -365,4 +368,35 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       return result
     },
   )
+
+  // GET /leaderboard/settings — org settings plus the caller's own hide flag. Any dashboard role.
+  fastify.get('/leaderboard/settings', async (request) => {
+    const orgId = request.user.orgId as OrgId
+    const [settings, me] = await Promise.all([
+      leaderboardSettings(orgId),
+      getStore().users.findOne(
+        { _id: request.user.userId as UserId, orgId },
+        { projection: { hideOnLeaderboard: 1 } },
+      ),
+    ])
+    return { ...settings, hideOnLeaderboard: me?.hideOnLeaderboard ?? false } satisfies LeaderboardSettingsResponse
+  })
+
+  // PUT /leaderboard/settings — admin only, all three at once.
+  // Gets the same audit treatment as other admin settings once B8 lands.
+  fastify.put('/leaderboard/settings', { preHandler: requireAdmin(fastify) }, async (request) => {
+    const body = LeaderboardSettingsSchema.parse(request.body)
+    await getStore().organizations.updateOne({ _id: request.user.orgId as OrgId }, { $set: { leaderboard: body } })
+    return body
+  })
+
+  // PUT /leaderboard/me — the caller's own "Hide my name on the leaderboard".
+  fastify.put('/leaderboard/me', async (request) => {
+    const { hideOnLeaderboard } = HideOnLeaderboardSchema.parse(request.body)
+    await getStore().users.updateOne(
+      { _id: request.user.userId as UserId, orgId: request.user.orgId as OrgId },
+      { $set: { hideOnLeaderboard } },
+    )
+    return { hideOnLeaderboard }
+  })
 }

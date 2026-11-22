@@ -942,6 +942,43 @@ describe('GET /v1/dashboard/leaderboard — ranking and visibility (R1 A8)', () 
   })
 })
 
+describe('leaderboard settings routes', () => {
+  const send = (method: 'GET' | 'PUT', url: string, payload?: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method, url, payload, headers: auth(token({ role })) })
+  const body = { developerView: 'full', showNames: false, showOthersCost: true }
+
+  it('reads the defaults and the caller hide flag', async () => {
+    mongoState.docs.users = [{ _id: USER_A, hideOnLeaderboard: true }]
+    const res = await send('GET', '/v1/dashboard/leaderboard/settings', undefined, 'developer')
+    expect(res.json()).toEqual({ developerView: 'own', showNames: true, showOthersCost: false, hideOnLeaderboard: true })
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_A, orgId: ORG_A })
+  })
+
+  it('lets an admin save the org settings, on their own org only', async () => {
+    const res = await send('PUT', '/v1/dashboard/leaderboard/settings', body)
+    expect(res.statusCode).toBe(200)
+    expect(mongoCalls('organizations', 'updateOne')[0]).toEqual([{ _id: ORG_A }, { $set: { leaderboard: body } }])
+  })
+
+  it.each(['manager', 'developer'] as const)('refuses a %s saving org settings', async (role) => {
+    expect((await send('PUT', '/v1/dashboard/leaderboard/settings', body, role)).statusCode).toBe(403)
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([])
+  })
+
+  it('rejects an unknown developerView', async () => {
+    expect((await send('PUT', '/v1/dashboard/leaderboard/settings', { ...body, developerView: 'all' })).statusCode).toBe(400)
+  })
+
+  it('lets anyone hide their own name, and only their own', async () => {
+    const res = await send('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard: true }, 'developer')
+    expect(res.json()).toEqual({ hideOnLeaderboard: true })
+    expect(mongoCalls('users', 'updateOne')[0]).toEqual([
+      { _id: USER_A, orgId: ORG_A },
+      { $set: { hideOnLeaderboard: true } },
+    ])
+  })
+})
+
 describe('GET /v1/dashboard/trends', () => {
   const url = range('/v1/dashboard/trends')
   const get = () => app.inject({ method: 'GET', url, headers: auth(token()) })

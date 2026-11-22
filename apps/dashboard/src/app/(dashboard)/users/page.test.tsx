@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   rows: [] as LeaderboardEntry[] | null,
   teams: [] as Team[],
   asked: [] as unknown[][],
+  hidden: false as boolean | null,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -16,6 +17,10 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/session', () => ({ getOrgId: async () => 'org-1' }))
 vi.mock('@/lib/api', () => ({
   fetchTeams: async () => state.teams,
+  fetchLeaderboardSettings: async () => {
+    if (state.hidden === null) throw new Error('down')
+    return { developerView: 'full', showNames: true, showOthersCost: false, hideOnLeaderboard: state.hidden }
+  },
   fetchLeaderboard: async (...args: unknown[]) => {
     state.asked.push(args)
     if (!state.rows) throw new Error('down')
@@ -23,6 +28,7 @@ vi.mock('@/lib/api', () => ({
   },
 }))
 vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => <div>team-picker</div> }))
+vi.mock('./HideNameForm', () => ({ HideNameForm: ({ hidden }: { hidden: boolean }) => <div>hide-form:{String(hidden)}</div> }))
 
 const { default: LeaderboardPage } = await import('./page')
 
@@ -61,6 +67,7 @@ beforeEach(() => {
   state.rows = [row()]
   state.teams = []
   state.asked = []
+  state.hidden = false
 })
 
 describe('LeaderboardPage', () => {
@@ -117,5 +124,12 @@ describe('LeaderboardPage', () => {
     expect(await render(NOV)).toContain('Could not read the leaderboard.')
     state.rows = []
     expect(await render(NOV)).toContain('No data for this range')
+  })
+
+  it('shows the hide-my-name form with the saved choice, and leaves it out when settings fail', async () => {
+    state.hidden = true
+    expect(await render(NOV)).toContain('hide-form:true')
+    state.hidden = null
+    expect(await render(NOV)).not.toContain('hide-form')
   })
 })

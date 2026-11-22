@@ -199,6 +199,14 @@ export const IdleSeatsQuerySchema = z.object({
   idleDays: z.coerce.number().int().min(1).max(365).default(14),
 })
 
+// R1 A8. Admin writes all three at once; a person sets only their own flag.
+export const LeaderboardSettingsSchema = z.object({
+  developerView: z.enum(['own', 'rank', 'full']),
+  showNames: z.boolean(),
+  showOthersCost: z.boolean(),
+})
+export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
+
 // z.input: what a client sends, so a field with a default stays optional.
 export type BudgetAlertInput = z.input<typeof BudgetAlertInputSchema>
 export type BudgetAlertPatch = z.input<typeof BudgetAlertPatchSchema>

@@ -19,10 +19,11 @@ import {
   setSeat,
   removeSeat,
   assignSeatToAll,
+  saveLeaderboardSettings,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
 import { parseInviteCsv } from '@/lib/csv'
-import type { AgentName, CopilotSeatsResponse, CopilotSyncResult } from '@burn-watch/shared'
+import type { AgentName, CopilotSeatsResponse, CopilotSyncResult, LeaderboardSettings } from '@burn-watch/shared'
 
 export interface InviteState {
   ok: boolean
@@ -512,5 +513,30 @@ export async function assignSeatToAllAction(
       created === 0
         ? `Everyone already has a ${input.agent} seat. Nothing changed.`
         : `Added ${created} ${input.agent} seat${created === 1 ? '' : 's'}. Existing seats were left as they were.`,
+  }
+}
+
+const DEVELOPER_VIEWS: LeaderboardSettings['developerView'][] = ['own', 'rank', 'full']
+
+/** Save the three org leaderboard settings at once. Admin only; the API checks again. */
+export async function leaderboardSettingsAction(
+  _prev: { ok: boolean; message: string } | null,
+  formData: FormData,
+): Promise<{ ok: boolean; message: string }> {
+  if ((await getUserRole()) !== 'admin') return { ok: false, message: 'Admin role required' }
+  const developerView = String(formData.get('developerView') ?? '') as LeaderboardSettings['developerView']
+  if (!DEVELOPER_VIEWS.includes(developerView)) return { ok: false, message: 'Pick what developers see' }
+  try {
+    await saveLeaderboardSettings({
+      developerView,
+      // An unchecked checkbox sends nothing.
+      showNames: formData.get('showNames') === 'on',
+      showOthersCost: formData.get('showOthersCost') === 'on',
+    })
+    revalidatePath('/users')
+    revalidatePath('/admin')
+    return { ok: true, message: 'Leaderboard settings saved.' }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Failed to save leaderboard settings' }
   }
 }
