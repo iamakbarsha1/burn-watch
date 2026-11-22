@@ -3299,3 +3299,128 @@ describe('GET /v1/dashboard/adoption/idle-seats', () => {
     expect(callsTo(mongoState, 'seats', 'find')).toEqual([])
   })
 })
+
+describe('GET /v1/dashboard/adoption/funnel', () => {
+  const USER_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const t = today()
+  const from = daysBefore(t, 6)
+  const URL = `/v1/dashboard/adoption/funnel?from=${from}&to=${t}`
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const row = (userId: string, name: string, over: Record<string, unknown> = {}) => ({
+    userId,
+    name,
+    createdAt: new Date(`${daysBefore(t, 20)}T09:00:00Z`),
+    hasDevice: true,
+    firstSync: daysBefore(t, 60),
+    lastSync: daysBefore(t, 1),
+    activeDays: 0,
+    ...over,
+  })
+  const invite = (email: string, teamId: string | null | undefined, daysAgo: number, usedAt: Date | null = null) => ({
+    _id: `inv-${email}-${daysAgo}`,
+    orgId: ORG_A,
+    email,
+    ...(teamId !== undefined && { teamId }),
+    createdAt: new Date(`${daysBefore(t, daysAgo)}T09:00:00Z`),
+    usedAt,
+  })
+  const counts = (invited: number, registered: number, deviceLinked: number, firstSync: number, active: number, powerUser: number) =>
+    ({ invited, registered, deviceLinked, firstSync, active, powerUser })
+
+  it('refuses a developer before reading anything', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'users', 'aggregate')).toEqual([])
+  })
+
+  it.each([`?from=${from}`, `?from=${t}&to=${from}`, ''])('rejects range %s', async (q) => {
+    expect((await get('admin', `/v1/dashboard/adoption/funnel${q}`)).statusCode).toBe(400)
+  })
+
+  it('counts the org per team, invites once per email, and lists who is stuck', async () => {
+    mongoState.docs.teams = [
+      { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
+      { _id: TEAM_B, orgId: ORG_A, name: 'Web' },
+    ]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    mongoState.aggregates.users = [
+      row(USER_A, 'Ada', { activeDays: 5 }),
+      row(USER_B, 'Bo', { firstSync: null, lastSync: null }),
+      row(USER_C, 'Cy', { hasDevice: false, activeDays: 1 }),
+    ]
+    mongoState.docs.users = [{ email: 'ada@x.io' }, { email: 'Bo@x.io' }, { email: 'cy@x.io' }]
+    mongoState.docs.invites = [
+      invite('new@x.io', TEAM_A, 2), // newest first, as the find sorts
+      invite('NEW@x.io', TEAM_B, 9), // same person, older invite
+      invite('bo@x.io', TEAM_A, 30), // Bo registered: never counted twice
+      invite('bo@x.io', TEAM_A, 40, new Date()), // used: the filter drops it
+      invite('old@x.io', undefined, 50), // pre-R0.5: No team
+    ]
+
+    const res = await get('admin')
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    const [pipeline] = callsTo(mongoState, 'users', 'aggregate')[0] as Document[][]
+    expect(pipeline[0]).toEqual({ $match: { orgId: ORG_A, isActive: true } })
+    expect(callsTo(mongoState, 'invites', 'find')[0][0]).toEqual({ orgId: ORG_A, usedAt: null })
+    expect(callsTo(mongoState, 'users', 'find')[0][0]).toEqual({ orgId: ORG_A })
+
+    expect(body).toMatchObject({ from, to: t, rangeDays: 7, activeDays: 2, powerDays: 5 })
+    // Ada is in two teams and counts once here.
+    expect(body.total).toEqual(counts(5, 3, 2, 2, 1, 1))
+    expect(body.teams).toEqual([
+      { teamId: TEAM_A, teamName: 'Platform', ...counts(3, 2, 2, 1, 1, 1) },
+      { teamId: TEAM_B, teamName: 'Web', ...counts(1, 1, 1, 1, 1, 1) },
+    ])
+    expect(body.noTeam).toEqual(counts(2, 1, 0, 1, 0, 0))
+    expect(body.stuck).toEqual([
+      { stoppedAt: 'invited', userId: null, name: null, email: 'new@x.io', teams: ['Platform'], lastStepDate: daysBefore(t, 2) },
+      { stoppedAt: 'invited', userId: null, name: null, email: 'old@x.io', teams: [], lastStepDate: daysBefore(t, 50) },
+      { stoppedAt: 'registered', userId: USER_B, name: 'Bo', email: null, teams: ['Platform'], lastStepDate: daysBefore(t, 20) },
+      { stoppedAt: 'firstSync', userId: USER_C, name: 'Cy', email: null, teams: [], lastStepDate: daysBefore(t, 1) },
+    ])
+  })
+
+  it('limits a manager to their teams: no No-team row, no other teams or invites', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    mongoState.aggregates.users = [row(USER_A, 'Ada', { activeDays: 2 }), row(USER_B, 'Bo')]
+    mongoState.docs.users = [{ email: 'ada@x.io' }]
+    mongoState.docs.invites = [invite('x@x.io', TEAM_A, 1), invite('y@x.io', TEAM_B, 1), invite('z@x.io', null, 1)]
+
+    const body = (await get('manager')).json()
+    const [pipeline] = callsTo(mongoState, 'users', 'aggregate')[0] as Document[][]
+    expect(pipeline[0].$match._id.$in.sort()).toEqual([USER_A, USER_B].sort())
+    expect(body.noTeam).toBeNull()
+    expect(body.total).toEqual(counts(3, 2, 2, 2, 1, 0))
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(3, 2, 2, 2, 1, 0) }])
+    expect(body.stuck.map((s: { name: string | null; email: string | null }) => s.name ?? s.email)).toEqual([
+      'x@x.io',
+      'Bo',
+      'Ada',
+    ])
+  })
+
+  it('narrows an admin to one team, with that team only and no No-team row', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    mongoState.aggregates.users = [row(USER_A, 'Ada')]
+    mongoState.docs.invites = [invite('x@x.io', TEAM_A, 1), invite('z@x.io', undefined, 1)]
+    const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
+    expect(body.noTeam).toBeNull()
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(2, 1, 1, 1, 0, 0) }])
+    expect(body.total.invited).toBe(2)
+  })
+
+  it('answers 404 to a team outside the org before reading people', async () => {
+    expect((await get('admin', `${URL}&teamId=${TEAM_B}`)).statusCode).toBe(404)
+    expect(callsTo(mongoState, 'users', 'aggregate')).toEqual([])
+  })
+})
