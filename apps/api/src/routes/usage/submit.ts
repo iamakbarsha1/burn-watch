@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import { UsagePayloadSchema } from '@burn-watch/shared'
+import { UsagePayloadSchema, highestVersion } from '@burn-watch/shared'
 import {
   getStore,
   rebuildDailySnapshot,
@@ -14,12 +14,6 @@ import {
 import { requireAuth, type JwtPayload } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
 import { evaluateBudgetAlerts } from '../../services/budget-alert.service.js'
-
-// Highest Claude Code version in the day's counts; numeric collation puts 2.1.330 above 2.1.99.
-export function highestVersion(versions: Record<string, number> | undefined): string | null {
-  const keys = Object.keys(versions ?? {})
-  return keys.length ? keys.reduce((a, b) => (b.localeCompare(a, 'en', { numeric: true }) > 0 ? b : a)) : null
-}
 
 export async function usageRoutes(fastify: FastifyInstance) {
   // POST /v1/usage

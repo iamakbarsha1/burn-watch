@@ -3,8 +3,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import type { Document } from 'mongodb'
 import { getStore, newId, runInTxn, type DeviceId, type OrgId, type UserId } from '@burn-watch/db'
-import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema } from '@burn-watch/shared'
-import type { AdminDeviceRow, AdminUserRow } from '@burn-watch/shared'
+import { RegisterDeviceSchema, VerifyDeviceSchema, ApproveDeviceSchema, DeviceSettingsSchema } from '@burn-watch/shared'
+import type { AdminDeviceRow, AdminUserRow, DeviceSettings } from '@burn-watch/shared'
 import {
   requireAdmin,
   requireAuth,
@@ -146,6 +146,9 @@ export function adminDevicesPipeline(orgId: OrgId): Document[] {
         userName: '$name',
         userEmail: '$email',
         revoked: { $eq: [{ $size: '$live' }, 0] },
+        agentVersion: '$device.agentVersion',
+        // Devices registered before R0.3 have no claudeVersion field at all.
+        claudeVersion: { $ifNull: ['$device.claudeVersion', null] },
       },
     },
   ]
@@ -496,6 +499,35 @@ export async function authRoutes(fastify: FastifyInstance) {
     const rows = await getStore().users.aggregate<AdminDeviceRow>(adminDevicesPipeline(jwt.orgId as OrgId))
     await auditView(request, 'people', undefined)
     return rows
+  })
+
+  // GET /v1/auth/admin/device-settings: the org's minimum Claude Code version.
+  // No auditView: one version string, no one's data.
+  fastify.get('/admin/device-settings', { preHandler: requireAdmin(fastify) }, async (request) => {
+    const jwt = request.user as JwtPayload
+    const org = await getStore().organizations.findOne(
+      { _id: jwt.orgId as OrgId },
+      { projection: { minClaudeVersion: 1 } },
+    )
+    return { minClaudeVersion: org?.minClaudeVersion ?? null } satisfies DeviceSettings
+  })
+
+  // PUT /v1/auth/admin/device-settings: a version sets the minimum, null clears it.
+  fastify.put('/admin/device-settings', { preHandler: requireAdmin(fastify) }, async (request) => {
+    const body = DeviceSettingsSchema.parse(request.body)
+    const jwt = request.user as JwtPayload
+    await getStore().organizations.updateOne(
+      { _id: jwt.orgId as OrgId },
+      body.minClaudeVersion
+        ? { $set: { minClaudeVersion: body.minClaudeVersion } }
+        : { $unset: { minClaudeVersion: '' } },
+    )
+    await audit(request, {
+      action: 'org.min_claude_version',
+      target: { type: 'org', id: jwt.orgId, label: null },
+      detail: { minClaudeVersion: body.minClaudeVersion },
+    })
+    return body satisfies DeviceSettings
   })
 
   // POST /v1/auth/admin/devices/revoke lets an admin end a device's access, the

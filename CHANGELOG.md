@@ -8,6 +8,25 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.11.0 (2026-11-22)
+
+- `/devices` (admins): Registered devices gains Claude Code and Agent
+  columns. Both come from what the agent already reports, so no agent
+  release is needed.
+- Admins set a minimum Claude Code version above the table (plain
+  `X.Y.Z`, Save or Clear). A device under it gets a "Below 2.1.0" badge.
+  With no minimum, nothing is flagged for Claude Code.
+- A device on an agent before 0.4.0 shows "Unknown" for Claude Code and an
+  "Update agent" badge, with a link to the setup guide. Unknown is never
+  counted as below the minimum. A 0.4 agent that saw no Claude Code use
+  reads "No Claude Code use".
+- A summary line counts active devices (live token, seen in the last 14
+  days): how many run agent 0.4.0 or later, how many are below the
+  minimum, how many are unknown. Revoked devices stay in the table but
+  not in the counts.
+- Setting or clearing the minimum is logged on `/audit`.
+- One optional field on the org document. No prod schema sync.
+
 ## web-v0.10.1 (2026-11-22)
 
 - `/users` with "Show cost": the per-agent value under Tokens is one line

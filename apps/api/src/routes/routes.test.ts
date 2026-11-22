@@ -2888,6 +2888,8 @@ describe('GET /v1/auth/admin/devices', () => {
     userName: 'Dev One',
     userEmail: 'dev1@example.com',
     revoked: false,
+    agentVersion: '0.4.0',
+    claudeVersion: '2.1.330',
   }
 
   it.each(['developer', 'manager', 'device'] as const)('returns 403 for a %s token', async (role) => {
@@ -2932,6 +2934,76 @@ describe('GET /v1/auth/admin/devices', () => {
     const project = pipeline().at(-1)!.$project as Record<string, unknown>
     expect(project.revoked).toEqual({ $eq: [{ $size: '$live' }, 0] })
     expect(project._id).toBe(0)
+  })
+  it('projects both versions, reading a missing claudeVersion as null', async () => {
+    await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+
+    const project = pipeline().at(-1)!.$project as Record<string, unknown>
+    expect(project.agentVersion).toBe('$device.agentVersion')
+    expect(project.claudeVersion).toEqual({ $ifNull: ['$device.claudeVersion', null] })
+  })
+})
+
+describe('/v1/auth/admin/device-settings', () => {
+  const url = '/v1/auth/admin/device-settings'
+  const send = (method: 'GET' | 'PUT', payload?: object, over: Partial<JwtPayload> = { role: 'admin' }) =>
+    app.inject({ method, url, payload, headers: auth(token(over)) })
+
+  it.each(['developer', 'manager', 'device'] as const)('answers 403 to a %s on GET and PUT', async (role) => {
+    expect((await send('GET', undefined, { role })).statusCode).toBe(403)
+    expect((await send('PUT', { minClaudeVersion: '2.1.0' }, { role })).statusCode).toBe(403)
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([])
+    expect(mongoCalls('auditEvents', 'insertOne')).toEqual([])
+  })
+
+  it('reads null when the org has no minimum, from the org in the token', async () => {
+    mongoState.docs.organizations = [{ _id: ORG_B, name: 'Acme' }]
+    const res = await app.inject({
+      method: 'GET',
+      url: `${url}?orgId=${ORG_A}`,
+      headers: auth(token({ role: 'admin', orgId: ORG_B })),
+    })
+    expect(res.json()).toEqual({ minClaudeVersion: null })
+    expect(mongoCalls('organizations', 'findOne')[0][0]).toEqual({ _id: ORG_B })
+  })
+
+  it('reads the stored minimum', async () => {
+    mongoState.docs.organizations = [{ _id: ORG_A, minClaudeVersion: '2.1.0' }]
+    expect((await send('GET')).json()).toEqual({ minClaudeVersion: '2.1.0' })
+  })
+
+  it.each(['2.1', 'latest', '2.1.0-beta', 'v2.1.0', '', '1.2.34567890123456789'])('rejects %j with 400', async (v) => {
+    expect((await send('PUT', { minClaudeVersion: v })).statusCode).toBe(400)
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([])
+  })
+
+  it('sets a version on the caller org and audits it', async () => {
+    const res = await send('PUT', { minClaudeVersion: '2.1.0' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ minClaudeVersion: '2.1.0' })
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([[{ _id: ORG_A }, { $set: { minClaudeVersion: '2.1.0' } }]])
+    const events = mongoCalls('auditEvents', 'insertOne').map(([doc]) => doc as Record<string, unknown>)
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: 'org.min_claude_version',
+        target: expect.objectContaining({ type: 'org', id: ORG_A }),
+        detail: { minClaudeVersion: '2.1.0' },
+      }),
+    ])
+  })
+
+  it('clears the minimum with null', async () => {
+    const res = await send('PUT', { minClaudeVersion: null })
+    expect(res.json()).toEqual({ minClaudeVersion: null })
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([[{ _id: ORG_A }, { $unset: { minClaudeVersion: '' } }]])
+    expect(mongoCalls('auditEvents', 'insertOne').map(([doc]) => (doc as Record<string, unknown>).detail)).toEqual([
+      { minClaudeVersion: null },
+    ])
+  })
+
+  it('still answers 200 when the audit write fails', async () => {
+    mongoState.failOn = 'auditEvents.insertOne'
+    expect((await send('PUT', { minClaudeVersion: '2.1.0' })).statusCode).toBe(200)
   })
 })
 

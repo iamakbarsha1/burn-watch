@@ -48,7 +48,7 @@ Items use the proposal's IDs (A1, B3, C1, ...). Each one gets a BW ticket in
 2. Team list and manager for each team (Teams + manager scope).
 3. Approved agents/models list (B2) and approved MCP servers (B3).
 4. Client list with Git org patterns (C1), and any client AI restrictions (B7).
-5. Minimum supported Claude Code version (B5).
+5. Minimum supported Claude Code version (B5). Closed by B5: admins set it on `/devices`; until they do, Claude Code is not flagged.
 
 ---
 
@@ -195,7 +195,7 @@ version view to track that.
 
 | ID | Build | Depends on |
 |---|---|---|
-| B5 | Claude Code version per device, flag below the minimum | R0.3, org fact #5 |
+| B5 | Claude Code version per device, flag below the minimum | ✅ Built, web-v0.11.0 (`/devices` Claude Code and Agent columns, admin-set minimum, "Update agent" below 0.4.0, active-device summary). Design: `tasks/R2-B5-AGENT-VERSIONS-DESIGN.md`. One optional org field, no schema sync, no agent release. Admins set the minimum on the page, so org fact #5 is no longer a blocker. On 2026-11-22, 1 of 7 devices ran agent 0.4 (1 of 3 active) |
 | A5 | Feature matrix per team: MCP, skills, subagents, plan mode, CLI vs SDK | R0.3, R0.2 |
 | B6 | Hashed `accountUuid` vs assigned seat: personal accounts, shared seats | R0.3, R0.1 |
 | C4 | Ticket keys from `gitBranch` (`PROJ-123-...`), usage per ticket/epic | R0.3 |
@@ -254,21 +254,26 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 is done. B8 (admin audit log) is built as web-v0.10.0 on branch
-`feat/r1-b8-audit-log`, pushed, no PR yet. Before merge: run
-`npm run check` then `npm run sync -w @burn-watch/db` against prod (new
-`auditEvents` collection), open the PR, merge after CI, tag `web-v0.10.0`
-with `--latest=false`, then smoke test: change a leaderboard setting, open
-`/governance` twice, and see one change and one view (count 2) on `/audit`.
+R1 is done and B8 shipped (web-v0.10.0), with fixes in web-v0.10.1 and
+agent v0.4.1. R2 B5 (agent and Claude Code versions per device) is built
+as web-v0.11.0 on branch `feat/r2-b5-agent-versions`, pushed, no PR yet.
+To ship: open the PR, merge after CI, tag `web-v0.11.0` with
+`--latest=false`, then smoke test on prod: set the minimum to `2.1.0` on
+`/devices`, see one device OK and the rest unknown with "Update agent",
+then see the change on `/audit`. No schema sync.
 
-Next: the signed-in prod checks (`/privacy`, Projects remote line, R0.1
-seats, CSV invite, `/governance`, `/adoption` funnel, `/users` A8 table,
-Admin leaderboard settings, `/audit`), then pick the R2 order (B5, A5, B6,
-C4, A6, A7, D6, D5) and write the first R2 design. Still open: seat prices
-(org fact #1) and the Vercel Pro decision (Risks).
+First, the 18:00 sync check for agent v0.4.1: after the scheduled sync on
+the machine with a repo under `~/Desktop`, confirm `burnwatch status`
+shows the macOS privacy warning naming the blocked folder, and that the
+day's usage still landed.
+
+Next: R2 A5 (feature matrix per team). Write its design before code. Use
+B5's summary line on `/devices` to watch the agent 0.4 share. Still open:
+the signed-in prod checks, seat prices (org fact #1) and the Vercel Pro
+decision (Risks).
 
 ```
-BurnWatch: ship R1 B8 from branch feat/r1-b8-audit-log: prod schema sync, PR, CI, merge, release web-v0.10.0 (--latest=false), smoke test /audit.
-If signed in, walk the open prod checks, including /governance, /adoption, /users and /audit.
-Then pick the R2 order and draft the first R2 design before code.
+BurnWatch: ship R2 B5 from branch feat/r2-b5-agent-versions: PR, CI, merge, release web-v0.11.0 (--latest=false), smoke test the minimum on /devices and /audit.
+Check the 18:00 scheduled sync on agent v0.4.1: burnwatch status shows the macOS privacy warning, usage still landed.
+Then draft the R2 A5 (feature matrix per team) design before code.
 ```

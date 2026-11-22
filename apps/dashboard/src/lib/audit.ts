@@ -94,6 +94,10 @@ export function auditSentence(row: AuditRow, names: ReadonlyMap<string, string> 
       const view = { own: 'their own row', rank: 'their own row and rank', full: 'the whole list' }[String(d.developerView)]
       return `Changed leaderboard settings: developers see ${view ?? d.developerView}, names ${d.showNames ? 'on' : 'off'}, others' cost ${d.showOthersCost ? 'on' : 'off'}`
     }
+    case 'org.min_claude_version':
+      return d.minClaudeVersion
+        ? `Set the minimum Claude Code version to ${d.minClaudeVersion}`
+        : 'Cleared the minimum Claude Code version'
     case 'copilot.connect':
       return `Connected Copilot for GitHub org ${d.org}`
     case 'copilot.disconnect':

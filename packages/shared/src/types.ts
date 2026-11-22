@@ -286,6 +286,15 @@ export interface AdminDeviceRow {
   userName: string
   userEmail: string
   revoked: boolean
+  /** R2 B5. From sign-in, then from every submit from agent 0.4.0. */
+  agentVersion: string
+  /** R2 B5. Highest Claude Code version in the last submit; null before a 0.4.0 submit or with no Claude Code use. */
+  claudeVersion: string | null
+}
+
+/** R2 B5. GET/PUT /v1/auth/admin/device-settings. Null = no minimum. */
+export interface DeviceSettings {
+  minClaudeVersion: string | null
 }
 
 export interface PendingInvite {
@@ -670,6 +679,7 @@ export type AuditAction =
   | 'mcp.approve'
   | 'mcp.unapprove'
   | 'org.leaderboard_settings'
+  | 'org.min_claude_version'
   | 'copilot.connect'
   | 'copilot.disconnect'
   | 'copilot.sync'

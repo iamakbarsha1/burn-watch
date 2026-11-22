@@ -205,6 +205,10 @@ export const LeaderboardSettingsSchema = z.object({
   showNames: z.boolean(),
   showOthersCost: z.boolean(),
 })
+// R2 B5. Plain X.Y.Z only; null clears the minimum.
+export const DeviceSettingsSchema = z.object({
+  minClaudeVersion: z.string().max(20).regex(/^\d+\.\d+\.\d+$/).nullable(),
+})
 export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
 
 // R1 B8. The audit log's `action` filter is a prefix from this closed list.
