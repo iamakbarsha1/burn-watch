@@ -186,13 +186,18 @@ export default async function LeaderboardPage({ searchParams }: { searchParams: 
   )
 }
 
-/** Per-agent value under the token figure, for agents with usage. A dash where cost is withheld. */
+/**
+ * Per-agent value under the token figure, for agents with usage. A dash where cost is withheld.
+ * One line per agent: numeric cells do not wrap, and five agents on one line made the table 1600px wide.
+ */
 function AgentCosts({ entry }: { entry: LeaderboardEntry }) {
   const used = (['claude', 'qwen', 'gemini', 'codex', 'copilot'] as const).filter((a) => entry[a].tokens > 0)
   if (used.length === 0) return null
   return (
     <div className="text-xs text-ink-3">
-      {used.map((a) => `${agentById(a)?.label ?? a} ${cost(entry[a].costUsd)}`).join(' · ')}
+      {used.map((a) => (
+        <div key={a}>{`${agentById(a)?.label ?? a} ${cost(entry[a].costUsd)}`}</div>
+      ))}
     </div>
   )
 }

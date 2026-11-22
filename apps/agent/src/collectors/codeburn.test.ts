@@ -3,19 +3,24 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createHmac } from 'crypto'
-import { CodeburnCollector } from './codeburn.js'
+import { CodeburnCollector, deniedWarning } from './codeburn.js'
 
 // `fs` exports are not configurable under ESM, so `vi.spyOn` cannot touch them.
 // This wraps the two functions the size guard sits between instead: `statSync`
 // can be made to report an oversized file, and `createReadStream` records
 // whether the collector opened it anyway.
-const fsControl = vi.hoisted(() => ({ fakeSize: null as number | null, readCalls: 0 }))
+// `denyUnder` makes `statSync` fail with EPERM below a folder, the way macOS
+// privacy (TCC) answers a launchd job reading ~/Desktop.
+const fsControl = vi.hoisted(() => ({ fakeSize: null as number | null, readCalls: 0, denyUnder: null as string | null }))
 
 vi.mock('fs', async (importActual) => {
   const actual = await importActual<typeof import('fs')>()
   return {
     ...actual,
     statSync: (path: Parameters<typeof actual.statSync>[0], ...rest: unknown[]) => {
+      if (fsControl.denyUnder && String(path).startsWith(fsControl.denyUnder)) {
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+      }
       const stat = (actual.statSync as (...a: unknown[]) => import('fs').Stats)(path, ...rest)
       if (fsControl.fakeSize !== null && String(path).endsWith('.jsonl')) {
         return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
@@ -88,6 +93,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'burnwatch-codeburn-'))
   fsControl.fakeSize = null
   fsControl.readCalls = 0
+  fsControl.denyUnder = null
 })
 
 afterEach(() => {
@@ -455,5 +461,53 @@ describe('0.4 transcript fields', () => {
     expect(e?.projectBreakdown[0]).toMatchObject({ path: 'repo', remote: 'github.com/org/repo', sessions: 2 })
     // No orgId, no hashes.
     expect(e?.accountHashes).toEqual([])
+  })
+})
+
+describe('macOS privacy block', () => {
+  it('sends a blocked repo by folder name, without a remote, and warns once', async () => {
+    const blocked = join(root, 'Desktop')
+    mkdirSync(join(blocked, 'code', 'burn-watch', '.git'), { recursive: true })
+    mkdirSync(join(blocked, 'code', 'other', '.git'), { recursive: true })
+    writeSession('a.jsonl', [
+      turn({ session: 's1', cwd: join(blocked, 'code', 'burn-watch'), input: 10 }),
+      turn({ session: 's2', cwd: join(blocked, 'code', 'other'), input: 10 }),
+      turn({ session: 's3', cwd: join(blocked, 'code', 'other'), input: 10 }),
+    ])
+    fsControl.denyUnder = blocked
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const collector = new CodeburnCollector(root, '', async () => 'git@github.com:org/never.git')
+
+    const enrichment = await collector.collect(DATE)
+
+    expect(enrichment!.projectBreakdown.map((p) => [p.path, p.remote]).sort()).toEqual([
+      ['burn-watch', null],
+      ['other', null],
+    ])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toMatch(/^\[burnwatch\]\[repo\] macOS blocked reading \S+ \(2 repos sent without a remote\)\. Allow "burnwatch"/)
+    expect(collector.repoWarning).toContain('Full Disk Access')
+  })
+
+  it('says nothing when every repo was readable', async () => {
+    writeSession('a.jsonl', [turn({ session: 's1', cwd: root, input: 10 })])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const collector = new CodeburnCollector(root, '', async () => null)
+    await collector.collect(DATE)
+    expect(warn).not.toHaveBeenCalled()
+    expect(collector.repoWarning).toBeNull()
+  })
+
+  it('names each blocked folder once', async () => {
+    const ids = [
+      { name: 'a', remote: null, denied: '~/Desktop' },
+      { name: 'b', remote: null, denied: '~/Desktop' },
+      { name: 'c', remote: null, denied: '~/Documents' },
+      { name: 'd', remote: 'github.com/o/d' },
+    ].map((id) => Promise.resolve(id))
+    expect(await deniedWarning(ids)).toBe(
+      'macOS blocked reading ~/Desktop, ~/Documents (3 repos sent without a remote). ' +
+        'Allow "burnwatch" in System Settings > Privacy & Security > Files and Folders (or Full Disk Access).',
+    )
   })
 })

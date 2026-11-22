@@ -105,6 +105,13 @@ describe('LeaderboardPage', () => {
     expect(html).toContain('Hide cost')
   })
 
+  it('stacks the per-agent cost one agent per line, so the table fits without a wide Tokens column', async () => {
+    state.rows = [row({ codex: agent(50, 22.25), copilot: agent(10, 32) })]
+    const html = await render({ ...NOV, cost: '1' })
+    expect(html).toContain('<div>Claude $19.00</div><div>Codex $22.25</div><div>Copilot $32.00</div>')
+    expect(html).not.toContain(' · Codex')
+  })
+
   it('passes the team and a known sort to the API, and drops an unknown sort', async () => {
     state.teams = [{ id: 't1', name: 'Platform' } as Team]
     const html = await render({ ...NOV, teamId: 't1', sort: 'score' })

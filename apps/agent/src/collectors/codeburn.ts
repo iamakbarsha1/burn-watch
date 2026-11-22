@@ -6,7 +6,7 @@ import { dirname, join } from 'path'
 import { createHmac } from 'crypto'
 import type { ClaudeEnrichment } from '@burn-watch/shared'
 import type { EnrichmentCollector } from './base.js'
-import { repoIdentity, run, sshHostResolver, type RepoIdentity, type Run } from './repo.js'
+import { probeGit, repoIdentity, run, sshHostResolver, type RepoIdentity, type Run } from './repo.js'
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB — skip files larger than this
 
@@ -27,15 +27,17 @@ function findJsonlFiles(dir: string): string[] {
 // A transcript records the cwd of the turn, so one repo worked from its root
 // and from two app directories arrives as three projects. Group on the
 // enclosing checkout instead. A cwd that is gone, or was never in a repo,
-// stays as it is.
+// stays as it is. So does one we may not read: a repo further up would be a
+// guess, and `repoIdentity` reports the block.
 function projectRoot(cwd: string, memo: Map<string, string>): string {
   const cached = memo.get(cwd)
   if (cached) return cached
   let dir = cwd
   while (true) {
-    if (existsSync(join(dir, '.git'))) break
+    const git = probeGit(dir)
+    if (git === 'repo') break
     const parent = dirname(dir)
-    if (parent === dir) {
+    if (git === 'denied' || parent === dir) {
       dir = cwd
       break
     }
@@ -43,6 +45,27 @@ function projectRoot(cwd: string, memo: Map<string, string>): string {
   }
   memo.set(cwd, dir)
   return dir
+}
+
+/**
+ * One line for every repo macOS kept us out of. A launchd job has its own
+ * privacy grant, so the scheduled sync can be blocked from ~/Desktop while the
+ * same binary run from a shell is not.
+ */
+export async function deniedWarning(ids: Iterable<Promise<RepoIdentity>>): Promise<string | null> {
+  const folders = new Set<string>()
+  let repos = 0
+  for (const id of ids) {
+    const { denied } = await id
+    if (!denied) continue
+    folders.add(denied)
+    repos++
+  }
+  if (repos === 0) return null
+  return (
+    `macOS blocked reading ${[...folders].join(', ')} (${repos} repo${repos === 1 ? '' : 's'} sent without a remote). ` +
+    'Allow "burnwatch" in System Settings > Privacy & Security > Files and Folders (or Full Disk Access).'
+  )
 }
 
 // Claude Code records a usage-limit stop as a synthetic assistant entry flagged
@@ -116,6 +139,9 @@ function newBucket(): DateBucket {
 }
 
 export class CodeburnCollector implements EnrichmentCollector {
+  /** Last pass's macOS privacy warning, or null when every repo was readable. */
+  repoWarning: string | null = null
+
   private resolveHost: (host: string) => Promise<string>
 
   /**
@@ -269,6 +295,9 @@ export class CodeburnCollector implements EnrichmentCollector {
         // Skip unreadable files
       }
     }
+
+    this.repoWarning = await deniedWarning(idCache.values())
+    if (this.repoWarning) console.warn(`[burnwatch][repo] ${this.repoWarning}`)
 
     const result = new Map<string, ClaudeEnrichment>()
     for (const [date, b] of buckets) {

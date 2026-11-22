@@ -107,6 +107,7 @@ export interface DeviceConfig {
   registeredAt: string
   lastSyncAt: string | null
   npxPath: string | null   // full path to npx binary resolved at registration time
+  repoAccessWarning?: string | null   // last sync's macOS privacy block, for `burnwatch status`
 }
 
 // Dashboard API response types

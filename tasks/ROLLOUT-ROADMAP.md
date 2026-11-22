@@ -40,6 +40,7 @@ Items use the proposal's IDs (A1, B3, C1, ...). Each one gets a BW ticket in
 | C3 Seat-cost allocation | Finance has to want per-client cost split | — |
 | D3 Seat simulator | Depends on A2 | — |
 | D4 Anomaly flags | "Shared credentials" flag overlaps B6; agree on tone first | — |
+| **Own usage collector** | Replace ccusage (npx + node at runtime) with a built-in parser for Claude/Qwen/Gemini/Codex/Copilot logs, so the agent is one self-contained binary we can ship to employees and the public. Decided by the user 2026-11-22. Design to come | Shipping the agent outside the build team |
 
 ### Facts needed from the org before R1
 

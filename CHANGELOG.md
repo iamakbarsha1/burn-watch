@@ -8,6 +8,24 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.10.1 (2026-11-22)
+
+- `/users` with "Show cost": the per-agent value under Tokens is one line
+  per agent instead of one long line, so the table is about 400px narrower
+  (1645px to about 1260px with all five agents).
+- `/audit`: org-level changes (leaderboard settings, seats assigned to all,
+  CSV invites) name the org instead of showing its id. Rows written before
+  this show "Organization".
+
+## Agent v0.4.1 (2026-11-22)
+
+- A repo macOS will not let the scheduled sync read (for example under
+  `~/Desktop`) is no longer treated as "not a repo" in silence. It is still
+  sent by folder name with no remote, and the sync prints one warning naming
+  the blocked folder and the setting to change: System Settings > Privacy &
+  Security > Files and Folders (or Full Disk Access). `burnwatch status`
+  shows the warning from the last sync.
+
 ## web-v0.10.0 (2026-11-22)
 
 - New admin-only Audit log page (`/audit`, sidebar entry for admins). It

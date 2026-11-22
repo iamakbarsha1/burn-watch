@@ -22,4 +22,7 @@ export async function statusCommand() {
   console.log('  Schedule: ', isScheduleInstalled() ? 'installed (6 PM daily)' : 'not installed')
   console.log('  ccusage:  ', await ccusage.isAvailable() ? 'available' : 'not available')
   console.log('  codeburn: ', await codeburn.isAvailable() ? 'available' : 'not available')
+  // From the last sync, not probed here: a shell has its own privacy grant, so
+  // it can read ~/Desktop when the scheduled job cannot.
+  if (config.repoAccessWarning) console.log('  Repos:    ', `last sync: ${config.repoAccessWarning}`)
 }
