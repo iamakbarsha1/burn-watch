@@ -1,7 +1,7 @@
 # R1 · A8 Leaderboard by active days, streaks, features tried: design
 
-Status: decisions made 2026-11-22 (see "Decisions"), ready to build. Ship
-target web-v0.9.0. Where earlier sections disagree with Decisions, Decisions win.
+Status: built 2026-11-22 as web-v0.9.0 (decisions in "Decisions"). Where
+earlier sections disagree with Decisions, Decisions win.
 Roadmap: `tasks/ROLLOUT-ROADMAP.md` R1. Reworks the existing Leaderboard
 (`/users`), not a new page. Uses the same role rules as A1, A3, B1, B2 and B3.
 D1 (AI Wrapped, R4) builds on the streaks defined here.

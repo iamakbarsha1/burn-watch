@@ -177,7 +177,7 @@ All S or S–M. Mostly new pipelines over data already in Mongo.
 | B2 | Approved agents/models policy, violation list, dashboard alert | ✅ Built, web-v0.6.0 (`/governance`, `agentPolicies`, nav count + Overview line). Design: `tasks/R1-B2-AGENT-POLICY-DESIGN.md`. Push alerts wait for a channel |
 | A1 | Idle seats: no usage for 14+ days, per agent | ✅ Built, web-v0.7.0 (`/adoption`, `?idleDays` default 14, alert links to it). Design: `tasks/R1-A1-IDLE-SEATS-DESIGN.md`. No schema change. Prod shows the empty state until seats are entered (org fact #1) |
 | A3 | Funnel per team: invited → registered → first sync → active → power user | ✅ Built, web-v0.8.0 (`/adoption` Funnel section, page date range, who-is-stuck list). Design: `tasks/R1-A3-ADOPTION-FUNNEL-DESIGN.md`. Active 2+ days, power 5 of 7 days (scaled to the range). No schema change. Prod shows the total and "No team" rows until teams exist |
-| A8 | Leaderboard by active days, streaks, features tried; `$` hidden by default | Features-tried improves after R2. Design: `tasks/R1-A8-LEADERBOARD-DESIGN.md` (ready to build) |
+| A8 | Leaderboard by active days, streaks, features tried; `$` hidden by default | ✅ Built, web-v0.9.0 (`/users` sortable by active days, score, streak, tokens, cost; cost behind `?cost=1`; Admin leaderboard settings; "Hide my name" on `/users`). Design: `tasks/R1-A8-LEADERBOARD-DESIGN.md`. Two optional doc fields, no schema sync. Features-tried improves after R2 |
 | B8 | Admin audit log: device approvals, role changes, who viewed whose data | Moved up from "later": once managers see team data, view logging should exist from day one |
 
 **R1 done when:** admins have a Governance page (B1, B2, B3), an Adoption page
@@ -251,19 +251,20 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 ## Next session
 
-R1 A3 shipped as web-v0.8.0 (PR #22). R1 A8 design is ready to build:
-`tasks/R1-A8-LEADERBOARD-DESIGN.md`, decisions made 2026-11-22. It reworks
-`/users`: sortable ranking (active days default, plus score, streak, tokens,
-cost), weekend-tolerant streaks, cost hidden behind a toggle for every role,
-and three visibility settings (org developer view, org names on/off,
-per-person "hide my name"). Two optional doc fields, no validator, so no
-prod schema sync. Ship as web-v0.9.0. Still open: signed-in prod checks
-(`/privacy`, Projects remote line, R0.1 seats, CSV invite, `/governance`,
-`/adoption` funnel), seat prices (org fact #1), and the Vercel Pro decision
-(Risks).
+R1 A8 is built as web-v0.9.0 on branch `feat/r1-a8-leaderboard`: `/users`
+ranks by active days (sortable by score, streak, tokens, cost), shows
+weekend-tolerant streaks and agents and MCP servers tried, hides cost behind
+"Show cost", and has the team picker. Admin has three leaderboard settings
+(developer view, names, others' cost); each person can hide their name on
+`/users`. Not yet pushed. Open the PR, merge after CI, tag `web-v0.9.0` with
+`--latest=false`, then smoke test `/users` (A above B, cost hidden, toggle
+shows cost). No prod schema sync. Next R1 item is B8 (admin audit log).
+Still open: signed-in prod checks (`/privacy`, Projects remote line, R0.1
+seats, CSV invite, `/governance`, `/adoption` funnel), seat prices (org fact
+#1), and the Vercel Pro decision (Risks).
 
 ```
-BurnWatch: build R1 A8 (leaderboard rework on /users) per tasks/R1-A8-LEADERBOARD-DESIGN.md.
-Sortable ranking + score, weekend-tolerant streaks, cost toggle for all, visibility settings; ship web-v0.9.0.
-If signed in, walk the open prod checks first, including /governance and /adoption.
+BurnWatch: ship R1 A8 from branch feat/r1-a8-leaderboard: PR, CI, merge, release web-v0.9.0 (--latest=false), smoke test /users.
+Then plan R1 B8 (admin audit log). Draft the design before code.
+If signed in, walk the open prod checks first, including /governance, /adoption and /users.
 ```
