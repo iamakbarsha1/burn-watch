@@ -153,9 +153,9 @@ export function SetupSteps({ email }: { email: string }) {
         <Step n={3} title="Backfill your history">
           <Code>burnwatch sync --days 30</Code>
           <P>
-            Reads what ccusage already knows about Claude Code, Codex, Gemini, Qwen and Copilot
-            on this machine and uploads the daily totals. Use <C>--days 240</C> if you want your
-            whole history.
+            Reads the Claude Code logs on this machine, prices each request, and uploads the daily
+            totals. Use <C>--days 240</C> if you want your whole history. Claude Code deletes old
+            logs after about 30 days, so older days may be empty.
           </P>
         </Step>
 

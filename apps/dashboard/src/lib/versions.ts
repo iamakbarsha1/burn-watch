@@ -1,4 +1,4 @@
-import { AGENT_FIELDS_VERSION, compareVersions, type AdminDeviceRow } from '@burn-watch/shared'
+import { AGENT_FIELDS_VERSION, UPDATE_AGENT_VERSION, compareVersions, type AdminDeviceRow } from '@burn-watch/shared'
 
 /** A1's default: a device counts as active when it holds a live token and was seen in the last 14 days. */
 const ACTIVE_DAYS = 14
@@ -8,6 +8,8 @@ export interface DeviceVersionStatus {
   claude: 'ok' | 'below' | 'unknown' | 'none'
   /** True below AGENT_FIELDS_VERSION, the first agent that sends both versions. */
   agentOld: boolean
+  /** True below UPDATE_AGENT_VERSION: the "Update agent" badge. */
+  updateAgent: boolean
 }
 
 export function deviceVersionStatus(
@@ -23,7 +25,7 @@ export function deviceVersionStatus(
       : min && compareVersions(row.claudeVersion, min) < 0
         ? 'below'
         : 'ok'
-  return { claude, agentOld }
+  return { claude, agentOld, updateAgent: compareVersions(row.agentVersion, UPDATE_AGENT_VERSION) < 0 }
 }
 
 export interface VersionSummary {
@@ -40,7 +42,7 @@ export function versionSummary(rows: AdminDeviceRow[], min: string | null, now: 
   const statuses = active.map((r) => deviceVersionStatus(r, min))
   return {
     active: active.length,
-    agentCurrent: statuses.filter((s) => !s.agentOld).length,
+    agentCurrent: statuses.filter((s) => !s.updateAgent).length,
     below: statuses.filter((s) => s.claude === 'below').length,
     unknown: statuses.filter((s) => s.claude === 'unknown').length,
   }

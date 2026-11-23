@@ -204,10 +204,9 @@ Sending only the key from the agent would reduce what is stored, but it ties
 the agent to one key format and to each org's allowlist (R0.3 decision 8).
 Decision 2 keeps that choice. If an org later wants raw names off the wire,
 it is an agent option that rides the next agent minor after the 0.6.0
-cutover (`tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md`, phase 2). It would
-live where the branch is read today (`codeburn.ts:270`), and the own
-collector keeps reading `gitBranch` the same way
-(`AGENT-OWN-COLLECTOR-DESIGN-PART1.md:78`), so the change stays compatible.
+cutover (`tasks/AGENT-OWN-COLLECTOR-DESIGN.md`). It would live where the
+branch is read today (`codeburn.ts:270`), and the own collector keeps
+reading `gitBranch` the same way, so the change stays compatible.
 
 ## Tests
 

@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { AGENT_FIELDS_VERSION, type AdminDeviceRow } from '@burn-watch/shared'
+import { AGENT_FIELDS_VERSION, UPDATE_AGENT_VERSION, type AdminDeviceRow } from '@burn-watch/shared'
 import { getUserRole } from '@/lib/session'
 import { fetchAdminDevices, fetchDeviceSettings } from '@/lib/api'
 import { formatAgo } from '@/lib/format'
@@ -69,7 +69,7 @@ export default async function DevicesPage() {
             </div>
 
             <p className="mb-3 text-sm text-ink-2">
-              Agent {AGENT_FIELDS_VERSION}+: {summary.agentCurrent} of {summary.active} active devices.{' '}
+              Agent {UPDATE_AGENT_VERSION}+: {summary.agentCurrent} of {summary.active} active devices.{' '}
               {min ? `Below the Claude Code minimum: ${summary.below}.` : 'No minimum set.'} Unknown:{' '}
               {summary.unknown}.
             </p>
@@ -119,7 +119,7 @@ export default async function DevicesPage() {
                         <Td>
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-mono text-ink">{d.agentVersion}</span>
-                            {v.agentOld && <Badge tone="warn">Update agent</Badge>}
+                            {v.updateAgent && <Badge tone="warn">Update agent</Badge>}
                           </div>
                         </Td>
                         <Td>
@@ -144,8 +144,9 @@ export default async function DevicesPage() {
             </TableFrame>
 
             <p className="mt-3 text-sm text-ink-2">
-              &ldquo;Update agent&rdquo; means the machine runs an agent older than {AGENT_FIELDS_VERSION}, which
-              does not report versions. Its owner can follow{' '}
+              &ldquo;Update agent&rdquo; means the machine runs an agent older than {UPDATE_AGENT_VERSION}. Older
+              agents need node to collect usage, and agents before {AGENT_FIELDS_VERSION} do not report
+              versions. Its owner can run <code className="font-mono">burnwatch update</code> or follow{' '}
               <Link href="/setup" className={linkClass}>
                 the setup guide
               </Link>{' '}

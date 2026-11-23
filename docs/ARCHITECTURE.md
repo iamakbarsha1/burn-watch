@@ -12,7 +12,7 @@ Target: companies with 50+ developers using AI coding assistants.
 Developer machine                    Vercel                       Atlas
 ┌──────────────────┐                ┌──────────────────────┐
 │ burnwatch agent  │───────────────▶│ burn-watch-api       │
-│  ccusage   Tier 1│ POST /v1/usage │ Fastify 5 behind     │──┐
+│  usage     Tier 1│ POST /v1/usage │ Fastify 5 behind     │──┐
 │  codeburn  Tier 2│                │ api/index.mjs        │  │
 └──────────────────┘                └──────────────────────┘  │
                                               ▲                │  ┌─────────────┐
@@ -32,7 +32,7 @@ read goes to MongoDB on every request.
 
 1. **Collection** — Agent runs on developer machine (daily, via launchd on
    macOS, a systemd user timer on Linux, Task Scheduler on Windows)
-   - **Tier 1 (ccusage):** Runs `npx ccusage@latest daily --json` to get token counts and costs for all agents
+   - **Tier 1 (usage):** Reads Claude Code's JSONL logs, counts each request once, prices it per request, and groups by UTC day, agent and model. No node, no third-party tool
    - **Tier 2 (codeburn):** Parses `~/.claude/projects/*/` JSONL files for Claude-specific enrichment (activity breakdown, project breakdown, tool/shell/MCP usage)
 
 2. **Submission** — Agent POSTs collected data to `POST /v1/usage/submit` with device JWT
@@ -57,7 +57,9 @@ read goes to MongoDB on every request.
 |------|---------|
 | `src/index.ts` | Commander CLI entry point (`register`, `sync`, `status`, `install-cron`, `uninstall`) |
 | `src/commands/sync.ts` | Orchestrates both collectors, POSTs to API |
-| `src/collectors/reference.ts` | Tier 1: runs the reference collector CLI, parses its JSON output |
+| `src/collectors/usage.ts` | Tier 1: runs each agent parser, dedupes, prices, groups by UTC day |
+| `src/collectors/parsers/claude.ts` | Claude Code transcript parser, one record per request |
+| `src/collectors/pricing.ts` | Embedded price table plus the daily `GET /v1/prices` refresh |
 | `src/collectors/codeburn.ts` | Tier 2: parses JSONL files for Claude enrichment |
 | `src/lib/cron.ts` | Dispatches the 6 PM daily sync schedule to a platform backend: launchd plist (macOS) |
 | `src/lib/cron-linux.ts` | Schedule backend: systemd user service + timer (Linux) |

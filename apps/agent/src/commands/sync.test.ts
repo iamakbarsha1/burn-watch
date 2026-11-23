@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { selectDates } from './sync.js'
+import { cutoverDay, selectDates } from './sync.js'
+
+describe('cutoverDay', () => {
+  it('starts an upgraded device on the UTC day of its last sync', () => {
+    expect(cutoverDay({ lastSyncAt: '2026-11-23T12:30:14.823Z' })).toBe('2026-11-23')
+  })
+
+  it('gives a new device no cutover', () => {
+    expect(cutoverDay({ lastSyncAt: null })).toBeNull()
+  })
+
+  it('keeps a stored cutover, including none', () => {
+    expect(cutoverDay({ lastSyncAt: '2026-12-01T00:00:00.000Z', ownCollectorFrom: '2026-11-23' })).toBe('2026-11-23')
+    expect(cutoverDay({ lastSyncAt: '2026-12-01T00:00:00.000Z', ownCollectorFrom: null })).toBeNull()
+  })
+})
 
 function isoDate(daysAgo: number): string {
   const d = new Date()

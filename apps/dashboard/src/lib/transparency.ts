@@ -81,7 +81,6 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.permissionModeCounts': 'scoped', // Adoption
   'enrichment.accountHashes': 'admin', // Governance, as labels; the hash is never shown
   'enrichment.claudeOrgHashes': 'admin', // Governance, as labels; the hash is never shown
-  referenceDiff: 'none',
 }
 
 export function audienceOf(path: string): Audience | undefined {

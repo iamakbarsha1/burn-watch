@@ -110,9 +110,9 @@ the approval is matched against the email you signed in with.
 burnwatch sync --days 30
 ```
 
-This reads what ccusage already knows about Claude Code, Codex, Gemini, Qwen and
-Copilot on this machine and uploads the daily totals. `--days 240` gets your
-whole history.
+This reads the Claude Code logs on this machine, prices each request, and
+uploads the daily totals. `--days 240` gets your whole history. Claude Code
+deletes old logs after about 30 days, so older days may be empty.
 
 ### 5. Confirm
 
@@ -294,8 +294,12 @@ Then set a password for that email on the dashboard's sign-up page.
 
 ### Where the numbers come from
 
-ccusage is the source for cost and tokens across all five agents. The Claude
-JSONL parse only adds project, session and tool breakdowns, and never
-contributes a cost figure. Agents on a free tier (Qwen) report tokens with zero
-cost, so the Overview page shows them by token volume and leaves them out of
-spend totals.
+The agent reads Claude Code's local logs itself. It counts each API request
+once, prices it from the table in `packages/shared/src/prices.json` (refreshed
+daily from `GET /v1/prices`), and sends daily totals per model by UTC day. A
+model with no price is sent as `unpriced`, never as free. The same pass feeds
+the project, session and tool breakdowns. Codex, Gemini, Qwen and Copilot CLI
+are not collected from laptops yet; `burnwatch status` shows them as "not
+collected". Copilot usage still comes in at org level from the Copilot
+integration. Agents on a free tier (Qwen) report tokens with zero cost, so the
+Overview page shows them by token volume and leaves them out of spend totals.

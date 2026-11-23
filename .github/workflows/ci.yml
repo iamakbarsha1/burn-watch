@@ -53,6 +53,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The agent collects usage itself since 0.6.0. The previous third-party
+      # collector's name stays out of the repo; the pattern is split so this
+      # file does not match itself.
+      - name: No previous collector name
+        run: "! git grep -il 'cc''usage'"
+
       - name: Typecheck and test
         run: npx turbo run typecheck test
 

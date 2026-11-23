@@ -162,7 +162,7 @@ against the database (63 rows, 1 real user) and covered by a falsified test.
 
 ### What changed
 
-1. **Windows could never collect.** `CcusageCollector` spawned `npx` with no
+1. **Windows could never collect.** `ReferenceCollector` spawned `npx` with no
    shell. On Windows that is `npx.cmd`, which a bare spawn fails `ENOENT` on;
    the collector logged and returned null, so `collect` returned an empty
    array and a Windows machine would have reported zero every evening with no

@@ -34,7 +34,6 @@ const config = (apiUrl: string) => ({
   refreshToken: 'refresh-token-value',
   registeredAt: '2026-11-06T00:00:00.000Z',
   lastSyncAt: null,
-  npxPath: '/usr/local/bin/npx',
 })
 
 beforeEach(() => {

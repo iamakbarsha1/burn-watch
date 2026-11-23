@@ -87,20 +87,29 @@ describe('UsageCollector', () => {
     expect((await c.collectRange(['2026-11-20'])).get('2026-11-20')).toHaveLength(2)
   })
 
-  it('buckets by the given day function, reading files from the day before', async () => {
+  it('reads files from the day before the first date', async () => {
     let since = ''
     const parser: AgentParser = {
-      ...fake('claude', [rec({ at: '2026-11-19T20:00:00.000Z' })]),
+      ...fake('claude', []),
       async *read(_roots, s) {
         since = s
-        yield rec({ at: '2026-11-19T20:00:00.000Z' })
       },
     }
-    // IST: 20:00 UTC on the 19th is 01:30 on the 20th.
-    const ist = (iso: string) => new Date(Date.parse(iso) + 5.5 * 3_600_000).toISOString().slice(0, 10)
-    const out = await new UsageCollector([parser], table, ist).collectRange(['2026-11-20'])
-    expect(out.get('2026-11-20')).toHaveLength(1)
+    await new UsageCollector([parser], table).collectRange(['2026-11-21', '2026-11-20'])
     expect(since).toBe('2026-11-19')
+  })
+
+  it('puts a request whose copies straddle midnight on the earliest day only', async () => {
+    // Seen on 2026-11-22: one streamed reply written at 23:59:58 and 00:00:02.
+    const copies = [
+      rec({ key: 's', at: '2026-11-21T00:00:02.000Z' }),
+      rec({ key: 's', at: '2026-11-20T23:59:58.000Z' }),
+    ]
+    const later = await new UsageCollector([fake('claude', copies)], table).collectRange(['2026-11-21'])
+    expect(later.has('2026-11-21')).toBe(false)
+    const both = await new UsageCollector([fake('claude', copies)], table).collectRange(['2026-11-20', '2026-11-21'])
+    expect(both.get('2026-11-20')![0].totalTokens).toBe(15)
+    expect(both.has('2026-11-21')).toBe(false)
   })
 
   it('is unavailable when no parser has a root on disk', async () => {
