@@ -8,6 +8,22 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.19.0 (2026-11-23)
+
+R2 D6: onboarding score.
+
+- New "Onboarding" section on `/adoption`, after Funnel, for admins and
+  managers. It covers people whose first sync is in the date range.
+- Onboarded means tokens on 2 or more days in each of their first two
+  weeks, and 2 or more Claude Code features in their first 14 days.
+- Per team: new, onboarded ("n of m", with a percentage from 5 finished
+  windows), missed, in progress, and no feature data.
+- Lists of people in progress and people who missed, with what each one
+  still lacks.
+- People with no Claude Code use in their 14 days are not scored.
+- New route `GET /v1/dashboard/adoption/onboarding`. No schema sync, no
+  agent release.
+
 ## web-v0.18.1 (2026-11-23)
 
 Fix: `/privacy` now lists `skillCounts`, `sidechainMessages`,

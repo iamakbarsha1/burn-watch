@@ -4065,6 +4065,88 @@ describe('GET /v1/dashboard/adoption/features', () => {
   })
 })
 
+describe('GET /v1/dashboard/adoption/onboarding', () => {
+  const t = today()
+  const from = daysBefore(t, 29)
+  const URL = `/v1/dashboard/adoption/onboarding?from=${from}&to=${t}`
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const row = (userId: string, name: string, firstSync: string | null) => ({
+    userId, name, createdAt: new Date(`${daysBefore(t, 50)}T09:00:00Z`), hasDevice: true, firstSync, lastSync: t, activeDays: 1,
+  })
+  const counts = (cohort: number, onboarded: number, missed: number, inProgress: number, noFeatureData: number) =>
+    ({ cohort, onboarded, missed, inProgress, noFeatureData })
+  const U3 = 'u3-onboarding'
+  const U4 = 'u4-onboarding'
+  const U5 = 'u5-onboarding'
+  // Day n (1-based) of a window that starts `ago` days before today.
+  const on = (ago: number, n: number) => daysBefore(t, ago - (n - 1))
+  const seed = () => {
+    mongoState.aggregates.users = [
+      row(USER_A, 'Ada', daysBefore(t, 25)), // onboarded
+      row(USER_B, 'Bo', daysBefore(t, 20)), // missed: one day only
+      row(U3, 'Cy', daysBefore(t, 3)), // in progress
+      row(U4, 'Dee', daysBefore(t, 40)), // started before the range
+      row(U5, 'Eve', daysBefore(t, 22)), // tokens, no Claude Code day
+      row('u6-onboarding', 'Fay', null), // never synced: A3's stuck list
+    ]
+    mongoState.docs.dailySnapshots = [
+      ...[1, 2, 8, 9].map((n) => ({ userId: USER_A, date: on(25, n) })),
+      { userId: USER_B, date: on(20, 1) },
+      { userId: U3, date: on(3, 1) },
+      ...[1, 2, 8, 9].map((n) => ({ userId: U5, date: on(22, n) })),
+    ]
+    mongoState.docs.claudeEnrichment = [
+      { userId: USER_A, orgId: ORG_A, date: on(25, 1), mcpUsage: { github: 1 }, toolUsage: { agent: 1 } },
+      { userId: USER_B, orgId: ORG_A, date: on(20, 1), mcpUsage: { github: 1 } },
+      { userId: U3, orgId: ORG_A, date: on(3, 1), toolUsage: { skill: 1 } },
+    ]
+  }
+
+  it('refuses a developer before reading anything', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'users', 'aggregate')).toEqual([])
+  })
+
+  it('scores people whose first sync is in range, and lists only those to help', async () => {
+    seed()
+    const body = (await get('admin')).json()
+    expect(body).toMatchObject({ from, to: t, activeDaysPerWeek: 2, minFeatures: 2, minForPercent: 5 })
+    expect(body.total).toEqual(counts(4, 1, 1, 1, 1))
+    expect(body.noTeam).toEqual(counts(4, 1, 1, 1, 1))
+    expect(body.people.map((p: { name: string; state: string }) => [p.name, p.state])).toEqual([
+      ['Cy', 'inProgress'],
+      ['Bo', 'missed'],
+    ])
+    expect(body.people[0]).toMatchObject({ firstSync: daysBefore(t, 3), dayOfWindow: 3, features: ['skills'] })
+
+    const [filter] = callsTo(mongoState, 'dailySnapshots', 'find')[0] as [Record<string, unknown>]
+    expect(filter).toMatchObject({ orgId: ORG_A, date: { $gte: daysBefore(t, 25), $lte: daysBefore(t, -13) }, totalTokens: { $gt: 0 } })
+    expect((filter.userId as { $in: string[] }).$in.sort()).toEqual([USER_A, USER_B, U3, U5].sort())
+  })
+
+  it('counts per team and leaves No team out for a team filter', async () => {
+    seed()
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(1, 1, 0, 0, 0) }])
+    expect(body.noTeam).toBeNull()
+  })
+
+  it('reads no usage when nobody started in range', async () => {
+    mongoState.aggregates.users = [row(USER_A, 'Ada', daysBefore(t, 40))]
+    const body = (await get('admin')).json()
+    expect(body.total).toEqual(counts(0, 0, 0, 0, 0))
+    expect(callsTo(mongoState, 'dailySnapshots', 'find')).toEqual([])
+  })
+
+  it('answers 404 to a team outside the org before reading people', async () => {
+    expect((await get('admin', `${URL}&teamId=${TEAM_B}`)).statusCode).toBe(404)
+    expect(callsTo(mongoState, 'users', 'aggregate')).toEqual([])
+  })
+})
+
 describe('GET /v1/dashboard/adoption/practices', () => {
   const t = today()
   const from = daysBefore(t, 6)

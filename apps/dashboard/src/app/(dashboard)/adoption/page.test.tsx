@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { FeatureMatrixResponse, FunnelCounts, FunnelResponse, IdleSeatsResponse, PracticeGroup, PracticesResponse } from '@burn-watch/shared'
+import type {
+  FeatureMatrixResponse,
+  FunnelCounts,
+  FunnelResponse,
+  IdleSeatsResponse,
+  OnboardingCounts,
+  OnboardingResponse,
+  PracticeGroup,
+  PracticesResponse,
+} from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
@@ -10,6 +19,7 @@ const state = vi.hoisted(() => ({
   funnelAsked: [] as string[][],
   features: null as FeatureMatrixResponse | null,
   practices: null as PracticesResponse | null,
+  onboarding: null as OnboardingResponse | null,
   rankAsked: [] as string[],
 }))
 
@@ -34,6 +44,10 @@ vi.mock('@/lib/api', () => ({
   fetchFeatures: async () => {
     if (!state.features) throw new Error('down')
     return state.features
+  },
+  fetchOnboarding: async () => {
+    if (!state.onboarding) throw new Error('down')
+    return state.onboarding
   },
   fetchPractices: async (_from: string, _to: string, rankBy: string) => {
     state.rankAsked.push(rankBy)
@@ -65,6 +79,7 @@ beforeEach(() => {
   state.funnelAsked = []
   state.features = null
   state.practices = null
+  state.onboarding = null
   state.rankAsked = []
 })
 
@@ -370,6 +385,57 @@ describe('AdoptionPage funnel', () => {
     it('shows no champions block when there are no teams to show', async () => {
       state.practices = practices()
       expect(await render()).not.toContain('Suggested champions')
+    })
+  })
+
+  describe('Onboarding', () => {
+    const c = (cohort: number, onboarded: number, missed: number, inProgress = 0, noFeatureData = 0): OnboardingCounts =>
+      ({ cohort, onboarded, missed, inProgress, noFeatureData })
+    const onboarding = (over: Partial<OnboardingResponse> = {}): OnboardingResponse => ({
+      from: '2026-11-01',
+      to: '2026-11-30',
+      activeDaysPerWeek: 2,
+      minFeatures: 2,
+      minForPercent: 5,
+      total: c(4, 3, 1),
+      teams: [],
+      noTeam: c(4, 3, 1),
+      people: [],
+      ...over,
+    })
+
+    it('shows n of m without a percentage below 5 finished windows', async () => {
+      state.onboarding = onboarding()
+      const html = await render()
+      expect(html).toContain('Onboarding')
+      expect(html).toContain('3 of 4<')
+      expect(html).not.toContain('3 of 4 (')
+    })
+
+    it('adds the percentage from 5 finished windows', async () => {
+      state.onboarding = onboarding({ total: c(5, 4, 1), noTeam: null })
+      expect(await render()).toContain('4 of 5 (80%)')
+    })
+
+    it('lists people in progress and missed with what they lack', async () => {
+      const person = { userId: 'u1', name: 'Cy', teamIds: [], firstSync: '2026-11-20', activeWeek1: 1, activeWeek2: 0, features: ['skills' as const] }
+      state.onboarding = onboarding({
+        people: [
+          { ...person, state: 'inProgress', dayOfWindow: 3 },
+          { ...person, userId: 'u2', name: 'Bo', state: 'missed', dayOfWindow: 14, activeWeek1: 2 },
+        ],
+      })
+      const html = await render()
+      expect(html).toContain('In progress (1)')
+      expect(html).toContain('day 3 of 14')
+      expect(html).toContain('week 1: 1 of 2 days · week 2: 0 of 2 days · features: 1 of 2')
+      expect(html).toContain('Missed (1)')
+      expect(html).toContain('first sync 2026-11-20')
+    })
+
+    it('says when nobody started in range', async () => {
+      state.onboarding = onboarding({ total: c(0, 0, 0), noTeam: c(0, 0, 0) })
+      expect(await render()).toContain('Nobody had a first sync in this range.')
     })
   })
 })

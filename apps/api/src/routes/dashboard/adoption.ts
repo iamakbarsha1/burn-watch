@@ -26,6 +26,8 @@ import {
   type FunnelStop,
   type IdleSeatRow,
   type IdleSeatsResponse,
+  type OnboardingPerson,
+  type OnboardingResponse,
   type PracticesResponse,
   type TeamChampions,
   type StuckPerson,
@@ -39,6 +41,14 @@ import type { EnrichmentRange } from './enrichment.js'
 import { leaderboardSettings, mcpServersPipeline, scoreAll } from './leaderboard.js'
 import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, suggestChampions } from './quartile.js'
 import { streaks } from './streaks.js'
+import {
+  ACTIVE_DAYS_PER_WEEK,
+  MIN_FEATURES,
+  MIN_FOR_PERCENT,
+  WINDOW_DAYS,
+  countOnboarding,
+  onboardingOf,
+} from './onboarding.js'
 
 const DAY_MS = 86_400_000
 const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / DAY_MS
@@ -57,12 +67,12 @@ async function readFeatureDays(orgId: OrgId, from: IsoDate, to: IsoDate, scope: 
     { orgId, date: { $gte: from, $lte: to }, ...(scope && { userId: { $in: scope } }) },
     {
       projection: {
-        userId: 1, toolUsage: 1, mcpUsage: 1, skillCounts: 1,
+        userId: 1, date: 1, toolUsage: 1, mcpUsage: 1, skillCounts: 1,
         sidechainMessages: 1, permissionModeCounts: 1, entrypointCounts: 1,
       },
     },
   )
-  const daysOf = new Map<UserId, FeatureFields[]>()
+  const daysOf = new Map<UserId, (FeatureFields & { date: IsoDate })[]>()
   for (const d of docs) daysOf.set(d.userId, [...(daysOf.get(d.userId) ?? []), d])
   return daysOf
 }
@@ -478,6 +488,87 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       noTeam: role === 'admin' && !teamId ? countFeatures(people.filter((p) => p.teamIds.length === 0)) : null,
       people,
     } satisfies FeatureMatrixResponse
+  })
+
+  // R2 D6. New people in range and whether they got going in their first 14 days.
+  fastify.get('/adoption/onboarding', async (request, reply) => {
+    const { role } = request.user
+    if (role !== 'admin' && role !== 'manager') {
+      return reply.status(403).send({ error: 'Adoption requires admin or manager role' })
+    }
+    const parsed = FunnelQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const from = parsed.data.from as IsoDate
+    const to = parsed.data.to as IsoDate
+    const { teamId } = parsed.data
+    const scope = await readScope(request.user, teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'adoption', scope, teamId)
+
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    const [rows, teams] = await Promise.all([
+      store.users.aggregate<FunnelUserRow>(funnelUsersPipeline(orgId, from, to, scope)),
+      comparableTeams(request.user),
+    ])
+    // Decision 3: the cohort is people whose first sync is in range.
+    const cohort = rows.filter((r): r is FunnelUserRow & { firstSync: IsoDate } => !!r.firstSync && r.firstSync >= from && r.firstSync <= to)
+    const ids = cohort.map((r) => r.userId)
+    const teamName = new Map(teams.map((t) => [t._id, t.name]))
+    const first = cohort.reduce<IsoDate>((min, r) => (r.firstSync < min ? r.firstSync : min), to)
+    const last = addDays(to, WINDOW_DAYS - 1)
+    const [snapshots, daysOf, members] = ids.length
+      ? await Promise.all([
+          store.dailySnapshots.find(
+            { orgId, userId: { $in: ids }, date: { $gte: first, $lte: last }, totalTokens: { $gt: 0 } },
+            { projection: { userId: 1, date: 1 } },
+          ),
+          readFeatureDays(orgId, first, last, ids),
+          teams.length
+            ? store.teamMembers.find({ orgId, teamId: { $in: [...teamName.keys()] }, userId: { $in: ids } })
+            : Promise.resolve([]),
+        ])
+      : [[], new Map(), []]
+    const datesOf = new Map<UserId, string[]>()
+    for (const s of snapshots) datesOf.set(s.userId, [...(datesOf.get(s.userId) ?? []), s.date])
+    const teamsOf = new Map<UserId, TeamId[]>()
+    for (const m of members) {
+      if (!teamName.has(m.teamId)) continue
+      teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
+    }
+
+    // Today's data is not synced yet, as in the streak rule.
+    const lastSynced = addDays(today(), -1)
+    const people: OnboardingPerson[] = cohort.map((r) => ({
+      userId: r.userId,
+      name: r.name,
+      teamIds: teamsOf.get(r.userId) ?? [],
+      firstSync: r.firstSync,
+      ...onboardingOf(r.firstSync, datesOf.get(r.userId) ?? [], daysOf.get(r.userId) ?? [], lastSynced),
+    }))
+
+    return {
+      from,
+      to,
+      activeDaysPerWeek: ACTIVE_DAYS_PER_WEEK,
+      minFeatures: MIN_FEATURES,
+      minForPercent: MIN_FOR_PERCENT,
+      total: countOnboarding(people),
+      teams: teams
+        .filter((team) => !teamId || team._id === teamId)
+        .map((team) => ({
+          teamId: team._id,
+          teamName: team.name,
+          ...countOnboarding(people.filter((p) => p.teamIds.includes(team._id))),
+        })),
+      noTeam: role === 'admin' && !teamId ? countOnboarding(people.filter((p) => p.teamIds.length === 0)) : null,
+      // Decision 6: the people to help, with names, like A3's stuck list. Newest first.
+      people: people
+        .filter((p) => p.state === 'missed' || p.state === 'inProgress')
+        .sort((a, b) => (a.firstSync < b.firstSync ? 1 : a.firstSync > b.firstSync ? -1 : a.name.localeCompare(b.name))),
+    } satisfies OnboardingResponse
   })
 
   // R2 A6. The top quartile of Claude Code users against the rest. Aggregates only.

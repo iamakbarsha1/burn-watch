@@ -31,6 +31,7 @@ import type {
   McpInventoryResponse,
   IdleSeatsResponse,
   FeatureMatrixResponse,
+  OnboardingResponse,
   PracticeRank,
   PracticesResponse,
   ClaudeAccountsResponse,
@@ -362,6 +363,11 @@ export async function fetchFunnel(from: string, to: string, teamId?: string): Pr
 // R2 A5. Admin or manager, same scope as the funnel.
 export async function fetchFeatures(from: string, to: string, teamId?: string): Promise<FeatureMatrixResponse> {
   return apiFetch(`/v1/dashboard/adoption/features?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+// R2 D6. New people in range and whether they got going.
+export async function fetchOnboarding(from: string, to: string, teamId?: string): Promise<OnboardingResponse> {
+  return apiFetch(`/v1/dashboard/adoption/onboarding?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
 // R2 A6. Aggregates only; the API names no one.
