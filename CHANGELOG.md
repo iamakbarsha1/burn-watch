@@ -8,6 +8,13 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## Agent v0.5.1 (2026-11-23)
+
+- First published build of 0.5.0. The v0.5.0 release job failed before
+  it built any binaries, so no v0.5.0 download exists. The agent code is
+  the same as v0.5.0; the release job now builds the shared package
+  first.
+
 ## Agent v0.5.0 (2026-11-23)
 
 Own usage collector, phase 1 (shadow). Usage events still come from the
