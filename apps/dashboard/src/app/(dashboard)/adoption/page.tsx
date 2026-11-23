@@ -27,6 +27,8 @@ import { formatCost, formatRange, resolveRange } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
 import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
+import { CopyButton } from '@/components/CopyButton'
+import { SETUP_SOURCES as SOURCES, setupChecklist } from '@/lib/setup'
 import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge, inputClass, secondaryButtonClass } from '@/components/ui'
 
 const DEFAULT_IDLE_DAYS = 14
@@ -594,6 +596,7 @@ function PracticesSection({ data, rankBy, params }: { data: PracticesResponse | 
         </>
       )}
       {data && <Champions data={data} />}
+      {data && <Setup data={data} />}
     </Section>
   )
 }
@@ -660,6 +663,59 @@ function Champions({ data }: { data: PracticesResponse }) {
           </table>
         </TableFrame>
       )}
+    </div>
+  )
+}
+
+/** R2 D5. Shared MCP servers of each card's top users plus champions. Counts only. */
+function Setup({ data }: { data: PracticesResponse }) {
+  if (data.setup.length === 0) return null
+  return (
+    <div className="mt-6">
+      <h3 className="text-sm font-medium text-ink">Recommended setup</h3>
+      <p className="mt-1 mb-3 text-xs text-ink-2">
+        MCP servers used by at least half of the top users and champions, and by 2 or more of them. Add them to the
+        repo once instead of each person finding them alone. Skill names need agent 0.6 or later.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {data.setup.map((card) => (
+          <div key={card.teamId ?? 'scope'} className="rounded-lg border border-line p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-medium text-ink">{card.teamName}</div>
+                <div className="text-xs text-ink-3">Based on {plural(card.groupSize, 'top user')}</div>
+              </div>
+              {card.items.length > 0 && <CopyButton text={setupChecklist(card)} label={`checklist for ${card.teamName}`} />}
+            </div>
+            {card.reason === 'smallGroup' ? (
+              <p className="mt-2 text-sm text-ink-2">Fewer than 2 top users here.</p>
+            ) : card.items.length === 0 ? (
+              <p className="mt-2 text-sm text-ink-2">No MCP server shared by enough of them.</p>
+            ) : (
+              SOURCES.map(({ source, label }) => {
+                const items = card.items.filter((i) => i.source === source)
+                if (items.length === 0) return null
+                return (
+                  <div key={source} className="mt-3">
+                    <div className="text-xs font-medium tracking-wide text-ink-2 uppercase">{label}</div>
+                    <ul className="mt-1 space-y-1 text-sm">
+                      {items.map((i) => (
+                        <li key={i.key} className="flex flex-wrap items-center gap-x-2">
+                          <span className="font-mono text-ink">{i.key}</span>
+                          <span className="text-xs text-ink-3">
+                            {i.topUsers} of {card.groupSize} top, {i.teamUsers} in all
+                          </span>
+                          {i.approved === false && <Badge tone="warn">not approved</Badge>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

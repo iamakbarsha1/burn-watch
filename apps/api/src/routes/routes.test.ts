@@ -4268,6 +4268,69 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect(res.json().population).toBe(0)
   })
 
+  describe('recommended setup (R2 D5)', () => {
+    // seed(): USER_A tops the quartile; champions in No team are USER_A and USER_B (most tokens).
+    const servers = () => {
+      mongoState.aggregates.claudeEnrichment = [
+        { _id: USER_A, servers: ['github', 'linear', 'plugin_sp_x'] },
+        { _id: USER_B, servers: ['github', 'plugin_sp_x'] },
+        { _id: U3, servers: ['github'] },
+      ]
+    }
+
+    it('lists servers shared by the top quartile plus champions, counts only', async () => {
+      seed()
+      servers()
+      const res = await get('admin')
+      const body = res.json()
+      expect(body.setup).toEqual([
+        {
+          teamId: null,
+          teamName: 'Whole org',
+          groupSize: 2,
+          reason: 'ok',
+          items: [
+            { key: 'github', source: 'local', topUsers: 2, teamUsers: 3, approved: null },
+            { key: 'plugin_sp_x', source: 'plugin', topUsers: 2, teamUsers: 2, approved: null },
+          ],
+        },
+      ])
+      for (const id of [USER_A, USER_B, U3, U4]) expect(JSON.stringify(body.setup)).not.toContain(id)
+    })
+
+    it('badges unapproved servers for admins only, once the org has an approval', async () => {
+      seed()
+      servers()
+      mongoState.docs.mcpApprovals = [{ _id: 'x', orgId: ORG_A, server: 'github' }]
+      const admin = (await get('admin')).json()
+      expect(admin.setup[0].items.map((i: { key: string; approved: boolean }) => [i.key, i.approved])).toEqual([
+        ['github', true],
+        ['plugin_sp_x', false],
+      ])
+      expect(callsTo(mongoState, 'mcpApprovals', 'find')[0][0]).toEqual({ orgId: ORG_A })
+    })
+
+    it('reads no approvals for a manager and names the scope card for them', async () => {
+      seed()
+      servers()
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+      mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' }))
+      const body = (await get('manager')).json()
+      expect(callsTo(mongoState, 'mcpApprovals', 'find')).toEqual([])
+      expect(body.setup.map((c: { teamName: string }) => c.teamName)).toEqual(['All your teams', 'Platform'])
+      expect(body.setup[1].items[0]).toMatchObject({ key: 'github', approved: null })
+    })
+
+    it('says the group is too small with one reference person, and skips the scope card for a team filter', async () => {
+      seed()
+      servers()
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+      mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: U3, role: 'member' }]
+      const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
+      expect(body.setup).toEqual([{ teamId: TEAM_A, teamName: 'Platform', groupSize: 0, reason: 'smallGroup', items: [] }])
+    })
+  })
+
   describe('champions (R2 A7)', () => {
     const teamOfFour = () => {
       seed()

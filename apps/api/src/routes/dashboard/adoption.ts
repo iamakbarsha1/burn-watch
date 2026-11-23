@@ -30,6 +30,7 @@ import {
   type OnboardingResponse,
   type PracticesResponse,
   type TeamChampions,
+  type TeamSetup,
   type StuckPerson,
 } from '@burn-watch/shared'
 import { comparableTeams, readScope } from '../../plugins/jwt.js'
@@ -39,7 +40,7 @@ import { today } from './dates.js'
 import { countFeatures, featureDays, type FeatureFields } from './features.js'
 import type { EnrichmentRange } from './enrichment.js'
 import { leaderboardSettings, mcpServersPipeline, scoreAll } from './leaderboard.js'
-import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, suggestChampions } from './quartile.js'
+import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, recommendedSetup, suggestChampions } from './quartile.js'
 import { streaks } from './streaks.js'
 import {
   ACTIVE_DAYS_PER_WEEK,
@@ -604,10 +605,10 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     // A7 privacy: as the leaderboard, names off hides everyone from a manager.
     const namesOff = role !== 'admin' && !settings.showNames
     const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE, namesOff }
-    if (userIds.length === 0) return { ...base, top: null, rest: null, tips: [], champions: [] } satisfies PracticesResponse
+    if (userIds.length === 0) return { ...base, top: null, rest: null, tips: [], champions: [], setup: [] } satisfies PracticesResponse
 
     const range = { orgId, userIds, from, to }
-    const [tokenRows, mcpRows, snapshots] = await Promise.all([
+    const [tokenRows, mcpRows, snapshots, approvals] = await Promise.all([
       store.usageEvents.aggregate<{ _id: UserId; tokens: number; read: number; cacheable: number }>(claudeTokensPipeline(range)),
       store.claudeEnrichment.aggregate<{ _id: UserId; servers: string[] }>(mcpServersPipeline(range)),
       // The A8 score needs all-time active days for the streak; read only when asked for.
@@ -617,9 +618,11 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
             { projection: { userId: 1, date: 1, totalTokens: 1, byAgent: 1 } },
           )
         : Promise.resolve([]),
+      // D5: approval badges are for admins, as Governance > MCP is.
+      role === 'admin' ? store.mcpApprovals.find({ orgId }, { projection: { server: 1 } }) : Promise.resolve([]),
     ])
     const tokensOf = new Map(tokenRows.map((r) => [r._id, r]))
-    const serversOf = new Map(mcpRows.map((r) => [r._id, r.servers.length]))
+    const serversOf = new Map(mcpRows.map((r) => [r._id, r.servers]))
 
     // Decision 1: the A8 score within this population, so tops are this scope's tops.
     const scoreOf = new Map<UserId, number>()
@@ -635,7 +638,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
           activeDays: inRange.length,
           streak: streaks(mine.map((s) => s.date), now).current,
           tokens: inRange.reduce((sum, s) => sum + s.totalTokens, 0),
-          features: agents.size + (serversOf.get(id) ?? 0),
+          features: agents.size + (serversOf.get(id)?.length ?? 0),
         }
       })
       scoreAll(parts).forEach((score, i) => scoreOf.set(userIds[i], score))
@@ -655,27 +658,31 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
         rank: rankBy === 'days' ? docs.length : rankBy === 'tokens' ? tokens : scoreOf.get(userId) ?? 0,
         activeDays: docs.length,
         days: featureDays(docs),
-        mcpServers: serversOf.get(userId) ?? 0,
+        mcpServers: serversOf.get(userId)?.length ?? 0,
+        servers: serversOf.get(userId) ?? [],
         cacheHitRate: t && t.cacheable > 0 ? (t.read / t.cacheable) * 100 : null,
       }
     })
+    const split = quartileSplit(people)
+    const visible = teams.filter((team) => !teamId || team._id === teamId)
+    const members = visible.length
+      ? await store.teamMembers.find({ orgId, teamId: { $in: visible.map((t) => t._id) }, userId: { $in: userIds } })
+      : []
+    const groups: { teamId: TeamId | null; teamName: string; ids: Set<string> }[] = visible.map((team) => ({
+      teamId: team._id,
+      teamName: team.name,
+      ids: new Set(members.filter((m) => m.teamId === team._id).map((m) => m.userId)),
+    }))
+
     // R2 A7: champions per visible team, shown even below the A6 minimum.
     const champions: TeamChampions[] = []
     if (!namesOff) {
-      const visible = teams.filter((team) => !teamId || team._id === teamId)
-      const members = visible.length
-        ? await store.teamMembers.find({ orgId, teamId: { $in: visible.map((t) => t._id) }, userId: { $in: userIds } })
-        : []
-      const groups: { teamId: TeamId | null; teamName: string; ids: Set<string> }[] = visible.map((team) => ({
-        teamId: team._id,
-        teamName: team.name,
-        ids: new Set(members.filter((m) => m.teamId === team._id).map((m) => m.userId)),
-      }))
+      const champGroups = [...groups]
       if (role === 'admin' && !teamId) {
         const inTeam = new Set(members.map((m) => m.userId))
-        groups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
+        champGroups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
       }
-      for (const g of groups) {
+      for (const g of champGroups) {
         const team = people.filter((p) => g.ids.has(p.userId))
         const { reason, champions: picked } = suggestChampions(team, role !== 'admin')
         champions.push({
@@ -695,10 +702,27 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const split = quartileSplit(people)
-    if (!split) return { ...base, top: null, rest: null, tips: [], champions } satisfies PracticesResponse
+    // R2 D5 Decision 1: the reference group is the org top quartile plus the
+    // A7 champions, cut to each card. Counts only, no ids in the response.
+    const reference = new Set([
+      ...(split?.top.map((p) => p.userId) ?? []),
+      ...champions.flatMap((t) => t.champions.map((c) => c.userId)),
+    ])
+    const approved = approvals.length ? new Set(approvals.map((a) => a.server)) : null
+    const card = (teamId: TeamId | null, teamName: string, ids: Set<string> | null): TeamSetup => {
+      const everyone = ids ? people.filter((p) => ids.has(p.userId)) : people
+      const group = everyone.filter((p) => reference.has(p.userId))
+      return { teamId, teamName, groupSize: group.length, ...recommendedSetup(group, everyone, approved) }
+    }
+    const setup = [
+      // With a team filter the scope card would repeat the team card.
+      ...(teamId ? [] : [card(null, role === 'admin' ? 'Whole org' : 'All your teams', null)]),
+      ...groups.map((g) => card(g.teamId, g.teamName, g.ids)),
+    ]
+
+    if (!split) return { ...base, top: null, rest: null, tips: [], champions, setup } satisfies PracticesResponse
     const top = practiceGroup(split.top)
     const rest = practiceGroup(split.rest)
-    return { ...base, top, rest, tips: practiceTips(top, rest), champions } satisfies PracticesResponse
+    return { ...base, top, rest, tips: practiceTips(top, rest), champions, setup } satisfies PracticesResponse
   })
 }

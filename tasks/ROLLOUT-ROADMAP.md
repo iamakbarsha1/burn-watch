@@ -202,7 +202,7 @@ version view to track that.
 | A6 | Top quartile vs rest: MCP setup, skills, cache hit rate; generated tips | Built as web-v0.17.0 (2026-11-23): "Top users vs rest" on `/adoption`, `GET /v1/dashboard/adoption/practices`. `quartileSplit` (min 4 people, rank by active days, Claude tokens or A8 score) is shared with A7 and D5; fixed-rule tips. Design: `tasks/R2-A6-TOP-QUARTILE-DESIGN.md` |
 | A7 | Suggest 1–2 champions per team | Built as web-v0.18.0 (2026-11-23): "Suggested champions" inside A6's section and `GET /adoption/practices`. Top 2 per team by the A6 Rank by picker, teams of 3+, hidden people skipped for managers; nothing stored. Design: `tasks/R2-A7-CHAMPIONS-DESIGN.md` |
 | D6 | Onboarding score: weekly active + 2 features within 14 days | Built as web-v0.19.0 (2026-11-23): "Onboarding" on `/adoption`, `GET /v1/dashboard/adoption/onboarding`. Onboarded = tokens on 2+ days in each of the first two weeks and 2+ Claude Code features in 14 days from first sync. Design: `tasks/R2-D6-ONBOARDING-SCORE-DESIGN.md` |
-| D5 | Recommended shared `.claude/` MCP + skills set per team | Design drafted 2026-11-23, decisions open: `tasks/R2-D5-SHARED-SETUP-DESIGN.md`. MCP half after A6; skill names need agent `skillRuns` (proposed for 0.6.0). Depends on A6 |
+| D5 | Recommended shared `.claude/` MCP + skills set per team | MCP half built as web-v0.20.0 (2026-11-23): "Recommended setup" cards in A6's section on `/adoption`, from `GET /adoption/practices`. Skill names wait on agent 0.6.0 (`skillRuns`). Design: `tasks/R2-D5-SHARED-SETUP-DESIGN.md` |
 
 ---
 

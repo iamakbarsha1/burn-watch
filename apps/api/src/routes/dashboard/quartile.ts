@@ -5,8 +5,10 @@ import {
   type PracticeFeature,
   type PracticeGroup,
   type PracticeTip,
+  type SetupItem,
   type TipId,
 } from '@burn-watch/shared'
+import { mcpSource } from './governance.js'
 
 /**
  * R2 A6 Decision 2: below this many people there is no comparison. At 4 to 7
@@ -110,4 +112,36 @@ export function suggestChampions<T extends ChampionCandidate>(
     .slice(0, 2)
     .map((person) => ({ person, uses: used(person), canHelpWith: used(person).filter((k) => rare.includes(k)) }))
   return { reason: champions.length ? 'ok' : 'noneEligible', champions }
+}
+
+/** R2 D5 Decision 5: an item needs 2 people, so a one-person tool never shows. */
+export const MIN_SETUP_PEOPLE = 2
+
+/**
+ * MCP servers the reference group shares: used by at least half of it and
+ * by at least 2 people. Unnamed (UUID) servers are skipped. `approved` is
+ * null when approvals do not apply to this viewer (D5 Decision 3: show all,
+ * badge the rest).
+ */
+export function recommendedSetup(
+  group: { servers: string[] }[],
+  everyone: { servers: string[] }[],
+  approved: Set<string> | null,
+): { reason: 'ok' | 'smallGroup'; items: SetupItem[] } {
+  if (group.length < MIN_SETUP_PEOPLE) return { reason: 'smallGroup', items: [] }
+  const tally = (people: { servers: string[] }[]) => {
+    const n = new Map<string, number>()
+    for (const p of people) for (const k of new Set(p.servers)) n.set(k, (n.get(k) ?? 0) + 1)
+    return n
+  }
+  const top = tally(group)
+  const all = tally(everyone)
+  const items: SetupItem[] = []
+  for (const [key, topUsers] of top) {
+    const source = mcpSource(key)
+    if (source === 'unnamed' || topUsers < MIN_SETUP_PEOPLE || topUsers * 2 < group.length) continue
+    items.push({ key, source, topUsers, teamUsers: all.get(key) ?? topUsers, approved: approved ? approved.has(key) : null })
+  }
+  items.sort((a, b) => b.topUsers - a.topUsers || b.teamUsers - a.teamUsers || (a.key < b.key ? -1 : 1))
+  return { reason: 'ok', items }
 }

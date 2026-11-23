@@ -1,6 +1,6 @@
 # R2 · D5 Recommended shared `.claude/` set per team: design
 
-Status: draft 2026-11-23, decisions open. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
+Status: decisions locked 2026-11-23. MCP half built as web-v0.20.0; skills half waits on agent 0.6.0. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
 R2, row D5 ("Recommended shared `.claude/` MCP + skills set per team").
 Builds on A6 (`tasks/R2-A6-TOP-QUARTILE-DESIGN.md`) for the top quartile
 and B3 (`tasks/R1-B3-MCP-INVENTORY-DESIGN.md`) for MCP sources and
@@ -185,30 +185,36 @@ Two releases.
    (`apps/dashboard/src/lib/transparency.ts`, audience `scoped`, comment
    "Adoption") and one line in the privacy page copy.
 
-## Decisions (open)
+## Decisions (locked 2026-11-23)
 
-1. **Reference group.** Team members in the org's top quartile, at least
-   2. Recommended: it works for teams under 8 and still means "top users".
-   Other choices: the team's own top quartile (empty for most teams), or
-   A7's champions (1 or 2 people, too few to call anything "shared").
-2. **Where it lives.** In A6's route and section. Recommended: same people
-   and pipeline, one more find. Other choice: its own route, which repeats
-   A6's work.
-3. **Approvals.** Once an org approves any server, recommend approved ones
-   only and flag the rest to admins. Recommended: a team setup should not
-   push a server governance has not cleared. With no approvals (prod
-   today) everything shows.
-4. **Skill names and agent release.** Count `input.skill` from the `Skill`
-   tool call into a new `skillRuns` map, never `args`, and ship it in agent
-   0.6.0. Recommended: every device has to update for the 0.6.0 cutover
-   anyway, and on 2026-11-22 only 1 of 7 devices ran 0.4, so a separate
-   release would wait months for reach. The change is additive and
-   optional. Other choice: its own agent minor after 0.6.0, which keeps the
-   cutover diff smaller at the cost of a second update round.
-5. **Personal skill names.** Show only skills used by 2 or more people.
-   Recommended. R0.3 already allows skill names to leave the machine
-   (`tasks/R0.3-AGENT-PRIVACY-DESIGN.md:142`); the floor keeps a one-off
-   name, which might carry a client's name, off a manager's screen.
+1. **Reference group.** The union of (a) the card's members in the org top
+   quartile (A6 `quartileSplit`, by the page's Rank by picker) and (b) the
+   card's A7 champions. At least 2 people, else `smallGroup`. Because
+   champions work below A6's minimum of 4, a card can have a group even
+   when the split is null, so there is no `noSplit` reason.
+2. **Where it lives.** In A6's route and section, as recommended.
+3. **Approvals.** Show every server. Admins see a "not approved" badge on
+   servers the org has not approved, once it has at least one approval.
+   Managers get `approved: null` and no approvals read.
+4. **Skill names.** MCP half now (web-v0.20.0). `skillRuns` from
+   `input.skill` (never `args`) ships in agent 0.6.0; the skills list turns
+   on in the web release after it.
+5. **Personal skill names.** Only items used by 2 or more people, as
+   recommended. Applies to MCP servers too.
+
+### Built differently from the draft above
+
+- `recommendedSetup(group, everyone, approved)` in `quartile.ts`; MCP
+  only. `SetupItem` has `source` (`local`, `plugin`, `claude.ai`) instead
+  of `kind`; no `skillsKnown` until skills ship.
+- Cards: one scope card first ("Whole org" for admins, "All your teams"
+  for managers; left out with a team filter, where it would repeat the
+  team card), then one per visible team. No "No team" card.
+- Checklist text lives in `apps/dashboard/src/lib/setup.ts`
+  (`setupChecklist`), copied with the existing `CopyButton`.
+- Prod today: 2 users and 0 teams, so no quartile (under 4) and no
+  champions (the No team group is under 3). The Whole org card says
+  "Fewer than 2 top users here."
 
 ## Steps
 
