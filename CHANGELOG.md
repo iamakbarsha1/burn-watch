@@ -8,6 +8,14 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.18.1 (2026-11-23)
+
+Fix: `/privacy` now lists `skillCounts`, `sidechainMessages`,
+`permissionModeCounts` and `entrypointCounts` as visible to your scope.
+Adoption (Features, Top users vs rest, Suggested champions) has used
+them since web-v0.14.0 to show who uses skills, subagents, plan mode
+and the SDK, but the page said no one sees them.
+
 ## web-v0.18.0 (2026-11-23)
 
 R2 A7: suggested champions.
