@@ -32,7 +32,7 @@ describe('transparency field list', () => {
 
   it('inherits only through array elements', () => {
     expect(audienceOf('events[].costUsd')).toBe('scoped')
-    expect(audienceOf('enrichment.projectBreakdown[].branches[].cost')).toBe('none')
+    expect(audienceOf('enrichment.projectBreakdown[].branches[].cost')).toBe('scoped')
     expect(audienceOf('nope')).toBeUndefined()
     expect(audienceOf('enrichment.newField')).toBeUndefined()
   })

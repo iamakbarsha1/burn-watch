@@ -5,6 +5,7 @@ import { leaderboardRoutes } from './leaderboard.js'
 import { trendsRoutes } from './trends.js'
 import { activityRoutes } from './activity.js'
 import { projectsRoutes } from './projects.js'
+import { ticketsRoutes } from './tickets.js'
 import { budgetAlertsRoutes } from './budget-alerts.js'
 import { teamsRoutes } from './teams.js'
 import { seatsRoutes } from './seats.js'
@@ -21,6 +22,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
   await fastify.register(trendsRoutes)
   await fastify.register(activityRoutes)
   await fastify.register(projectsRoutes)
+  await fastify.register(ticketsRoutes)
   await fastify.register(budgetAlertsRoutes)
   await fastify.register(teamsRoutes)
   await fastify.register(seatsRoutes)

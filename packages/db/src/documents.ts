@@ -35,6 +35,8 @@ export interface OrganizationDoc {
   minClaudeVersion?: string
   /** R2 B6. Claude org hashes that are the company's. Absent = not set, no outside-org flags. */
   ownClaudeOrgHashes?: string[]
+  /** R2 C4. Jira project keys that count as tickets in branch names. Absent = not set. */
+  ticketPrefixes?: string[]
 }
 
 export interface UserDoc {

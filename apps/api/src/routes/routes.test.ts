@@ -1215,6 +1215,93 @@ const spend = (micros: number) => {
   mongoState.aggregates.dailySnapshots = [{ _id: USER_A, total: micros, claude: micros }]
 }
 
+describe('GET /v1/dashboard/tickets', () => {
+  const URL = range('/v1/dashboard/tickets')
+  const get = (role: JwtPayload['role'] = 'developer') =>
+    app.inject({ method: 'GET', url: URL, headers: auth(token({ role })) })
+  const match = () =>
+    (callsTo(mongoState, 'claudeEnrichment', 'aggregate')[0][0] as Document[])[0].$match as Record<string, unknown>
+  const seed = () => {
+    mongoState.aggregates.claudeEnrichment = [
+      { _id: { branch: 'PROJ-1-fix', repo: 'api' }, cost: 4, sessions: 2, users: [USER_A], days: [DATE] },
+      { _id: { branch: 'feature/proj-1', repo: 'web' }, cost: 1, sessions: 1, users: [USER_A], days: [DATE] },
+      { _id: { branch: 'WEB-2-x', repo: 'web' }, cost: 0.5, sessions: 1, users: [USER_A], days: [DATE] },
+    ]
+    mongoState.docs.organizations = [{ _id: ORG_A, ticketPrefixes: ['PROJ'] }]
+  }
+
+  it('scopes a developer to themselves and hides suggestions', async () => {
+    seed()
+    const res = await get()
+    expect(res.statusCode).toBe(200)
+    expect(match()).toEqual({ orgId: ORG_A, userId: { $in: [USER_A] }, date: { $gte: DATE, $lte: DATE } })
+    expect(res.json()).toEqual({
+      from: DATE,
+      to: DATE,
+      prefixes: ['PROJ'],
+      tickets: [{ key: 'PROJ-1', cost: 5, sessions: 3, userCount: 1, repoCount: 2, days: 1 }],
+      projectKeys: [{ prefix: 'PROJ', tickets: 1, cost: 5, sessions: 3, userCount: 1 }],
+      noTicket: { cost: 0.5, sessions: 1 },
+      suggestions: null,
+    })
+  })
+
+  it('gives an admin the whole org and prefix suggestions, never branch names', async () => {
+    seed()
+    const body = (await get('admin')).json()
+    expect(match()).toEqual({ orgId: ORG_A, date: { $gte: DATE, $lte: DATE } })
+    expect(body.suggestions).toEqual([{ prefix: 'WEB', branches: 1 }])
+    // Branch names can be anything, so check each seeded name verbatim rather than a pattern.
+    const json = JSON.stringify(body)
+    for (const row of mongoState.aggregates.claudeEnrichment) {
+      expect(json).not.toContain((row._id as { branch: string }).branch)
+    }
+  })
+
+  it('answers prefixes null and no tickets before an admin sets keys', async () => {
+    seed()
+    mongoState.docs.organizations = [{ _id: ORG_A }]
+    const body = (await get('admin')).json()
+    expect(body).toMatchObject({ prefixes: null, tickets: [], noTicket: { cost: 5.5, sessions: 4 } })
+  })
+
+  it('requires a range', async () => {
+    const res = await app.inject({ method: 'GET', url: '/v1/dashboard/tickets', headers: auth(token()) })
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('PUT /v1/dashboard/tickets/settings', () => {
+  const url = '/v1/dashboard/tickets/settings'
+  const send = (payload: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method: 'PUT', url, payload, headers: auth(token({ role })) })
+
+  it.each(['developer', 'manager'] as const)('answers 403 to a %s and writes nothing', async (role) => {
+    expect((await send({ prefixes: ['PROJ'] }, role)).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it.each([{ prefixes: ['proj'] }, { prefixes: ['P'] }, { prefixes: ['PROJ_X'] }, { prefixes: ['ABCDEFGHIJK'] }, {}])(
+    'rejects %j with 400',
+    async (body) => {
+      expect((await send(body)).statusCode).toBe(400)
+      expect(mongoCalls('organizations', 'updateOne')).toEqual([])
+    },
+  )
+
+  it('sets deduplicated keys and audits them', async () => {
+    expect((await send({ prefixes: ['PROJ', 'WEB', 'PROJ'] })).json()).toEqual({ prefixes: ['PROJ', 'WEB'] })
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([[{ _id: ORG_A }, { $set: { ticketPrefixes: ['PROJ', 'WEB'] } }]])
+    const [event] = mongoCalls('auditEvents', 'insertOne').map(([d]) => d as Record<string, unknown>)
+    expect(event).toMatchObject({ action: 'org.ticket_prefixes', detail: { prefixes: ['PROJ', 'WEB'] } })
+  })
+
+  it('clears with an empty list', async () => {
+    await send({ prefixes: [] })
+    expect(mongoCalls('organizations', 'updateOne')).toEqual([[{ _id: ORG_A }, { $unset: { ticketPrefixes: '' } }]])
+  })
+})
+
 describe('GET /v1/dashboard/budget-alerts', () => {
   const url = '/v1/dashboard/budget-alerts'
   const get = (headers?: Record<string, string>) => app.inject({ method: 'GET', url, headers })
