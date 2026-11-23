@@ -229,6 +229,10 @@ export const LeaderboardSettingsSchema = z.object({
 export const DeviceSettingsSchema = z.object({
   minClaudeVersion: z.string().max(20).regex(/^\d+\.\d+\.\d+$/).nullable(),
 })
+// R2 B6. Org hashes picked from the ones seen; an empty list clears the setting.
+export const ClaudeOrgsInputSchema = z.object({
+  ids: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(50),
+})
 export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
 
 // R1 B8. The audit log's `action` filter is a prefix from this closed list.

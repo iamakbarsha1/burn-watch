@@ -8,6 +8,25 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.15.0 (2026-11-23)
+
+R2 B6: Claude accounts on `/governance`.
+
+- New Claude accounts section, admins only. It shows which Claude orgs
+  and accounts people use with Claude Code, as labels like "Account 1".
+  BurnWatch only stores hashes of the IDs and never shows them.
+- The admin ticks which Claude org is the company's, picked from the
+  orgs already seen. The one their own days use says "includes you".
+- Per person: shared account (one account seen under 2 or more people),
+  several accounts, days outside the company org, and, once seats are
+  entered, seat with no company use or company use with no seat.
+- A coverage line says how many Claude Code users have account data.
+  The rest need agent 0.4 or later.
+- `/privacy` now lists both hash fields as seen by admins.
+- New routes `GET /v1/dashboard/governance/accounts` and
+  `PUT /v1/dashboard/governance/claude-orgs`. No schema sync, no agent
+  release.
+
 ## web-v0.14.0 (2026-11-23)
 
 R2 A5: feature matrix per team.

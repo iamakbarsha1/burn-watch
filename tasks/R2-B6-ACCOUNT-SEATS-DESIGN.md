@@ -1,6 +1,6 @@
 # R2 · B6 Claude accounts vs seats: design
 
-Status: design drafted 2026-11-23, decisions open. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
+Status: built 2026-11-23 as web-v0.15.0. Decisions locked, all six as recommended. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
 R2. Builds on R0.3 (`tasks/R0.3-AGENT-PRIVACY-DESIGN.md`, decisions 6 and 7) for
 the hashes and R0.1 (`tasks/R0.1-SEATS-DESIGN.md`) for seats. Follows B1 and B3
 for the `/governance` page pattern.
@@ -188,8 +188,8 @@ hash seen in the org's `claudeEnrichment`; unknown ids get 400. Writes
 `audit()` with the count only, not the hashes. Same shape as
 `/admin/device-settings` (`device.ts:516-530`).
 
-If Decision 1 picks browser hashing too, the PUT also accepts
-`{ hashes: string[] }` of 64 hex chars, not checked against seen data.
+Browser hashing (Decision 1, option 2) is not built. If added later, the
+PUT would also accept `{ hashes: string[] }` of 64 hex chars.
 
 Types go in `packages/shared/src/types.ts`, next to the governance types.
 
@@ -236,7 +236,7 @@ Add a comment on each: `// Governance, as labels; the hash is never shown`.
 Next web minor, `web-vX.Y.Z` with `--latest=false` (memory: release per
 change). No agent release, no schema sync, no migration.
 
-## Decisions (open)
+## Decisions (locked 2026-11-23)
 
 1. **How the admin marks the company org.** Pick from orgs seen, with
    "includes you" (option 1). Recommended: no raw id typed anywhere, no

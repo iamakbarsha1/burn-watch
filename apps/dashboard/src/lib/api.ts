@@ -31,6 +31,7 @@ import type {
   McpInventoryResponse,
   IdleSeatsResponse,
   FeatureMatrixResponse,
+  ClaudeAccountsResponse,
   FunnelResponse,
   AuditRow,
   AuditQuery,
@@ -329,6 +330,14 @@ export async function clearAgentPolicy(agent: AgentName): Promise<{ agent: Agent
 
 export async function fetchMcpInventory(from: string, to: string, teamId?: string): Promise<McpInventoryResponse> {
   return apiFetch(`/v1/dashboard/governance/mcp?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+export async function fetchClaudeAccounts(from: string, to: string, teamId?: string): Promise<ClaudeAccountsResponse> {
+  return apiFetch(`/v1/dashboard/governance/accounts?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+export async function setCompanyClaudeOrgs(ids: string[]): Promise<{ count: number }> {
+  return apiMutate('PUT', '/v1/dashboard/governance/claude-orgs', { ids })
 }
 
 export async function fetchIdleSeats(idleDays: number, teamId?: string): Promise<IdleSeatsResponse> {

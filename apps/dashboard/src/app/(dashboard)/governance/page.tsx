@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
-import { fetchFreeTier, fetchMcpInventory, fetchTeams, fetchViolationCount, fetchViolations } from '@/lib/api'
+import { fetchClaudeAccounts, fetchFreeTier, fetchMcpInventory, fetchTeams, fetchViolationCount, fetchViolations } from '@/lib/api'
 import { agentById } from '@/lib/agents'
 import { formatRange, formatTokens, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
@@ -8,9 +8,10 @@ import { pickTeam } from '@/lib/teams'
 import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
 import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
-import type { AgentPolicyRule, McpServerSource, ViolationReason } from '@burn-watch/shared'
+import type { AgentPolicyRule, ClaudeAccountFlag, ClaudeAccountPerson, McpServerSource, ViolationReason } from '@burn-watch/shared'
 import { McpApprovalButton } from './McpApprovalButton'
 import { AgentPolicyForm } from './AgentPolicyForm'
+import { ClaudeOrgsForm } from './ClaudeOrgsForm'
 
 // Shown whatever the list holds, so an empty list is never read as "nobody
 // uses Gemini's free tier". Remove when BW-43 ships.
@@ -28,6 +29,15 @@ const REASON_LABEL: Record<ViolationReason, string> = {
   'agent-blocked': 'agent blocked',
   'agent-not-set': 'agent not set',
   'model-not-listed': 'model not listed',
+}
+
+// R2 B6. Facts, not verdicts: neutral badges, no "violation".
+const FLAG_LABEL: Record<ClaudeAccountFlag, string> = {
+  shared: 'Shared account',
+  'outside-org': 'Outside company org',
+  several: 'Several accounts',
+  'seat-no-use': 'Seat, not seen on company org',
+  'use-no-seat': 'On company org, no seat',
 }
 
 const SOURCE_LABEL: Record<McpServerSource, string> = {
@@ -50,11 +60,12 @@ export default async function GovernancePage({
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
   const isAdmin = role === 'admin'
-  const [data, mcp, violations, violationCount] = await Promise.all([
+  const [data, mcp, violations, violationCount, accounts] = await Promise.all([
     fetchFreeTier(from, to, team?.id).catch(() => null),
     fetchMcpInventory(from, to, team?.id).catch(() => null),
     fetchViolations(from, to, team?.id).catch(() => null),
     isAdmin ? fetchViolationCount().catch(() => 0) : 0,
+    isAdmin ? fetchClaudeAccounts(from, to, team?.id).catch(() => null) : undefined,
   ])
   const mcpCols = isAdmin ? 8 : 7
   const mcpPeople = mcp ? new Set(mcp.servers.flatMap((s) => s.users.map((u) => u.userId))).size : 0
@@ -147,6 +158,8 @@ export default async function GovernancePage({
           be a free tier. {GEMINI_NOTE}
         </p>
       </Section>
+
+      {accounts !== undefined && <ClaudeAccountsSection data={accounts} />}
 
       <Section
         title="Agent and model policy"
@@ -323,5 +336,116 @@ export default async function GovernancePage({
         </p>
       </Section>
     </div>
+  )
+}
+
+function PeopleRows({ people }: { people: ClaudeAccountPerson[] }) {
+  return people.map((p) => (
+    <Tr key={p.userId}>
+      <Td className="font-medium text-ink">{p.name}</Td>
+      <Td numeric>{p.hashedDays}</Td>
+      <Td className="text-ink-2">{p.accounts.join(', ')}</Td>
+      <Td numeric>{p.outsideOrgDays ?? '—'}</Td>
+      <Td>{p.claudeSeat ? 'yes' : 'no'}</Td>
+      <Td>
+        <span className="flex flex-wrap gap-1">
+          {p.flags.map((f) => (
+            <Badge key={f}>{FLAG_LABEL[f]}</Badge>
+          ))}
+        </span>
+      </Td>
+    </Tr>
+  ))
+}
+
+/** R2 B6. Admins only. Accounts and orgs show as labels; hashes never render. */
+function ClaudeAccountsSection({ data }: { data: Awaited<ReturnType<typeof fetchClaudeAccounts>> | null }) {
+  const flagged = data?.people.filter((p) => p.flags.length > 0) ?? []
+  const quiet = data?.people.filter((p) => p.flags.length === 0) ?? []
+  const onCompany = data?.companyOrgUsers ?? 0
+  const head = (
+    <thead>
+      <tr>
+        <Th>Person</Th>
+        <Th numeric>Days with account data</Th>
+        <Th>Accounts</Th>
+        <Th numeric>Days outside company org</Th>
+        <Th>Claude seat</Th>
+        <Th>Notes</Th>
+      </tr>
+    </thead>
+  )
+  return (
+    <Section
+      title="Claude accounts"
+      description="Which Claude accounts and orgs your people use with Claude Code. BurnWatch only stores hashes of the IDs, so accounts show as labels."
+    >
+      {data === null ? (
+        <p className="text-sm text-bad">Could not read Claude accounts. Try again in a moment.</p>
+      ) : (
+        <>
+          <p className="mb-3 text-sm text-ink-2">
+            Account data from {data.coverage.hashed} of {data.coverage.users} Claude Code{' '}
+            {data.coverage.users === 1 ? 'user' : 'users'}.
+            {data.coverage.hashed < data.coverage.users && ' The rest need agent 0.4 or later.'}
+          </p>
+
+          {data.orgs.length > 0 && (
+            <>
+              {!data.companyOrgSet && (
+                <p className="mb-3 text-sm text-ink-2">Mark your company&rsquo;s Claude org to see personal-account use.</p>
+              )}
+              <ClaudeOrgsForm orgs={data.orgs} />
+            </>
+          )}
+
+          {data.companyOrgSet && (
+            <p className="mt-4 text-sm text-ink-2">
+              {data.seatsEntered > 0 ? (
+                `${data.seatsEntered} Claude ${data.seatsEntered === 1 ? 'seat' : 'seats'}. ${onCompany} ${onCompany === 1 ? 'person' : 'people'} seen on the company org.`
+              ) : (
+                <>
+                  No Claude seats entered. <a href="/admin" className="underline">Add seats in Admin</a> to compare.
+                </>
+              )}
+            </p>
+          )}
+
+          <div className="mt-4">
+            <TableFrame>
+              <table className="w-full">
+                {head}
+                <tbody>
+                  {data.people.length === 0 ? (
+                    <EmptyRow colSpan={6}>No account data in this range.</EmptyRow>
+                  ) : flagged.length === 0 ? (
+                    <EmptyRow colSpan={6}>Nothing to note in this range.</EmptyRow>
+                  ) : (
+                    <PeopleRows people={flagged} />
+                  )}
+                </tbody>
+              </table>
+            </TableFrame>
+          </div>
+          {quiet.length > 0 && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-sm font-medium text-ink">
+                Show all ({quiet.length} more)
+              </summary>
+              <div className="mt-3">
+                <TableFrame>
+                  <table className="w-full">
+                    {head}
+                    <tbody>
+                      <PeopleRows people={quiet} />
+                    </tbody>
+                  </table>
+                </TableFrame>
+              </div>
+            </details>
+          )}
+        </>
+      )}
+    </Section>
   )
 }

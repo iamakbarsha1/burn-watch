@@ -14,11 +14,13 @@ import {
 import {
   AgentNameSchema,
   AgentPolicyInputSchema,
+  ClaudeOrgsInputSchema,
   FREE_TIER_AGENTS,
   McpApprovalInputSchema,
   McpServerKeySchema,
   type AgentName,
   type AgentPolicy,
+  type ClaudeAccountsResponse,
   type FreeTierResponse,
   type FreeTierRow,
   type FreeTierTeamTotal,
@@ -31,6 +33,7 @@ import {
 } from '@burn-watch/shared'
 import { comparableTeams, readScope, requireAdmin, type JwtPayload } from '../../plugins/jwt.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
+import { groupAccounts } from './accounts.js'
 import { audit, auditView } from '../../audit.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { daysBefore, today } from './dates.js'
@@ -350,6 +353,97 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       byTeam: named.byTeam,
       seenModels: Object.fromEntries(seen.map((s) => [s._id, [...s.models].sort()])),
     } satisfies ViolationsResponse
+  })
+
+  // GET /governance/accounts — R2 B6. Admins only (Decision 2): Claude orgs and
+  // accounts seen, as labels, and per-person flags. Hashes are never rendered.
+  fastify.get('/governance/accounts', admin, async (request, reply) => {
+    const parsed = QuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const from = parsed.data.from as IsoDate
+    const to = parsed.data.to as IsoDate
+    const { teamId } = parsed.data
+    const scope = await readScope(request.user, teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'governance', scope, teamId)
+
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    const inScope = scope && { userId: { $in: scope } }
+    const [docs, org, seats, teams] = await Promise.all([
+      store.claudeEnrichment.find(
+        { orgId, date: { $gte: from, $lte: to }, ...inScope },
+        { projection: { userId: 1, date: 1, accountHashes: 1, claudeOrgHashes: 1 } },
+      ),
+      store.organizations.findOne({ _id: orgId }, { projection: { ownClaudeOrgHashes: 1 } }),
+      store.seats.find({ orgId, agent: 'claude', ...inScope }, { projection: { userId: 1 } }),
+      comparableTeams(request.user),
+    ])
+    const own = org?.ownClaudeOrgHashes ?? []
+    const grouped = groupAccounts(docs, {
+      own,
+      seated: new Set(seats.map((s) => s.userId)),
+      seatsEntered: seats.length,
+      viewerId: request.user.userId,
+    })
+
+    const ids = grouped.people.map((p) => p.userId)
+    const teamIds = teams.map((t) => t._id)
+    const [users, members] = ids.length
+      ? await Promise.all([
+          store.users.find({ orgId, _id: { $in: ids } }, { projection: { name: 1 } }),
+          teamIds.length ? store.teamMembers.find({ orgId, teamId: { $in: teamIds }, userId: { $in: ids } }) : Promise.resolve([]),
+        ])
+      : [[], []]
+    const nameOf = new Map(users.map((u) => [u._id, u.name]))
+    const teamsOf = new Map<UserId, TeamId[]>()
+    for (const m of members) {
+      if (!ids.includes(m.userId) || !teamIds.includes(m.teamId)) continue
+      teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
+    }
+    const people = grouped.people
+      .map((p) => ({ ...p, name: nameOf.get(p.userId) ?? 'Unknown', teamIds: teamsOf.get(p.userId) ?? [] }))
+      .sort((a, b) => b.flags.length - a.flags.length || a.name.localeCompare(b.name))
+
+    return {
+      from,
+      to,
+      coverage: grouped.coverage,
+      companyOrgSet: own.length > 0,
+      seatsEntered: seats.length,
+      companyOrgUsers: grouped.companyOrgUsers,
+      orgs: grouped.orgs,
+      accounts: grouped.accounts,
+      people,
+    } satisfies ClaudeAccountsResponse
+  })
+
+  // PUT /governance/claude-orgs { ids } — R2 B6 Decision 1. Each id must be an org
+  // hash already seen in this org; [] clears. The audit row holds the count, not hashes.
+  fastify.put('/governance/claude-orgs', admin, async (request, reply) => {
+    const ids = [...new Set(ClaudeOrgsInputSchema.parse(request.body).ids)]
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    if (ids.length) {
+      const docs = await store.claudeEnrichment.find(
+        { orgId, claudeOrgHashes: { $in: ids } },
+        { projection: { claudeOrgHashes: 1 } },
+      )
+      const seen = new Set(docs.flatMap((d) => d.claudeOrgHashes ?? []))
+      if (!ids.every((id) => seen.has(id))) return reply.status(400).send({ error: 'Unknown Claude org' })
+    }
+    await store.organizations.updateOne(
+      { _id: orgId },
+      ids.length ? { $set: { ownClaudeOrgHashes: ids } } : { $unset: { ownClaudeOrgHashes: '' } },
+    )
+    await audit(request, {
+      action: 'org.claude_orgs',
+      target: { type: 'org', id: orgId, label: null },
+      detail: { count: ids.length },
+    })
+    return { count: ids.length }
   })
 
   // GET /governance/violations/count — the admin alert in the nav, Overview and Governance.

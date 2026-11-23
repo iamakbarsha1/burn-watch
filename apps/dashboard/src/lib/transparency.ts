@@ -79,8 +79,8 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.skillCounts': 'none',
   'enrichment.sidechainMessages': 'none',
   'enrichment.permissionModeCounts': 'none',
-  'enrichment.accountHashes': 'none',
-  'enrichment.claudeOrgHashes': 'none',
+  'enrichment.accountHashes': 'admin', // Governance, as labels; the hash is never shown
+  'enrichment.claudeOrgHashes': 'admin', // Governance, as labels; the hash is never shown
   referenceDiff: 'none',
 }
 

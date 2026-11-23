@@ -550,6 +550,52 @@ export interface McpInventoryResponse {
   unusedApprovals: { server: string; note: string | null }[]
 }
 
+// GET /v1/dashboard/governance/accounts (R2 B6). Admins only. Hashes are never
+// shown: accounts and orgs are labelled by first seen in the range.
+export type ClaudeAccountFlag = 'shared' | 'outside-org' | 'several' | 'seat-no-use' | 'use-no-seat'
+
+export interface ClaudeOrgRow {
+  /** The org hash, for the save call only. The page never renders it. */
+  id: string
+  /** "Claude org 1", stable only within one range. */
+  label: string
+  users: number
+  days: number
+  ours: boolean
+  /** The viewer's own days carry this org. */
+  includesYou: boolean
+}
+
+export interface ClaudeAccountPerson {
+  userId: string
+  name: string
+  teamIds: string[]
+  /** Days with any account or org hash. */
+  hashedDays: number
+  /** Account labels, in label order. */
+  accounts: string[]
+  /** Days with an org hash that is not the company's. Null when the company org is not set. */
+  outsideOrgDays: number | null
+  claudeSeat: boolean
+  flags: ClaudeAccountFlag[]
+}
+
+export interface ClaudeAccountsResponse {
+  from: string
+  to: string
+  /** Claude Code users in scope with a day in range, and how many of those have a hashed day. */
+  coverage: { users: number; hashed: number }
+  companyOrgSet: boolean
+  /** Claude seats held by people in scope. */
+  seatsEntered: number
+  /** People with a day on a company org. Null when the company org is not set. */
+  companyOrgUsers: number | null
+  orgs: ClaudeOrgRow[]
+  accounts: { label: string; users: number; days: number; shared: boolean }[]
+  /** People with a hashed day, most flags first. */
+  people: ClaudeAccountPerson[]
+}
+
 // GET /v1/dashboard/adoption/idle-seats (R1 A1). Seats with no tokens on their
 // own agent for `idleDays`+ days. Admins see the org, managers their own teams.
 export interface IdleSeatRow {
@@ -691,6 +737,7 @@ export type AuditAction =
   | 'mcp.unapprove'
   | 'org.leaderboard_settings'
   | 'org.min_claude_version'
+  | 'org.claude_orgs'
   | 'copilot.connect'
   | 'copilot.disconnect'
   | 'copilot.sync'

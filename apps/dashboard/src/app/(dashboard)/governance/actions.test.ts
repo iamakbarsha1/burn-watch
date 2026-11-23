@@ -8,9 +8,10 @@ const approveMcpServer = vi.fn()
 const revokeMcpServer = vi.fn()
 const setAgentPolicy = vi.fn()
 const clearAgentPolicy = vi.fn()
-vi.mock('@/lib/api', () => ({ approveMcpServer, revokeMcpServer, setAgentPolicy, clearAgentPolicy }))
+const setCompanyClaudeOrgs = vi.fn()
+vi.mock('@/lib/api', () => ({ approveMcpServer, revokeMcpServer, setAgentPolicy, clearAgentPolicy, setCompanyClaudeOrgs }))
 
-const { mcpApprovalAction, agentPolicyAction } = await import('./actions')
+const { mcpApprovalAction, agentPolicyAction, claudeOrgsAction } = await import('./actions')
 
 const form = (fields: Record<string, string>) => {
   const f = new FormData()
@@ -85,5 +86,29 @@ describe('agentPolicyAction', () => {
     await agentPolicyAction(null, form({ agent: 'qwen', intent: 'clear' }))
     expect(clearAgentPolicy).toHaveBeenCalledWith('qwen')
     expect(setAgentPolicy).not.toHaveBeenCalled()
+  })
+})
+
+describe('claudeOrgsAction', () => {
+  it('refuses a manager without calling the API', async () => {
+    getUserRole.mockResolvedValue('manager')
+    expect((await claudeOrgsAction(null, new FormData())).ok).toBe(false)
+    expect(setCompanyClaudeOrgs).not.toHaveBeenCalled()
+  })
+
+  it('sends every ticked org, or none to clear', async () => {
+    const f = new FormData()
+    f.append('ids', 'a'.repeat(64))
+    f.append('ids', 'b'.repeat(64))
+    expect(await claudeOrgsAction(null, f)).toEqual({ ok: true, message: 'Company Claude org saved.' })
+    expect(setCompanyClaudeOrgs).toHaveBeenCalledWith(['a'.repeat(64), 'b'.repeat(64)])
+    expect(await claudeOrgsAction(null, new FormData())).toEqual({ ok: true, message: 'Company Claude org cleared.' })
+    expect(setCompanyClaudeOrgs).toHaveBeenLastCalledWith([])
+    expect(revalidatePath).toHaveBeenCalledWith('/governance')
+  })
+
+  it('passes the API error through', async () => {
+    setCompanyClaudeOrgs.mockRejectedValue(new Error('Unknown Claude org'))
+    expect(await claudeOrgsAction(null, new FormData())).toEqual({ ok: false, message: 'Unknown Claude org' })
   })
 })
