@@ -81,6 +81,7 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.permissionModeCounts': 'none',
   'enrichment.accountHashes': 'none',
   'enrichment.claudeOrgHashes': 'none',
+  referenceDiff: 'none',
 }
 
 export function audienceOf(path: string): Audience | undefined {

@@ -1,7 +1,8 @@
-import type { UsageEvent } from '@burn-watch/shared'
+import { AgentNameSchema, type UsageEvent, type UsagePayloadInput } from '@burn-watch/shared'
 import { hasConfig, loadConfig } from '../lib/config.js'
 import { ReferenceCollector } from '../collectors/reference.js'
 import { PARSERS, UsageCollector } from '../collectors/usage.js'
+import { formatShape, readShape, shapeRoots } from '../collectors/shape.js'
 
 // Temporary: deleted with the reference collector (design phase 3).
 
@@ -69,6 +70,39 @@ export function checkDays(rows: CompareRow[]): DayCheck[] {
   return [...days.values()]
 }
 
+/**
+ * Shadow mode in sync: one day's check and the payload's referenceDiff, for
+ * the agents we parse. Both sides must already bucket days the same way.
+ */
+export function shadowDay(
+  date: string,
+  ref: UsageEvent[],
+  own: UsageEvent[],
+): { checks: DayCheck[]; referenceDiff: NonNullable<UsagePayloadInput['referenceDiff']> } {
+  const ours = new Set<string>(PARSERS.map((p) => p.agent))
+  const rows = compareRows(new Map([[date, ref]]), new Map([[date, own]])).filter((r) => ours.has(r.agent))
+  const byAgent = new Map<string, { refTokens: number; ownTokens: number; refCostUsd: number; ownCostUsd: number }>()
+  for (const r of rows) {
+    const a = byAgent.get(r.agent) ?? { refTokens: 0, ownTokens: 0, refCostUsd: 0, ownCostUsd: 0 }
+    a.refTokens += total(r.ref)
+    a.ownTokens += total(r.own)
+    a.refCostUsd += r.ref?.cost ?? 0
+    a.ownCostUsd += r.own?.cost ?? 0
+    byAgent.set(r.agent, a)
+  }
+  const round = (x: number) => Math.round(x * 1e6) / 1e6
+  return {
+    checks: checkDays(rows),
+    referenceDiff: [...byAgent].map(([agent, a]) => ({
+      agent: AgentNameSchema.parse(agent),
+      refTokens: a.refTokens,
+      ownTokens: a.ownTokens,
+      refCostUsd: round(a.refCostUsd),
+      ownCostUsd: round(a.ownCostUsd),
+    })),
+  }
+}
+
 const num = (x: number) => x.toLocaleString('en-US')
 const pct = (ref: number, own: number) =>
   ref === 0 ? (own === 0 ? '0%' : 'n/a') : `${own >= ref ? '+' : ''}${(((own - ref) / ref) * 100).toFixed(3)}%`
@@ -81,7 +115,17 @@ export function formatRow(r: CompareRow): string {
   return [r.date, r.agent.padEnd(7), r.model.padEnd(24), tokens.padEnd(30), cost.padEnd(24), pct(r.ref?.cost ?? 0, r.own?.cost ?? 0)].join('  ')
 }
 
-export async function compareCommand(options: { days?: string; agent?: string }) {
+export async function compareCommand(options: { days?: string; agent?: string; dumpShape?: string }) {
+  if (options.dumpShape) {
+    const agent = AgentNameSchema.safeParse(options.dumpShape)
+    if (!agent.success) {
+      console.error(`[burnwatch] Unknown agent "${options.dumpShape}". One of: ${AgentNameSchema.options.join(', ')}`)
+      process.exit(1)
+    }
+    const roots = shapeRoots(agent.data)
+    for (const line of formatShape(agent.data, roots, await readShape(roots))) console.log(line)
+    return
+  }
   const days = Number(options.days ?? '14')
   if (!Number.isInteger(days) || days < 1) {
     console.error(`[burnwatch] --days must be a positive whole number, got "${options.days}"`)

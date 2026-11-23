@@ -24,5 +24,15 @@ export async function statusCommand() {
   console.log('  codeburn: ', await codeburn.isAvailable() ? 'available' : 'not available')
   // From the last sync, not probed here: a shell has its own privacy grant, so
   // it can read ~/Desktop when the scheduled job cannot.
+  const cmp = config.lastCompare
+  if (cmp) {
+    const failed = cmp.failed.length
+    console.log(
+      '  New collector:',
+      failed === 0
+        ? `matched the old one on ${cmp.agentDays} agent-day(s) at last sync`
+        : `differed on ${failed} of ${cmp.agentDays} agent-day(s) at last sync: ${cmp.failed.map((f) => `${f.date} ${f.agent}`).join(', ')}`,
+    )
+  }
   if (config.repoAccessWarning) console.log('  Repos:    ', `last sync: ${config.repoAccessWarning}`)
 }

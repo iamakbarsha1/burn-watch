@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { UsageEvent } from '@burn-watch/shared'
-import { checkDays, closedUtcDays, compareRows } from './compare.js'
+import { checkDays, closedUtcDays, compareRows, shadowDay } from './compare.js'
 
 const ev = (over: Partial<UsageEvent>): UsageEvent => ({
   agent: 'claude',
@@ -43,6 +43,15 @@ describe('compare', () => {
     expect(checkDays(compareRows(day(ev({})), day()))[0].ok).toBe(false)
     const [d] = checkDays(compareRows(day(ev({})), day(ev({ costUsd: 10, unpriced: true }))))
     expect(d.why).toContain('claude-opus-5-5: unpriced here, priced by reference')
+  })
+
+  it('shadow mode: diffs only agents with an own parser, summed across models', () => {
+    const ref = [ev({}), ev({ modelName: 'claude-haiku-5-5', costUsd: 1 }), ev({ agent: 'qwen', modelName: 'qwen3', costUsd: 0 })]
+    const own = [ev({ costUsd: 10.000_000_4 }), ev({ modelName: 'claude-haiku-5-5', costUsd: 1 })]
+    const { checks, referenceDiff } = shadowDay('2026-11-20', ref, own)
+    expect(checks.map((c) => c.agent)).toEqual(['claude'])
+    expect(checks[0].ok).toBe(true)
+    expect(referenceDiff).toEqual([{ agent: 'claude', refTokens: 20, ownTokens: 20, refCostUsd: 11, ownCostUsd: 11 }])
   })
 
   it('sums cost per agent-day across models before the threshold', () => {

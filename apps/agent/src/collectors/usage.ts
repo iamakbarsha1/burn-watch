@@ -8,6 +8,15 @@ import { loadPriceTable, priceRecord } from './pricing.js'
 /** Agents with a parser of our own. The rest still come from the reference collector. */
 export const PARSERS: AgentParser[] = [claudeParser]
 
+export const utcDay = (iso: string) => iso.slice(0, 10)
+
+/** The laptop's local calendar day, as the reference collector buckets it by default. */
+export function localDay(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 export type CollectSummary = {
   stats: Partial<Record<string, ParseStats>>
   unpriced: Record<string, number> // model -> tokens
@@ -23,6 +32,7 @@ export class UsageCollector implements Collector {
   constructor(
     private parsers: AgentParser[] = PARSERS,
     private table: PriceTable = loadPriceTable(),
+    private dayOf: (iso: string) => string = utcDay,
   ) {}
 
   async isAvailable(): Promise<boolean> {
@@ -38,7 +48,8 @@ export class UsageCollector implements Collector {
     this.summary = { stats: {}, unpriced: {} }
     if (dates.length === 0) return result
     const wanted = new Set(dates)
-    const since = [...dates].sort()[0]
+    // A day before the first date: a non-UTC day starts on the UTC day before it.
+    const since = new Date(Date.parse(`${[...dates].sort()[0]}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10)
     const seen = new Set<string>()
     const groups = new Map<string, UsageEvent>()
 
@@ -47,7 +58,7 @@ export class UsageCollector implements Collector {
       if (roots.length === 0) continue
       const stats = (this.summary.stats[parser.agent] = emptyStats())
       for await (const r of parser.read(roots, since, stats)) {
-        const date = r.at.slice(0, 10)
+        const date = this.dayOf(r.at)
         if (!wanted.has(date)) continue
         // First copy wins; copies carry the same usage.
         const key = `${r.agent}:${r.key}`

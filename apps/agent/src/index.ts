@@ -46,6 +46,7 @@ program
   .description('Compare our own usage collector with the reference, per UTC day (temporary)')
   .option('--days <n>', 'Closed UTC days to compare', '14')
   .option('--agent <name>', 'Only this agent')
+  .option('--dump-shape <agent>', "Print the shape of an agent's local logs (key names, counts, types; never values) and exit")
   .action(compareCommand)
 
 program

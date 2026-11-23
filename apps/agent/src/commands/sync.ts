@@ -2,6 +2,9 @@ import { ApiClient } from '../lib/api.js'
 import { loadConfig, updateConfig } from '../lib/config.js'
 import { ReferenceCollector } from '../collectors/reference.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
+import { UsageCollector, localDay } from '../collectors/usage.js'
+import { refreshPrices } from '../collectors/pricing.js'
+import { shadowDay, type DayCheck } from './compare.js'
 import { AGENT_VERSION } from '../version.js'
 
 function yesterdayDate(): string {
@@ -77,6 +80,8 @@ export async function syncCommand(options: {
   }
 
   const reference = new ReferenceCollector(config.npxPath ?? 'npx')
+  // Prices first: codeburn and the shadow collector both price requests.
+  await refreshPrices(apiUrl)
   const codeburn = new CodeburnCollector(undefined, config.orgId)
 
   const ccAvailable = await reference.isAvailable()
@@ -105,6 +110,20 @@ export async function syncCommand(options: {
     }
   }
 
+  // Shadow mode (0.5.x): our own collector runs beside the reference and is
+  // compared with it, never sent as usage. Local days, as the reference buckets
+  // them here. It must never break a sync.
+  let ownMap: Map<string, import('@burn-watch/shared').UsageEvent[]> | null = null
+  const shadowChecks: DayCheck[] = []
+  if (ccAvailable) {
+    try {
+      const own = new UsageCollector(undefined, undefined, localDay)
+      if (await own.isAvailable()) ownMap = await own.collectRange(dates)
+    } catch (err) {
+      console.warn(`[burnwatch][shadow] own collector failed: ${(err as Error).message}`)
+    }
+  }
+
   for (const date of dates) {
     console.log(`[burnwatch][sync] ${date}`)
 
@@ -120,6 +139,14 @@ export async function syncCommand(options: {
       continue
     }
 
+    let referenceDiff: ReturnType<typeof shadowDay>['referenceDiff'] | undefined
+    if (ownMap) {
+      const shadow = shadowDay(date, events, ownMap.get(date) ?? [])
+      shadowChecks.push(...shadow.checks)
+      for (const c of shadow.checks) if (!c.ok) console.log(`  New collector differs (${c.agent}): ${c.why.join('; ')}`)
+      if (shadow.referenceDiff.length) referenceDiff = shadow.referenceDiff
+    }
+
     try {
       const result = await api.postUsage({
         deviceId: config.deviceId,
@@ -127,6 +154,7 @@ export async function syncCommand(options: {
         events,
         enrichment,
         agentVersion: AGENT_VERSION,
+        ...(referenceDiff ? { referenceDiff } : {}),
       })
 
       const claudeEvents = events.filter((e) => e.agent === 'claude')
@@ -144,6 +172,21 @@ export async function syncCommand(options: {
     }
   }
 
-  updateConfig({ lastSyncAt: new Date().toISOString(), repoAccessWarning: codeburn.repoWarning })
+  updateConfig({
+    lastSyncAt: new Date().toISOString(),
+    repoAccessWarning: codeburn.repoWarning,
+    ...(ownMap
+      ? {
+          lastCompare: {
+            at: new Date().toISOString(),
+            agentDays: shadowChecks.length,
+            failed: shadowChecks
+              .filter((c) => !c.ok)
+              .slice(0, 5)
+              .map((c) => ({ date: c.date, agent: c.agent, why: c.why.join('; ').slice(0, 300) })),
+          },
+        }
+      : {}),
+  })
   console.log('[burnwatch] Done')
 }
