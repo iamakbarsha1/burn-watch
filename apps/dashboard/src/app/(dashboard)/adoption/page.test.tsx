@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { FunnelCounts, FunnelResponse, IdleSeatsResponse } from '@burn-watch/shared'
+import type { FeatureMatrixResponse, FunnelCounts, FunnelResponse, IdleSeatsResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   asked: [] as number[],
   funnel: null as FunnelResponse | null,
   funnelAsked: [] as string[][],
+  features: null as FeatureMatrixResponse | null,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -27,6 +28,10 @@ vi.mock('@/lib/api', () => ({
     state.funnelAsked.push([from, to])
     if (!state.funnel) throw new Error('down')
     return state.funnel
+  },
+  fetchFeatures: async () => {
+    if (!state.features) throw new Error('down')
+    return state.features
   },
 }))
 vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => null }))
@@ -51,6 +56,7 @@ beforeEach(() => {
   state.asked = []
   state.funnel = null
   state.funnelAsked = []
+  state.features = null
 })
 
 describe('AdoptionPage', () => {
@@ -209,5 +215,49 @@ describe('AdoptionPage funnel', () => {
 
   it('says so when the funnel cannot be read', async () => {
     expect(await render()).toContain('Could not read the funnel.')
+  })
+
+  describe('Features', () => {
+    const none = { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: 0 }
+    const matrix = (over: Partial<FeatureMatrixResponse> = {}): FeatureMatrixResponse => ({
+      from: '2026-11-16',
+      to: '2026-11-22',
+      total: { users: 2, used: { ...none, mcp: 2, skills: 1 }, sdkKnown: 0 },
+      teams: [{ teamId: 't1', teamName: 'Platform', users: 1, used: { ...none, mcp: 1 }, sdkKnown: 1 }],
+      noTeam: null,
+      people: [
+        { userId: 'u1', name: 'Ada', teamIds: ['t1'], activeDays: 3, days: { mcp: 3, skills: 1, subagents: 0, plan: 0, sdk: 0 } },
+        { userId: 'u2', name: 'Hidden', teamIds: [], activeDays: 1, days: { mcp: 1, skills: 0, subagents: 0, plan: 0, sdk: null } },
+      ],
+      ...over,
+    })
+
+    it('shows n of m per feature, and a dash for SDK when no agent reports it', async () => {
+      state.features = matrix()
+      const html = await render()
+      expect(html).toContain('Features')
+      expect(html).toContain('2 of 2')
+      expect(html).toContain('1 of 2')
+      // Total SDK: nobody known, so a dash. Platform SDK: 0 of 1.
+      expect(html).toMatch(/Total<\/td>(?:(?!<\/tr>).)*—/)
+      expect(html).toContain('0 of 1')
+    })
+
+    it('lists people with day counts, team names and hidden names', async () => {
+      state.features = matrix()
+      const html = await render()
+      expect(html).toContain('Per person (2)')
+      expect(html).toContain('3 days')
+      expect(html).toContain('Platform')
+      expect(html).toContain('Hidden')
+      expect(html).toContain('No team')
+    })
+
+    it('says so when no one used Claude Code, and when it cannot be read', async () => {
+      state.features = matrix({ total: { users: 0, used: none, sdkKnown: 0 }, teams: [], people: [] })
+      expect(await render()).toContain('No Claude Code use in this range.')
+      state.features = null
+      expect(await render()).toContain('Could not read feature use.')
+    })
   })
 })

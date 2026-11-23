@@ -30,6 +30,7 @@ import type {
   AgentPolicyInput,
   McpInventoryResponse,
   IdleSeatsResponse,
+  FeatureMatrixResponse,
   FunnelResponse,
   AuditRow,
   AuditQuery,
@@ -336,6 +337,11 @@ export async function fetchIdleSeats(idleDays: number, teamId?: string): Promise
 
 export async function fetchFunnel(from: string, to: string, teamId?: string): Promise<FunnelResponse> {
   return apiFetch(`/v1/dashboard/adoption/funnel?from=${from}&to=${to}${teamQuery(teamId)}`)
+}
+
+// R2 A5. Admin or manager, same scope as the funnel.
+export async function fetchFeatures(from: string, to: string, teamId?: string): Promise<FeatureMatrixResponse> {
+  return apiFetch(`/v1/dashboard/adoption/features?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
 // R1 B8. Admin only; the API answers newest first.

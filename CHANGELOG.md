@@ -8,6 +8,22 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.14.0 (2026-11-23)
+
+R2 A5: feature matrix per team.
+
+- `/adoption` has a new Features section. For each team it shows how
+  many Claude Code users used MCP, skills, subagents, plan mode and the
+  SDK on at least one day in the range. A Per person list shows the days
+  for each feature. Admins and managers only, same scope as the funnel.
+- Most of it works on every agent version, because it reads tool calls
+  the agent already sends. SDK use needs agent 0.4 or later, and people
+  without it show a dash.
+- People who chose "Hide my name" on the leaderboard show as Hidden to
+  managers. Admins see names.
+- New route `GET /v1/dashboard/adoption/features`. No schema sync, no
+  agent release.
+
 ## Agent v0.5.1 (2026-11-23)
 
 - First published build of 0.5.0. The v0.5.0 release job failed before

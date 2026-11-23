@@ -3770,6 +3770,105 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
   })
 })
 
+describe('GET /v1/dashboard/adoption/features', () => {
+  const t = today()
+  const from = daysBefore(t, 6)
+  const URL = `/v1/dashboard/adoption/features?from=${from}&to=${t}`
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const day = (userId: string, over: Record<string, unknown> = {}) => ({ userId, orgId: ORG_A, date: t, ...over })
+  const none = { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: 0 }
+
+  it('refuses a developer before reading anything', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
+  })
+
+  it.each([`?from=${from}`, `?from=${t}&to=${from}`, ''])('rejects range %s', async (q) => {
+    expect((await get('admin', `/v1/dashboard/adoption/features${q}`)).statusCode).toBe(400)
+  })
+
+  it('reads the range, counts people per team and once in total, and sorts by features used', async () => {
+    mongoState.docs.teams = [
+      { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
+      { _id: TEAM_B, orgId: ORG_A, name: 'Web' },
+    ]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: USER_A, role: 'member' },
+    ]
+    mongoState.docs.claudeEnrichment = [
+      day(USER_B, { toolUsage: { read: 3 } }),
+      day(USER_A, { mcpUsage: { github: 2 }, toolUsage: { skill: 1 } }),
+      day(USER_A, { date: from, toolUsage: { agent: 1 }, entrypointCounts: { cli: 4 } }),
+    ]
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada' },
+      { _id: USER_B, name: 'Bo' },
+    ]
+
+    const body = (await get('admin')).json()
+    const [filter, opts] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [object, { projection: object }]
+    expect(filter).toEqual({ orgId: ORG_A, date: { $gte: from, $lte: t } })
+    expect(Object.keys(opts.projection)).not.toContain('accountHashes')
+    expect(body.people).toEqual([
+      { userId: USER_A, name: 'Ada', teamIds: [TEAM_A, TEAM_B], activeDays: 2, days: { mcp: 1, skills: 1, subagents: 1, plan: 0, sdk: 0 } },
+      { userId: USER_B, name: 'Bo', teamIds: [], activeDays: 1, days: { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: null } },
+    ])
+    const ada = { users: 1, used: { ...none, mcp: 1, skills: 1, subagents: 1 }, sdkKnown: 1 }
+    expect(body.total).toEqual({ users: 2, used: { ...none, mcp: 1, skills: 1, subagents: 1 }, sdkKnown: 1 })
+    expect(body.teams).toEqual([
+      { teamId: TEAM_A, teamName: 'Platform', ...ada },
+      { teamId: TEAM_B, teamName: 'Web', ...ada },
+    ])
+    expect(body.noTeam).toEqual({ users: 1, used: none, sdkKnown: 0 })
+  })
+
+  it('limits a manager to their teams and hides names the person hid, but not their own', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    mongoState.docs.claudeEnrichment = [day(USER_A), day(USER_B)]
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada', hideOnLeaderboard: true },
+      { _id: USER_B, name: 'Bo', hideOnLeaderboard: true },
+    ]
+
+    const body = (await get('manager')).json()
+    const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
+    expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B].sort())
+    expect(body.noTeam).toBeNull()
+    expect(body.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Hidden'])
+
+    // An admin sees every name.
+    const admin = (await get('admin')).json()
+    expect(admin.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Bo'])
+  })
+
+  it('narrows an admin to one team with no No-team row', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    mongoState.docs.claudeEnrichment = [day(USER_A)]
+    mongoState.docs.users = [{ _id: USER_A, name: 'Ada' }]
+    const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
+    expect(body.noTeam).toBeNull()
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', users: 1, used: none, sdkKnown: 0 }])
+  })
+
+  it('answers an empty matrix without reading users when no one used Claude Code', async () => {
+    const body = (await get('admin')).json()
+    expect(body).toMatchObject({ from, to: t, people: [], total: { users: 0, sdkKnown: 0 } })
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+  })
+
+  it('answers 404 to a team outside the org before reading usage', async () => {
+    expect((await get('admin', `${URL}&teamId=${TEAM_B}`)).statusCode).toBe(404)
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
+  })
+})
+
 describe('audit log (R1 B8)', () => {
   const call = (
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',

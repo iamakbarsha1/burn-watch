@@ -1,8 +1,8 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import type { FunnelCounts, FunnelResponse, FunnelStop } from '@burn-watch/shared'
-import { fetchFunnel, fetchIdleSeats, fetchTeams } from '@/lib/api'
+import { FEATURE_KEYS, type FeatureCounts, type FeatureKey, type FeatureMatrixResponse, type FunnelCounts, type FunnelResponse, type FunnelStop } from '@burn-watch/shared'
+import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchTeams } from '@/lib/api'
 import { agentById } from '@/lib/agents'
 import { formatCost, formatRange, resolveRange } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
@@ -29,9 +29,10 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
   const { from, to } = resolveRange(params)
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
-  const [data, funnel] = await Promise.all([
+  const [data, funnel, features] = await Promise.all([
     fetchIdleSeats(idleDays, team?.id).catch(() => null),
     fetchFunnel(from, to, team?.id).catch(() => null),
+    fetchFeatures(from, to, team?.id).catch(() => null),
   ])
   // Keep the range and team in the URL when the form changes idleDays.
   const carried = Object.entries(params).filter(([k, v]) => k !== 'idleDays' && v !== undefined)
@@ -133,6 +134,8 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
         </Section>
 
         <FunnelSection data={funnel} />
+
+        <FeaturesSection data={features} />
       </div>
     </div>
   )
@@ -258,6 +261,115 @@ function FunnelSection({ data }: { data: FunnelResponse | null }) {
             </details>
           )}
         </>
+      )}
+    </Section>
+  )
+}
+
+const FEATURES: Record<FeatureKey, string> = {
+  mcp: 'MCP',
+  skills: 'Skills',
+  subagents: 'Subagents',
+  plan: 'Plan mode',
+  sdk: 'SDK',
+}
+
+/** "n of m" for a feature; SDK counts only people whose agent reports it. */
+function usedOf(c: FeatureCounts, key: FeatureKey) {
+  const of = key === 'sdk' ? c.sdkKnown : c.users
+  return of === 0 ? '—' : `${c.used[key]} of ${of}`
+}
+
+function FeatureRow({ name, c }: { name: string; c: FeatureCounts }) {
+  return (
+    <Tr>
+      <Td className="font-medium text-ink">{name}</Td>
+      <Td numeric>{c.users}</Td>
+      {FEATURE_KEYS.map((k) => (
+        <Td key={k} numeric>
+          {usedOf(c, k)}
+        </Td>
+      ))}
+    </Tr>
+  )
+}
+
+function FeaturesSection({ data }: { data: FeatureMatrixResponse | null }) {
+  const teamName = new Map(data?.teams.map((t) => [t.teamId, t.teamName]))
+  return (
+    <Section
+      title="Features"
+      description="Claude Code users who used each feature on at least one day in this range. Claude Code only. SDK needs agent 0.4 or later, so it counts only people whose agent reports it."
+    >
+      <TableFrame>
+        <table className="w-full">
+          <thead>
+            <tr>
+              <Th>Team</Th>
+              <Th numeric>Users</Th>
+              {FEATURE_KEYS.map((k) => (
+                <Th key={k} numeric>
+                  {FEATURES[k]}
+                </Th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data === null ? (
+              <EmptyRow colSpan={7}>Could not read feature use. Try again in a moment.</EmptyRow>
+            ) : data.total.users === 0 ? (
+              <EmptyRow colSpan={7}>No Claude Code use in this range.</EmptyRow>
+            ) : (
+              <>
+                <FeatureRow name="Total" c={data.total} />
+                {data.teams.map((t) => (
+                  <FeatureRow key={t.teamId} name={t.teamName} c={t} />
+                ))}
+                {data.noTeam && <FeatureRow name="No team" c={data.noTeam} />}
+              </>
+            )}
+          </tbody>
+        </table>
+      </TableFrame>
+
+      {data && data.people.length > 0 && (
+        <details className="mt-4">
+          <summary className="cursor-pointer text-sm font-medium text-ink">
+            Per person ({data.people.length})
+          </summary>
+          <TableFrame>
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <Th>Name</Th>
+                  <Th>Team</Th>
+                  <Th numeric>Active days</Th>
+                  {FEATURE_KEYS.map((k) => (
+                    <Th key={k} numeric>
+                      {FEATURES[k]}
+                    </Th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.people.map((p) => (
+                  <Tr key={p.userId}>
+                    <Td className="text-ink">{p.name}</Td>
+                    <Td className="text-ink-2">
+                      {p.teamIds.length ? p.teamIds.map((id) => teamName.get(id) ?? id).join(', ') : 'No team'}
+                    </Td>
+                    <Td numeric>{p.activeDays}</Td>
+                    {FEATURE_KEYS.map((k) => (
+                      <Td key={k} numeric>
+                        {p.days[k] ? plural(p.days[k], 'day') : '—'}
+                      </Td>
+                    ))}
+                  </Tr>
+                ))}
+              </tbody>
+            </table>
+          </TableFrame>
+        </details>
       )}
     </Section>
   )

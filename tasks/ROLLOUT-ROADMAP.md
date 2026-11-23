@@ -196,7 +196,7 @@ version view to track that.
 | ID | Build | Depends on |
 |---|---|---|
 | B5 | Claude Code version per device, flag below the minimum | ✅ Built, web-v0.11.0 (`/devices` Claude Code and Agent columns, admin-set minimum, "Update agent" below 0.4.0, active-device summary). Design: `tasks/R2-B5-AGENT-VERSIONS-DESIGN.md`. One optional org field, no schema sync, no agent release. Admins set the minimum on the page, so org fact #5 is no longer a blocker. On 2026-11-22, 1 of 7 devices ran agent 0.4 (1 of 3 active) |
-| A5 | Feature matrix per team: MCP, skills, subagents, plan mode, CLI vs SDK | R0.3, R0.2 |
+| A5 | Feature matrix per team: MCP, skills, subagents, plan mode, CLI vs SDK | ✅ Built, web-v0.14.0 (`/adoption` Features section, Per person list, `GET /v1/dashboard/adoption/features`, `featureFlags()` in `routes/dashboard/features.ts`). Design: `tasks/R2-A5-FEATURE-MATRIX-DESIGN.md`. Four of five signals come from `toolUsage` on every agent version; SDK needs 0.4. No schema sync, no agent release |
 | B6 | Hashed `accountUuid` vs assigned seat: personal accounts, shared seats | R0.3, R0.1 |
 | C4 | Ticket keys from `gitBranch` (`PROJ-123-...`), usage per ticket/epic | R0.3 |
 | A6 | Top quartile vs rest: MCP setup, skills, cache hit rate; generated tips | A5 |
