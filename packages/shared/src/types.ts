@@ -736,6 +736,48 @@ export interface FeatureMatrixResponse {
   people: FeaturePerson[]
 }
 
+// GET /v1/dashboard/adoption/practices (R2 A6). The top quartile of Claude Code
+// users against everyone else. Aggregates only: no names or user ids.
+/** What ranks people into the top quartile: active days, Claude tokens, or the A8 leaderboard score. */
+export const PRACTICE_RANKS = ['days', 'tokens', 'score'] as const
+export type PracticeRank = (typeof PRACTICE_RANKS)[number]
+/** The A5 features A6 compares. SDK is left out: few days report it. */
+export const PRACTICE_FEATURES = ['mcp', 'skills', 'subagents', 'plan'] as const
+export type PracticeFeature = (typeof PRACTICE_FEATURES)[number]
+export type TipId = PracticeFeature | 'cache'
+
+export interface PracticeGroup {
+  users: number
+  /** Share of people who used each feature on at least one day, 0..1. */
+  uses: Record<PracticeFeature, number>
+  /** Median share of a person's active days with the feature, 0..1. */
+  dayShare: Record<PracticeFeature, number>
+  /** Median distinct MCP servers per person. */
+  mcpServers: number
+  /** Median token-weighted cache hit rate, percent. Null when no one has Claude tokens. */
+  cacheHitRate: number | null
+}
+
+export interface PracticeTip {
+  id: TipId
+  /** Top minus rest, as a share 0..1 (cache: percentage points / 100). */
+  gap: number
+}
+
+export interface PracticesResponse {
+  from: string
+  to: string
+  rankBy: PracticeRank
+  /** Claude Code users in scope with a day in range. */
+  population: number
+  /** Below this the groups are null. */
+  minPopulation: number
+  top: PracticeGroup | null
+  rest: PracticeGroup | null
+  /** At most 3, largest gap first. */
+  tips: PracticeTip[]
+}
+
 // R1 B8 audit log. A closed list, so a typo in a call site is a compile error.
 export type AuditAction =
   | 'device.approve'

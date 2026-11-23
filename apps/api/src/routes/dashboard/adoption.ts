@@ -17,6 +17,7 @@ import {
 } from '@burn-watch/db'
 import {
   IdleSeatsQuerySchema,
+  PRACTICE_RANKS,
   type AgentName,
   type FeatureMatrixResponse,
   type FeaturePerson,
@@ -25,6 +26,7 @@ import {
   type FunnelStop,
   type IdleSeatRow,
   type IdleSeatsResponse,
+  type PracticesResponse,
   type StuckPerson,
 } from '@burn-watch/shared'
 import { comparableTeams, readScope } from '../../plugins/jwt.js'
@@ -32,6 +34,10 @@ import { auditView } from '../../audit.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
 import { countFeatures, featureDays, type FeatureFields } from './features.js'
+import type { EnrichmentRange } from './enrichment.js'
+import { mcpServersPipeline, scoreAll } from './leaderboard.js'
+import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit } from './quartile.js'
+import { streaks } from './streaks.js'
 
 const DAY_MS = 86_400_000
 const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / DAY_MS
@@ -39,6 +45,45 @@ const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(f
 const FunnelQuerySchema = z
   .object({ ...dateRangeFields, ...teamIdField })
   .refine((d) => d.from && d.to && d.from <= d.to, { message: 'Provide from+to, from not after to' })
+
+const PracticesQuerySchema = z
+  .object({ ...dateRangeFields, ...teamIdField, rankBy: z.enum(PRACTICE_RANKS).default('days') })
+  .refine((d) => d.from && d.to && d.from <= d.to, { message: 'Provide from+to, from not after to' })
+
+/** A5's enrichment days per person in range: one doc per person per day. */
+async function readFeatureDays(orgId: OrgId, from: IsoDate, to: IsoDate, scope: UserId[] | undefined) {
+  const docs = await getStore().claudeEnrichment.find(
+    { orgId, date: { $gte: from, $lte: to }, ...(scope && { userId: { $in: scope } }) },
+    {
+      projection: {
+        userId: 1, toolUsage: 1, mcpUsage: 1, skillCounts: 1,
+        sidechainMessages: 1, permissionModeCounts: 1, entrypointCounts: 1,
+      },
+    },
+  )
+  const daysOf = new Map<UserId, FeatureFields[]>()
+  for (const d of docs) daysOf.set(d.userId, [...(daysOf.get(d.userId) ?? []), d])
+  return daysOf
+}
+
+/**
+ * R2 A6 Decision 3: Claude tokens and cache tokens per person from usageEvents,
+ * since `dailySnapshots.cacheHitRate` has suspect zero days and a mean of daily
+ * rates is not the rate over the range.
+ */
+export function claudeTokensPipeline({ orgId, userIds, from, to }: EnrichmentRange): Document[] {
+  return [
+    { $match: { orgId, agent: 'claude', date: { $gte: from, $lte: to }, ...(userIds && { userId: { $in: userIds } }) } },
+    {
+      $group: {
+        _id: '$userId',
+        tokens: { $sum: '$totalTokens' },
+        read: { $sum: '$cacheReadTokens' },
+        cacheable: { $sum: { $add: ['$inputTokens', '$cacheCreateTokens', '$cacheReadTokens'] } },
+      },
+    },
+  ]
+}
 
 /** The A3 stage thresholds for a range: Decision 2 scales "2 days" and "5 of 7 days" to its length. */
 export function funnelThresholds(from: IsoDate, to: IsoDate) {
@@ -389,21 +434,8 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId
-    const [docs, teams] = await Promise.all([
-      store.claudeEnrichment.find(
-        { orgId, date: { $gte: from, $lte: to }, ...(scope && { userId: { $in: scope } }) },
-        {
-          projection: {
-            userId: 1, toolUsage: 1, mcpUsage: 1, skillCounts: 1,
-            sidechainMessages: 1, permissionModeCounts: 1, entrypointCounts: 1,
-          },
-        },
-      ),
-      comparableTeams(request.user),
-    ])
     // One enrichment doc per person per day, so a person's doc count is their active days.
-    const daysOf = new Map<UserId, FeatureFields[]>()
-    for (const d of docs) daysOf.set(d.userId, [...(daysOf.get(d.userId) ?? []), d])
+    const [daysOf, teams] = await Promise.all([readFeatureDays(orgId, from, to, scope), comparableTeams(request.user)])
     const ids = [...daysOf.keys()]
     const teamName = new Map(teams.map((t) => [t._id, t.name]))
     const [users, members] = ids.length
@@ -445,5 +477,89 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       noTeam: role === 'admin' && !teamId ? countFeatures(people.filter((p) => p.teamIds.length === 0)) : null,
       people,
     } satisfies FeatureMatrixResponse
+  })
+
+  // R2 A6. The top quartile of Claude Code users against the rest. Aggregates only.
+  fastify.get('/adoption/practices', async (request, reply) => {
+    const { role } = request.user
+    if (role !== 'admin' && role !== 'manager') {
+      return reply.status(403).send({ error: 'Adoption requires admin or manager role' })
+    }
+    const parsed = PracticesQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const from = parsed.data.from as IsoDate
+    const to = parsed.data.to as IsoDate
+    const { teamId, rankBy } = parsed.data
+    const scope = await readScope(request.user, teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'adoption', scope, teamId)
+
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    // Same population as A5: active users with a Claude Code day in range.
+    const daysOf = await readFeatureDays(orgId, from, to, scope)
+    const ids = [...daysOf.keys()]
+    const active = ids.length
+      ? await store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { _id: 1 } })
+      : []
+    const userIds = active.map((u) => u._id)
+    const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE }
+    if (userIds.length < MIN_QUARTILE_PEOPLE) return { ...base, top: null, rest: null, tips: [] } satisfies PracticesResponse
+
+    const range = { orgId, userIds, from, to }
+    const [tokenRows, mcpRows, snapshots] = await Promise.all([
+      store.usageEvents.aggregate<{ _id: UserId; tokens: number; read: number; cacheable: number }>(claudeTokensPipeline(range)),
+      store.claudeEnrichment.aggregate<{ _id: UserId; servers: string[] }>(mcpServersPipeline(range)),
+      // The A8 score needs all-time active days for the streak; read only when asked for.
+      rankBy === 'score'
+        ? store.dailySnapshots.find(
+            { orgId, userId: { $in: userIds }, totalTokens: { $gt: 0 } },
+            { projection: { userId: 1, date: 1, totalTokens: 1, byAgent: 1 } },
+          )
+        : Promise.resolve([]),
+    ])
+    const tokensOf = new Map(tokenRows.map((r) => [r._id, r]))
+    const serversOf = new Map(mcpRows.map((r) => [r._id, r.servers.length]))
+
+    // Decision 1: the A8 score within this population, so tops are this scope's tops.
+    const scoreOf = new Map<UserId, number>()
+    if (rankBy === 'score') {
+      const now = today()
+      const parts = userIds.map((id) => {
+        const mine = snapshots.filter((s) => s.userId === id)
+        const inRange = mine.filter((s) => s.date >= from && s.date <= to)
+        const agents = new Set(
+          inRange.flatMap((s) => Object.entries(s.byAgent ?? {}).filter(([, v]) => (v?.tokens ?? 0) > 0).map(([k]) => k)),
+        )
+        return {
+          activeDays: inRange.length,
+          streak: streaks(mine.map((s) => s.date), now).current,
+          tokens: inRange.reduce((sum, s) => sum + s.totalTokens, 0),
+          features: agents.size + (serversOf.get(id) ?? 0),
+        }
+      })
+      scoreAll(parts).forEach((score, i) => scoreOf.set(userIds[i], score))
+    }
+
+    const people = userIds.map((userId) => {
+      const t = tokensOf.get(userId)
+      const docs = daysOf.get(userId)!
+      const tokens = t?.tokens ?? 0
+      return {
+        userId,
+        tokens,
+        rank: rankBy === 'days' ? docs.length : rankBy === 'tokens' ? tokens : scoreOf.get(userId) ?? 0,
+        activeDays: docs.length,
+        days: featureDays(docs),
+        mcpServers: serversOf.get(userId) ?? 0,
+        cacheHitRate: t && t.cacheable > 0 ? (t.read / t.cacheable) * 100 : null,
+      }
+    })
+    const split = quartileSplit(people)!
+    const top = practiceGroup(split.top)
+    const rest = practiceGroup(split.rest)
+    return { ...base, top, rest, tips: practiceTips(top, rest) } satisfies PracticesResponse
   })
 }

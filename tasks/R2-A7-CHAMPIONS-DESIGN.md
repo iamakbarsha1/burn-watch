@@ -21,7 +21,7 @@ told, nothing changes for the person suggested.
 | Piece | Where | Today |
 |---|---|---|
 | Per-person features | `apps/api/src/routes/dashboard/features.ts:34-54`, route `adoption.ts:374` onward | `FeaturePerson { userId, name, teamIds, activeDays, days }`. In progress on `feat/r2-a5-feature-matrix`. |
-| Top quartile | A6 design, `quartile.ts` (not built) | `quartileSplit(people, tokens)`, null below 8 people. |
+| Top quartile | `apps/api/src/routes/dashboard/quartile.ts` (A6, web-v0.17.0) | `quartileSplit(people)` on `{ userId, rank, tokens }`, null below `MIN_QUARTILE_PEOPLE` (4). Ranks by `?rankBy=days\|tokens\|score`. |
 | Power user rule | `apps/api/src/routes/dashboard/adoption.ts:44-47` | `funnelThresholds`: power = active on `ceil(rangeDays * 5 / 7)` days. |
 | Hide my name | `routes/dashboard/leaderboard.ts:331, 348`; A5 route `adoption.ts` (people build) | A8: hidden users show as "Anonymous" to all but admins and themselves. A5: managers see "Hidden". |
 | Org name setting | `leaderboard.ts:157-160, 331` | `showNames` off shows "Person N" to managers and developers. |

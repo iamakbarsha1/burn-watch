@@ -1,8 +1,23 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { FEATURE_KEYS, type FeatureCounts, type FeatureKey, type FeatureMatrixResponse, type FunnelCounts, type FunnelResponse, type FunnelStop } from '@burn-watch/shared'
-import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchTeams } from '@/lib/api'
+import {
+  FEATURE_KEYS,
+  PRACTICE_FEATURES,
+  PRACTICE_RANKS,
+  type FeatureCounts,
+  type FeatureKey,
+  type FeatureMatrixResponse,
+  type FunnelCounts,
+  type FunnelResponse,
+  type FunnelStop,
+  type PracticeFeature,
+  type PracticeGroup,
+  type PracticeRank,
+  type PracticesResponse,
+  type TipId,
+} from '@burn-watch/shared'
+import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchPractices, fetchTeams } from '@/lib/api'
 import { agentById } from '@/lib/agents'
 import { formatCost, formatRange, resolveRange } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
@@ -29,10 +44,12 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
   const { from, to } = resolveRange(params)
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
-  const [data, funnel, features] = await Promise.all([
+  const rankBy = PRACTICE_RANKS.find((r) => r === params.rankBy) ?? 'days'
+  const [data, funnel, features, practices] = await Promise.all([
     fetchIdleSeats(idleDays, team?.id).catch(() => null),
     fetchFunnel(from, to, team?.id).catch(() => null),
     fetchFeatures(from, to, team?.id).catch(() => null),
+    fetchPractices(from, to, rankBy, team?.id).catch(() => null),
   ])
   // Keep the range and team in the URL when the form changes idleDays.
   const carried = Object.entries(params).filter(([k, v]) => k !== 'idleDays' && v !== undefined)
@@ -136,6 +153,8 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
         <FunnelSection data={funnel} />
 
         <FeaturesSection data={features} />
+
+        <PracticesSection data={practices} rankBy={rankBy} params={params} />
       </div>
     </div>
   )
@@ -370,6 +389,101 @@ function FeaturesSection({ data }: { data: FeatureMatrixResponse | null }) {
             </table>
           </TableFrame>
         </details>
+      )}
+    </Section>
+  )
+}
+
+const RANK_LABELS: Record<PracticeRank, string> = { days: 'Active days', tokens: 'Claude tokens', score: 'Leaderboard score' }
+
+/** A6 Decision 4: fixed text per rule. */
+const TIPS: Record<TipId, string> = {
+  mcp: 'Most top users call MCP servers; most others do not. See which servers they use under Governance > MCP and add the useful ones to the team setup.',
+  skills: "Top users run skills. Share the team's skills in the repo's .claude/skills/ folder.",
+  subagents: 'Top users hand work to subagents. Try asking Claude to split a large search or review across subagents.',
+  plan: 'Top users plan before they edit. Try plan mode (Shift+Tab) for changes that touch several files.',
+  cache: 'Others get fewer cache hits. Keep long tasks in one session and switch models less mid-session, so more cached context is reused.',
+}
+
+const USES: Record<PracticeFeature, string> = {
+  mcp: 'Uses MCP',
+  skills: 'Uses skills',
+  subagents: 'Uses subagents',
+  plan: 'Uses plan mode',
+}
+
+const pct = (n: number) => `${Math.round(n * 100)}%`
+
+function PracticesSection({ data, rankBy, params }: { data: PracticesResponse | null; rankBy: PracticeRank; params: Params }) {
+  const href = (r: PracticeRank) => {
+    const q = new URLSearchParams()
+    for (const [k, v] of Object.entries({ ...params, rankBy: r === 'days' ? undefined : r })) if (v !== undefined) q.set(k, v)
+    return `?${q}`
+  }
+  const rows: { label: string; value: (g: PracticeGroup) => string }[] = [
+    ...PRACTICE_FEATURES.map((k) => ({ label: USES[k], value: (g: PracticeGroup) => pct(g.uses[k]) })),
+    { label: 'MCP servers (median)', value: (g) => String(g.mcpServers) },
+    { label: 'Cache hit rate (median)', value: (g) => (g.cacheHitRate === null ? '—' : `${g.cacheHitRate.toFixed(1)}%`) },
+  ]
+  return (
+    <Section
+      title="Top users vs rest"
+      description="The top quarter of Claude Code users, ranked by the measure below, compared with everyone else. Claude Code only. No names."
+    >
+      <p className="mb-3 flex flex-wrap gap-x-3 text-xs text-ink-2">
+        Rank by:
+        {PRACTICE_RANKS.map((r) => (
+          <Link
+            key={r}
+            href={href(r)}
+            aria-current={r === rankBy ? 'true' : undefined}
+            className={r === rankBy ? 'font-medium text-ink' : 'text-brand underline-offset-4 hover:underline'}
+          >
+            {RANK_LABELS[r]}
+          </Link>
+        ))}
+      </p>
+      {rankBy === 'score' && (
+        <p className="mb-3 text-xs text-ink-2">
+          The leaderboard score counts MCP servers tried, so the MCP rows partly compare the score with itself.
+        </p>
+      )}
+      {data === null ? (
+        <p className="text-sm text-ink-2">Could not read the comparison. Try again in a moment.</p>
+      ) : !data.top || !data.rest ? (
+        <p className="text-sm text-ink-2">
+          Needs {data.minPopulation} or more Claude Code users in range. This scope has {data.population}.
+        </p>
+      ) : (
+        <>
+          <TableFrame>
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <Th>Measure</Th>
+                  <Th numeric>Top ({data.top.users})</Th>
+                  <Th numeric>Rest ({data.rest.users})</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <Tr key={row.label}>
+                    <Td className="text-ink">{row.label}</Td>
+                    <Td numeric>{row.value(data.top!)}</Td>
+                    <Td numeric>{row.value(data.rest!)}</Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </table>
+          </TableFrame>
+          {data.tips.length > 0 && (
+            <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-ink">
+              {data.tips.map((t) => (
+                <li key={t.id}>{TIPS[t.id]}</li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </Section>
   )
