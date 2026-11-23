@@ -764,6 +764,32 @@ export interface PracticeTip {
   gap: number
 }
 
+/** Why a team has no champion: under 3 Claude Code users, or everyone left out (hidden from a manager). */
+export type ChampionReason = 'ok' | 'tooFew' | 'noneEligible'
+
+// R2 A7. A hint only: nothing is stored and nobody is told.
+export interface ChampionSuggestion {
+  userId: string
+  name: string
+  activeDays: number
+  /** The person hid their name on the leaderboard. Admins only ever see this true. */
+  hidden: boolean
+  uses: PracticeFeature[]
+  /** Features they use that fewer than half of the team uses. */
+  canHelpWith: PracticeFeature[]
+}
+
+export interface TeamChampions {
+  /** Null for "No team", admins only. */
+  teamId: string | null
+  teamName: string
+  /** Claude Code users in the team in range. */
+  users: number
+  /** 0 to 2, ranked by `rankBy`. */
+  champions: ChampionSuggestion[]
+  reason: ChampionReason
+}
+
 export interface PracticesResponse {
   from: string
   to: string
@@ -776,6 +802,10 @@ export interface PracticesResponse {
   rest: PracticeGroup | null
   /** At most 3, largest gap first. */
   tips: PracticeTip[]
+  /** Per visible team. Empty when names are off for a manager. */
+  champions: TeamChampions[]
+  /** The org turned leaderboard names off and the viewer is a manager. */
+  namesOff: boolean
 }
 
 // R1 B8 audit log. A closed list, so a typo in a call site is a compile error.

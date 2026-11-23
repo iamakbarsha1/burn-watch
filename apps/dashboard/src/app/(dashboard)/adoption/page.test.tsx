@@ -288,6 +288,8 @@ describe('AdoptionPage funnel', () => {
       top: group(),
       rest: group({ users: 3, uses: { mcp: 0, skills: 0, subagents: 0, plan: 0 }, mcpServers: 0, cacheHitRate: null }),
       tips: [{ id: 'mcp', gap: 1 }],
+      champions: [],
+      namesOff: false,
       ...over,
     })
 
@@ -326,6 +328,48 @@ describe('AdoptionPage funnel', () => {
 
     it('says when the comparison could not be read', async () => {
       expect(await render()).toContain('Could not read the comparison.')
+    })
+
+    it('lists champions per team, the hidden note, and reasons for teams without one', async () => {
+      state.practices = practices({
+        top: null,
+        rest: null,
+        population: 3,
+        champions: [
+          {
+            teamId: 't1',
+            teamName: 'Platform',
+            users: 3,
+            reason: 'ok',
+            champions: [
+              { userId: 'u1', name: 'Ada', activeDays: 18, hidden: false, uses: ['mcp', 'skills'], canHelpWith: ['skills'] },
+              { userId: 'u2', name: 'Bo', activeDays: 9, hidden: true, uses: [], canHelpWith: [] },
+            ],
+          },
+          { teamId: null, teamName: 'No team', users: 2, reason: 'tooFew', champions: [] },
+        ],
+      })
+      const html = await render()
+      // Shown even below the A6 minimum.
+      expect(html).toContain('Needs 4 or more')
+      expect(html).toContain('Suggested champions')
+      expect(html).toContain('The top 2 per team by active days.')
+      expect(html).toContain('Ada')
+      expect(html).toContain('MCP, Skills')
+      expect(html).toContain('Hidden from leaderboard')
+      expect(html).toContain('Too few users to suggest (2 users)')
+    })
+
+    it('says names are off instead of listing champions', async () => {
+      state.practices = practices({ namesOff: true })
+      const html = await render()
+      expect(html).toContain('Names are off for this org.')
+      expect(html).not.toContain('<th scope="col" class="px-4 py-3 text-xs font-medium tracking-wide text-ink-2 uppercase whitespace-nowrap text-left">Champion</th>')
+    })
+
+    it('shows no champions block when there are no teams to show', async () => {
+      state.practices = practices()
+      expect(await render()).not.toContain('Suggested champions')
     })
   })
 })

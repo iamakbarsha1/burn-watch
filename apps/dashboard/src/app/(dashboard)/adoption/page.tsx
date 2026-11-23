@@ -11,6 +11,7 @@ import {
   type FunnelCounts,
   type FunnelResponse,
   type FunnelStop,
+  type ChampionReason,
   type PracticeFeature,
   type PracticeGroup,
   type PracticeRank,
@@ -485,6 +486,73 @@ function PracticesSection({ data, rankBy, params }: { data: PracticesResponse | 
           )}
         </>
       )}
+      {data && <Champions data={data} />}
     </Section>
+  )
+}
+
+const REASONS: Record<Exclude<ChampionReason, 'ok'>, string> = {
+  tooFew: 'Too few users to suggest',
+  noneEligible: 'No one to suggest',
+}
+
+const featureList = (keys: PracticeFeature[]) => (keys.length ? keys.map((k) => FEATURES[k]).join(', ') : '—')
+
+/** R2 A7. A hint only: nothing is stored and nobody is told. */
+function Champions({ data }: { data: PracticesResponse }) {
+  if (!data.namesOff && data.champions.length === 0) return null
+  return (
+    <div className="mt-6">
+      <h3 className="text-sm font-medium text-ink">Suggested champions</h3>
+      <p className="mt-1 mb-3 text-xs text-ink-2">
+        The top 2 per team by {RANK_LABELS[data.rankBy].toLowerCase()}. Teams need 3 or more Claude Code users. A
+        suggestion only; nobody is told.
+      </p>
+      {data.namesOff ? (
+        <p className="text-sm text-ink-2">Names are off for this org.</p>
+      ) : (
+        <TableFrame>
+          <table className="w-full">
+            <thead>
+              <tr>
+                <Th>Team</Th>
+                <Th>Champion</Th>
+                <Th numeric>Active days</Th>
+                <Th>Uses</Th>
+                <Th>Can help with</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.champions.flatMap((team) =>
+                team.reason !== 'ok'
+                  ? [
+                      <Tr key={team.teamId ?? 'none'}>
+                        <Td className="font-medium text-ink">{team.teamName}</Td>
+                        <Td className="text-ink-3">
+                          {REASONS[team.reason]} ({plural(team.users, 'user')})
+                        </Td>
+                        <Td numeric>{''}</Td>
+                        <Td>{''}</Td>
+                        <Td>{''}</Td>
+                      </Tr>,
+                    ]
+                  : team.champions.map((c, i) => (
+                      <Tr key={`${team.teamId ?? 'none'}:${c.userId}`}>
+                        <Td className="font-medium text-ink">{i === 0 ? team.teamName : ''}</Td>
+                        <Td className="text-ink">
+                          {c.name}
+                          {c.hidden && <span className="ml-2 text-xs text-ink-3">Hidden from leaderboard</span>}
+                        </Td>
+                        <Td numeric>{c.activeDays}</Td>
+                        <Td className="text-ink-2">{featureList(c.uses)}</Td>
+                        <Td className="text-ink-2">{featureList(c.canHelpWith)}</Td>
+                      </Tr>
+                    )),
+              )}
+            </tbody>
+          </table>
+        </TableFrame>
+      )}
+    </div>
   )
 }

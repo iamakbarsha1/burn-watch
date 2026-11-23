@@ -154,7 +154,7 @@ export function mcpServersPipeline(range: EnrichmentRange): Document[] {
 }
 
 /** The org's leaderboard settings, defaults filled in. */
-async function leaderboardSettings(orgId: OrgId): Promise<LeaderboardSettings> {
+export async function leaderboardSettings(orgId: OrgId): Promise<LeaderboardSettings> {
   const org = await getStore().organizations.findOne({ _id: orgId }, { projection: { leaderboard: 1 } })
   return { ...DEFAULT_LEADERBOARD, ...org?.leaderboard }
 }

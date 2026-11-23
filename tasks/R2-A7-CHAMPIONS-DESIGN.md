@@ -1,6 +1,6 @@
 # R2 · A7 Champions per team: design
 
-Status: draft 2026-11-23, decisions open. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
+Status: decisions locked and built as web-v0.18.0, 2026-11-23. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
 R2, row A7 ("Suggest 1 or 2 champions per team"). Builds on A5
 (`tasks/R2-A5-FEATURE-MATRIX-DESIGN.md`) for who used what and A6
 (`tasks/R2-A6-TOP-QUARTILE-DESIGN.md`) for the top quartile. Respects A8
@@ -154,25 +154,36 @@ Team, Champion, Active days, Uses, Can help with.
 Next web minor after A6, `--latest=false`. It can ship in the same release
 as A6 if both are ready. No agent release, no schema sync.
 
-## Decisions (open)
+## Decisions (locked 2026-11-23)
 
-1. **Eligibility.** Power user (A3 rule) plus 3 of 4 features, plus org top
-   quartile when it exists. Active days here are A5's Claude Code days,
-   not all-agent days. Recommended. A looser line, half the range days
-   (15 of 30), would make both prod users eligible today. Other choices: top A8 score per
-   team (mixes in tokens and streaks, rewards volume), or top quartile only
-   (unavailable below 8 people, so most orgs would get nothing).
-2. **Minimum team size.** 3 Claude Code users in range. Recommended: in a
-   team of 2, "champion" just means "the other person". With rule 2 and 3
-   being absolute, 3 is enough; the quartile minimum of 8 is not needed.
-3. **Hidden users.** Skip them in managers' lists; admins see them with a
-   note. Recommended. Other choice: show "Hidden" as A5 does, which in a
-   list of 1 or 2 names identifies the person.
-4. **Where it lives.** A block in the A6 section and in A6's response.
-   Recommended: same people, same split, no second query. Other choice: a
-   route and section of its own.
-5. **Stored state.** None. Recommended for now. Accept or dismiss buttons
-   need a new collection and an audit event; add them if managers ask.
+1. **Eligibility.** The top 2 per team by the A6 "Rank by" picker: active
+   days (default), Claude tokens, or A8 score. Ties go to Claude tokens,
+   then `userId`. No power-user rule, no feature floor, no top-quartile
+   rule. The "Data" rules 2 to 4 above are dropped.
+2. **Minimum team size.** 3 Claude Code users in range, as recommended.
+3. **Hidden users.** Skipped in managers' lists (the next person takes the
+   slot); admins see them with a "Hidden from leaderboard" note. A viewer
+   is never hidden from themself.
+4. **Where it lives.** Inside the A6 section and A6's response, as
+   recommended.
+5. **Stored state.** None, as recommended.
+
+### Built differently from the draft above
+
+- `suggestChampions(members, skipHidden)` in `quartile.ts` takes the
+  team's people already ranked by A6's measure; it does not take the split.
+- `ChampionSuggestion` has `uses` and `hidden`, and lists only the four
+  A6 features (SDK left out). `canHelpWith` = features they use that
+  fewer than half the team uses.
+- `reason: 'noneEligible'` now only happens when every member is hidden
+  from a manager.
+- `PracticesResponse` gains `champions` and `namesOff`. With names off, a
+  manager gets `champions: []` and the page says "Names are off for this
+  org."
+- The route now reads tokens for any population above 0, because
+  champions show below the A6 minimum.
+- Prod today: 0 teams, so admins see one "No team" row with 2 users and
+  "Too few users to suggest".
 
 ## Steps
 
