@@ -98,6 +98,8 @@ export function auditSentence(row: AuditRow, names: ReadonlyMap<string, string> 
       return d.minClaudeVersion
         ? `Set the minimum Claude Code version to ${d.minClaudeVersion}`
         : 'Cleared the minimum Claude Code version'
+    case 'org.claude_orgs':
+      return d.count ? `Marked ${d.count} Claude ${d.count === 1 ? 'org' : 'orgs'} as the company's` : "Cleared the company's Claude org"
     case 'copilot.connect':
       return `Connected Copilot for GitHub org ${d.org}`
     case 'copilot.disconnect':

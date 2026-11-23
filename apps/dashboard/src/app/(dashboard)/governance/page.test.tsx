@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { FreeTierResponse, McpInventoryResponse, ViolationsResponse } from '@burn-watch/shared'
+import type { ClaudeAccountsResponse, FreeTierResponse, McpInventoryResponse, ViolationsResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
@@ -8,6 +8,8 @@ const state = vi.hoisted(() => ({
   mcp: null as McpInventoryResponse | null,
   violations: null as ViolationsResponse | null,
   count: 0,
+  accounts: null as ClaudeAccountsResponse | null,
+  accountsRead: 0,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -27,6 +29,11 @@ vi.mock('@/lib/api', () => ({
     return state.violations
   },
   fetchViolationCount: async () => state.count,
+  fetchClaudeAccounts: async () => {
+    state.accountsRead++
+    if (!state.accounts) throw new Error('down')
+    return state.accounts
+  },
   fetchMcpInventory: async () => {
     if (!state.mcp) throw new Error('down')
     return state.mcp
@@ -36,6 +43,10 @@ vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => null }))
 vi.mock('./AgentPolicyForm', () => ({
   AgentPolicyForm: ({ policy, seen }: { policy: { agent: string }; seen: string[] }) =>
     `[edit:${policy.agent}:${seen.join('|')}]`,
+}))
+vi.mock('./ClaudeOrgsForm', () => ({
+  ClaudeOrgsForm: ({ orgs }: { orgs: { label: string; ours: boolean }[] }) =>
+    `[orgs:${orgs.map((o) => `${o.label}${o.ours ? '*' : ''}`).join('|')}]`,
 }))
 vi.mock('./McpApprovalButton', () => ({
   McpApprovalButton: ({ server, approved }: { server: string; approved: boolean }) =>
@@ -63,7 +74,24 @@ beforeEach(() => {
     seenModels: {},
   }
   state.count = 0
+  state.accounts = null
+  state.accountsRead = 0
 })
+
+const ACCOUNTS: ClaudeAccountsResponse = {
+  from: '2026-11-01',
+  to: '2026-11-05',
+  coverage: { users: 3, hashed: 2 },
+  companyOrgSet: false,
+  seatsEntered: 0,
+  companyOrgUsers: null,
+  orgs: [{ id: 'c'.repeat(64), label: 'Claude org 1', users: 2, days: 4, ours: false, includesYou: true }],
+  accounts: [{ label: 'Account 1', users: 2, days: 4, shared: true }],
+  people: [
+    { userId: 'u1', name: 'Ada', teamIds: [], hashedDays: 3, accounts: ['Account 1'], outsideOrgDays: null, claudeSeat: false, flags: ['shared'] },
+    { userId: 'u3', name: 'Cy', teamIds: [], hashedDays: 1, accounts: ['Account 2'], outsideOrgDays: null, claudeSeat: false, flags: [] },
+  ],
+}
 
 const VIOLATIONS: ViolationsResponse = {
   policies: [
@@ -227,5 +255,42 @@ describe('GovernancePage', () => {
   it('says so when the policy cannot be read', async () => {
     state.violations = null
     expect(await render()).toContain('Could not read the policy')
+  })
+
+  it('shows Claude accounts to an admin: coverage, unset org prompt, flags, quiet rows folded', async () => {
+    state.accounts = ACCOUNTS
+    const html = await render()
+    expect(html).toContain('Account data from 2 of 3 Claude Code users. The rest need agent 0.4 or later.')
+    expect(html).toContain('Mark your company’s Claude org')
+    expect(html).toContain('[orgs:Claude org 1]')
+    expect(html).toContain('Shared account')
+    expect(html).toContain('Show all (1 more)')
+    expect(html).not.toMatch(/[0-9a-f]{64}/)
+  })
+
+  it('shows the seat line once the company org is set', async () => {
+    state.accounts = { ...ACCOUNTS, companyOrgSet: true, seatsEntered: 6, companyOrgUsers: 5 }
+    state.accounts.orgs = [{ ...ACCOUNTS.orgs[0], ours: true }]
+    const html = await render()
+    expect(html).toContain('[orgs:Claude org 1*]')
+    expect(html).toContain('6 Claude seats. 5 people seen on the company org.')
+    expect(html).not.toContain('Mark your company')
+  })
+
+  it('links to Admin when the company org is set but no seats are entered', async () => {
+    state.accounts = { ...ACCOUNTS, companyOrgSet: true, companyOrgUsers: 1 }
+    expect(await render()).toContain('Add seats in Admin')
+  })
+
+  it('says so when Claude accounts cannot be read', async () => {
+    expect(await render()).toContain('Could not read Claude accounts')
+  })
+
+  it('never reads or shows Claude accounts to a manager', async () => {
+    state.role = 'manager'
+    state.accounts = ACCOUNTS
+    const html = await render()
+    expect(html).not.toContain('Claude accounts')
+    expect(state.accountsRead).toBe(0)
   })
 })

@@ -33,6 +33,8 @@ export interface OrganizationDoc {
   leaderboard?: LeaderboardSettings
   /** R2 B5. Absent = no minimum, nothing flagged for Claude Code. */
   minClaudeVersion?: string
+  /** R2 B6. Claude org hashes that are the company's. Absent = not set, no outside-org flags. */
+  ownClaudeOrgHashes?: string[]
 }
 
 export interface UserDoc {

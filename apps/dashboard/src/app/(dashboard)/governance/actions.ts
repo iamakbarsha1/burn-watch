@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { approveMcpServer, clearAgentPolicy, revokeMcpServer, setAgentPolicy } from '@/lib/api'
+import { approveMcpServer, clearAgentPolicy, revokeMcpServer, setAgentPolicy, setCompanyClaudeOrgs } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
 import type { AgentName } from '@burn-watch/shared'
 
@@ -55,5 +55,18 @@ export async function agentPolicyAction(_prev: McpActionState | null, formData: 
     return { ok: true, message: clear ? `${agent} rule cleared.` : `${agent} rule saved.` }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : 'Failed to save the rule' }
+  }
+}
+
+/** R2 B6. Save which Claude orgs are the company's; none ticked clears it. Admin only; the API checks again. */
+export async function claudeOrgsAction(_prev: McpActionState | null, formData: FormData): Promise<McpActionState> {
+  if ((await getUserRole()) !== 'admin') return { ok: false, message: 'Admin role required' }
+  const ids = formData.getAll('ids').map(String)
+  try {
+    await setCompanyClaudeOrgs(ids)
+    revalidatePath('/governance')
+    return { ok: true, message: ids.length ? 'Company Claude org saved.' : 'Company Claude org cleared.' }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Failed to save' }
   }
 }

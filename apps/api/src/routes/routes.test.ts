@@ -3359,6 +3359,115 @@ describe('MCP approval routes', () => {
   })
 })
 
+describe('GET /v1/dashboard/governance/accounts', () => {
+  const URL = range('/v1/dashboard/governance/accounts')
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const ACC = 'a'.repeat(64)
+  const OWN = 'c'.repeat(64)
+  const OTHER = 'd'.repeat(64)
+  const seed = () => {
+    mongoState.docs.claudeEnrichment = [
+      { userId: USER_A, orgId: ORG_A, date: DATE, accountHashes: [ACC], claudeOrgHashes: [OWN] },
+      { userId: USER_B, orgId: ORG_A, date: DATE, accountHashes: [ACC], claudeOrgHashes: [OTHER] },
+      { userId: TEAM_B, orgId: ORG_A, date: DATE, accountHashes: null, claudeOrgHashes: null },
+    ]
+    mongoState.docs.users = [
+      { _id: USER_A, orgId: ORG_A, name: 'Ada' },
+      { _id: USER_B, orgId: ORG_A, name: 'Bo' },
+    ]
+  }
+
+  it.each(['developer', 'manager'] as const)('refuses a %s before reading anything', async (role) => {
+    seed()
+    expect((await get(role)).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('requires a full range', async () => {
+    expect((await get('admin', '/v1/dashboard/governance/accounts')).statusCode).toBe(400)
+  })
+
+  it('reads only the hash fields and answers with labels, coverage and flags', async () => {
+    seed()
+    mongoState.docs.organizations = [{ _id: ORG_A, ownClaudeOrgHashes: [OWN] }]
+    mongoState.docs.seats = [{ _id: 's', orgId: ORG_A, userId: USER_A, agent: 'claude' }]
+    const res = await get('admin')
+    expect(res.statusCode).toBe(200)
+    const [filter, opts] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [object, { projection: object }]
+    expect(filter).toEqual({ orgId: ORG_A, date: { $gte: DATE, $lte: DATE } })
+    expect(opts.projection).toEqual({ userId: 1, date: 1, accountHashes: 1, claudeOrgHashes: 1 })
+    expect(callsTo(mongoState, 'seats', 'find')[0][0]).toEqual({ orgId: ORG_A, agent: 'claude' })
+    const body = res.json()
+    expect(body).toMatchObject({ coverage: { users: 3, hashed: 2 }, companyOrgSet: true, seatsEntered: 1, companyOrgUsers: 1 })
+    expect(body.accounts).toEqual([{ label: 'Account 1', users: 2, days: 1, shared: true }])
+    expect(body.orgs.map((o: { label: string; ours: boolean; includesYou: boolean }) => [o.label, o.ours, o.includesYou])).toEqual([
+      ['Claude org 1', true, true],
+      ['Claude org 2', false, false],
+    ])
+    expect(body.people.map((p: { name: string; flags: string[] }) => [p.name, p.flags])).toEqual([
+      ['Bo', ['shared', 'outside-org']],
+      ['Ada', ['shared']],
+    ])
+    // No hash leaves the API except the org ids the save call needs.
+    const { orgs, ...rest } = body
+    expect(JSON.stringify(rest)).not.toMatch(/[0-9a-f]{64}/)
+    expect(orgs.map((o: { id: string }) => o.id)).toEqual([OWN, OTHER])
+  })
+
+  it('narrows to one team', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    expect((await get('admin', `${URL}&teamId=${TEAM_A}`)).statusCode).toBe(200)
+    expect((callsTo(mongoState, 'claudeEnrichment', 'find')[0][0] as { userId: unknown }).userId).toEqual({ $in: [USER_A] })
+  })
+
+  it('answers empty lists without reading users when nothing is hashed', async () => {
+    const body = (await get('admin')).json()
+    expect(body).toMatchObject({ coverage: { users: 0, hashed: 0 }, companyOrgSet: false, orgs: [], accounts: [], people: [] })
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+  })
+})
+
+describe('PUT /v1/dashboard/governance/claude-orgs', () => {
+  const url = '/v1/dashboard/governance/claude-orgs'
+  const OWN = 'c'.repeat(64)
+  const send = (payload: object, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method: 'PUT', url, payload, headers: auth(token({ role })) })
+
+  it.each(['developer', 'manager'] as const)('answers 403 to a %s and writes nothing', async (role) => {
+    expect((await send({ ids: [OWN] }, role)).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it.each([{ ids: ['x'] }, { ids: ['C'.repeat(64)] }, {}])('rejects %j with 400', async (body) => {
+    expect((await send(body)).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'organizations', 'updateOne')).toEqual([])
+  })
+
+  it('rejects an org hash never seen in this org', async () => {
+    mongoState.docs.claudeEnrichment = [{ orgId: ORG_A, claudeOrgHashes: ['d'.repeat(64)] }]
+    expect((await send({ ids: [OWN] })).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'organizations', 'updateOne')).toEqual([])
+  })
+
+  it('sets seen hashes and audits the count only', async () => {
+    mongoState.docs.claudeEnrichment = [{ orgId: ORG_A, claudeOrgHashes: [OWN] }]
+    const res = await send({ ids: [OWN, OWN] })
+    expect(res.json()).toEqual({ count: 1 })
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find')[0][0]).toEqual({ orgId: ORG_A, claudeOrgHashes: { $in: [OWN] } })
+    expect(callsTo(mongoState, 'organizations', 'updateOne')).toEqual([[{ _id: ORG_A }, { $set: { ownClaudeOrgHashes: [OWN] } }]])
+    const [event] = callsTo(mongoState, 'auditEvents', 'insertOne').map(([d]) => d as Record<string, unknown>)
+    expect(event).toMatchObject({ action: 'org.claude_orgs', detail: { count: 1 } })
+    expect(JSON.stringify(event)).not.toContain(OWN)
+  })
+
+  it('clears with an empty list', async () => {
+    expect((await send({ ids: [] })).json()).toEqual({ count: 0 })
+    expect(callsTo(mongoState, 'organizations', 'updateOne')).toEqual([[{ _id: ORG_A }, { $unset: { ownClaudeOrgHashes: '' } }]])
+  })
+})
+
 describe('GET /v1/dashboard/governance/violations', () => {
   const URL = range('/v1/dashboard/governance/violations')
   const get = (role: JwtPayload['role'], url = URL) =>

@@ -45,6 +45,8 @@ describe('auditSentence', () => {
     ['org.leaderboard_settings', { detail: { developerView: 'full', showNames: false, showOthersCost: true } }, "Changed leaderboard settings: developers see the whole list, names off, others' cost on"],
     ['org.min_claude_version', { detail: { minClaudeVersion: '2.1.0' } }, 'Set the minimum Claude Code version to 2.1.0'],
     ['org.min_claude_version', { detail: { minClaudeVersion: null } }, 'Cleared the minimum Claude Code version'],
+    ['org.claude_orgs', { detail: { count: 2 } }, "Marked 2 Claude orgs as the company's"],
+    ['org.claude_orgs', { detail: { count: 0 } }, "Cleared the company's Claude org"],
     ['copilot.connect', { detail: { org: 'acme' } }, 'Connected Copilot for GitHub org acme'],
     ['copilot.disconnect', {}, 'Disconnected Copilot'],
     ['copilot.sync', { detail: { day: '2026-11-09', reportPublished: true, written: 4 } }, 'Ran a Copilot sync for 2026-11-09: 4 rows written'],
