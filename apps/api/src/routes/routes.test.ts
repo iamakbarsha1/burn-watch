@@ -4065,6 +4065,114 @@ describe('GET /v1/dashboard/adoption/features', () => {
   })
 })
 
+describe('GET /v1/dashboard/adoption/practices', () => {
+  const t = today()
+  const from = daysBefore(t, 6)
+  const URL = `/v1/dashboard/adoption/practices?from=${from}&to=${t}`
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const U3 = 'u3-practices'
+  const U4 = 'u4-practices'
+  const day = (userId: string, date: string, over: Record<string, unknown> = {}) => ({ userId, orgId: ORG_A, date, ...over })
+  // USER_A: 3 days, MCP every day. The others: 1 day each, no MCP. USER_B has the most tokens.
+  const seed = () => {
+    mongoState.docs.claudeEnrichment = [
+      ...[0, 1, 2].map((n) => day(USER_A, daysBefore(t, n), { mcpUsage: { github: 1 } })),
+      day(USER_B, t),
+      day(U3, t),
+      day(U4, t, { toolUsage: { exitplanmode: 1 } }),
+    ]
+    mongoState.docs.users = [USER_A, USER_B, U3, U4].map((_id) => ({ _id, name: `Name-${_id}` }))
+    mongoState.aggregates.usageEvents = [
+      { _id: USER_A, tokens: 100, read: 95, cacheable: 100 },
+      { _id: USER_B, tokens: 900, read: 50, cacheable: 100 },
+      { _id: U3, tokens: 10, read: 60, cacheable: 100 },
+    ]
+    mongoState.aggregates.claudeEnrichment = [{ _id: USER_A, servers: ['github', 'linear'] }]
+  }
+
+  it('refuses a developer before reading anything', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
+  })
+
+  it.each([`?from=${from}`, `?from=${from}&to=${t}&rankBy=cost`])('rejects query %s', async (q) => {
+    expect((await get('admin', `/v1/dashboard/adoption/practices${q}`)).statusCode).toBe(400)
+  })
+
+  it('compares nothing below 4 people and reads no tokens', async () => {
+    mongoState.docs.claudeEnrichment = [day(USER_A, t), day(USER_B, t), day(U3, t)]
+    mongoState.docs.users = [{ _id: USER_A }, { _id: USER_B }, { _id: U3 }]
+    const body = (await get('admin')).json()
+    expect(body).toEqual({ from, to: t, rankBy: 'days', population: 3, minPopulation: 4, top: null, rest: null, tips: [] })
+    expect(callsTo(mongoState, 'usageEvents', 'aggregate')).toEqual([])
+  })
+
+  it('ranks by active days, compares the groups, fires tips, and names no one', async () => {
+    seed()
+    const res = await get('admin')
+    const body = res.json()
+    expect(body.population).toBe(4)
+    expect(body.top).toEqual({
+      users: 1,
+      uses: { mcp: 1, skills: 0, subagents: 0, plan: 0 },
+      dayShare: { mcp: 1, skills: 0, subagents: 0, plan: 0 },
+      mcpServers: 2,
+      cacheHitRate: 95,
+    })
+    expect(body.rest).toMatchObject({ users: 3, mcpServers: 0, cacheHitRate: 55 })
+    expect(body.rest.uses.plan).toBeCloseTo(1 / 3)
+    expect(body.tips).toEqual([{ id: 'mcp', gap: 1 }, { id: 'cache', gap: 0.4 }])
+    for (const id of [USER_A, USER_B, U3, U4]) expect(res.body).not.toContain(id)
+    expect(res.body).not.toContain('Name-')
+
+    const [pipeline] = callsTo(mongoState, 'usageEvents', 'aggregate')[0] as Document[][]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, agent: 'claude', date: { $gte: from, $lte: t } })
+    expect(pipeline[0].$match.userId.$in.sort()).toEqual([USER_A, USER_B, U3, U4].sort())
+    expect(callsTo(mongoState, 'dailySnapshots', 'find')).toEqual([])
+  })
+
+  it('ranks by Claude tokens when asked', async () => {
+    seed()
+    const body = (await get('admin', `${URL}&rankBy=tokens`)).json()
+    expect(body.rankBy).toBe('tokens')
+    // USER_B is on top now: no MCP, 50% cache.
+    expect(body.top).toMatchObject({ users: 1, mcpServers: 0, cacheHitRate: 50 })
+    expect(body.top.uses.mcp).toBe(0)
+  })
+
+  it('ranks by the A8 score, reading all-time snapshots for the streak', async () => {
+    seed()
+    mongoState.docs.dailySnapshots = [
+      ...[0, 1, 2].map((n) => ({ userId: U4, date: daysBefore(t, n), totalTokens: 500, byAgent: { claude: { tokens: 500 }, codex: { tokens: 1 } } })),
+      { userId: USER_A, date: t, totalTokens: 10, byAgent: { claude: { tokens: 10 } } },
+    ]
+    const body = (await get('admin', `${URL}&rankBy=score`)).json()
+    const [filter] = callsTo(mongoState, 'dailySnapshots', 'find')[0] as [Record<string, unknown>]
+    expect(filter).toMatchObject({ orgId: ORG_A, totalTokens: { $gt: 0 } })
+    expect(filter).not.toHaveProperty('date')
+    // U4 leads days, streak, tokens and agents in snapshots: the top is the plan-mode user.
+    expect(body.top.uses).toEqual({ mcp: 0, skills: 0, subagents: 0, plan: 1 })
+  })
+
+  it('limits a manager to their teams', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const res = await get('manager')
+    const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
+    expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B].sort())
+    expect(res.json().population).toBe(0)
+  })
+
+  it('answers 404 to a team outside the org before reading usage', async () => {
+    expect((await get('admin', `${URL}&teamId=${TEAM_B}`)).statusCode).toBe(404)
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
+  })
+})
+
 describe('audit log (R1 B8)', () => {
   const call = (
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',

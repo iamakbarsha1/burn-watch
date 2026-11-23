@@ -1,6 +1,6 @@
 # R2 · A6 Top quartile vs rest: design
 
-Status: draft 2026-11-23, decisions open. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
+Status: decisions locked and built as web-v0.17.0, 2026-11-23. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
 R2, row A6 ("Top quartile vs rest: MCP setup, skills, cache hit rate;
 generated tips"). Builds on A5 (`tasks/R2-A5-FEATURE-MATRIX-DESIGN.md`).
 A7 (champions) and D5 (shared setup) reuse the split defined here.
@@ -81,7 +81,7 @@ enrichment day in range. Same `readScope`, same range clamp.
 
 ```ts
 // apps/api/src/routes/dashboard/quartile.ts
-export const MIN_QUARTILE_PEOPLE = 8
+export const MIN_QUARTILE_PEOPLE = 4
 export function quartileSplit(people: FeaturePerson[], tokens: Map<UserId, number>):
   { top: UserId[]; rest: UserId[] } | null
 ```
@@ -145,7 +145,7 @@ interface PracticesResponse {
 }
 ```
 
-The team filter changes the population, so a team of 8 or more gets its own
+The team filter changes the population, so a team of 4 or more gets its own
 quartile. A smaller team gets the empty state. No names or user ids in the
 response.
 
@@ -175,13 +175,13 @@ and team picker.
 - Table: Measure, Top, Rest. Rows: Uses MCP, MCP servers (median), Uses
   skills, Uses subagents, Uses plan mode, Cache hit rate (median).
 - Tips under the table as a short list.
-- Below the minimum: "Needs 8 or more Claude Code users in range. This
+- Below the minimum: "Needs 4 or more Claude Code users in range. This
   scope has N." No table, no tips.
 - Existing `Section`, `TableFrame`, `Th`, `Td`.
 
 ## Tests
 
-- `quartileSplit`: null at 7, split at 8 (2 top, 6 rest), ceil at 9 (3
+- `quartileSplit`: null at 3, 1 top at 4, 2 top at 8, ceil at 9 (3
   top), tie on active days broken by tokens then `userId`, stable order.
 - Measures: median of even and odd counts; cache rate with zero tokens is
   null; a person with no `usageEvents` row still counts in feature shares.
@@ -195,32 +195,33 @@ and team picker.
 ## Release
 
 Next web minor, `--latest=false`. No agent release, no schema sync.
-Prod will show the empty state (2 people of 8).
+Prod will show the empty state (2 people of 4).
 
-## Decisions (open)
+## Decisions (locked 2026-11-23)
 
-1. **What ranks people into the top quartile.** Active days in range,
-   ties by Claude tokens. Recommended: it matches the leaderboard default
-   and is not one of the compared measures. Other choices: tokens (rewards
-   long, costly sessions) or the A8 score (includes MCP servers tried, so
-   the MCP row would compare a measure with itself).
-2. **Minimum population.** 8 Claude Code users in scope, so the top group
-   has at least 2 people and the rest at least 6. Recommended. Lower
-   numbers make "top quartile" one person, which is a name in disguise.
-3. **Cache hit rate source.** Token-weighted from `usageEvents`.
-   Recommended, given 27 suspect zero days in `dailySnapshots`. The other
-   choice, mean of daily `cacheHitRate`, is wrong over a range
-   (`leaderboard.ts:359`) and wrong on those days.
-4. **Generated tips.** Fixed rules and fixed text. Recommended: no cost, no
-   usage data sent to a model provider, same output every load, testable.
-   The other choice is an LLM summary of the table; it needs an API key, a
-   privacy page line and a way to stop it inventing advice.
-5. **A5 "used" threshold** (A5 Decision 2 left this to A6). Keep "1 day".
-   Recommended: A6 compares day shares, which already weigh light use, so
-   A5 needs no threshold change.
-6. **A8 features tried** (A5 Decision 6 left this to A6). Leave A8 as it
-   is. Recommended: changing it moves every leaderboard score, and A6 does
-   not need it.
+1. **What ranks people into the top quartile.** All three, as a picker:
+   active days (default), Claude tokens, A8 score. API takes
+   `?rankBy=days|tokens|score`. Ties go to Claude tokens, then `userId`.
+   With A8 score the page says the MCP rows partly compare the score with
+   itself. The score is computed within the A6 population, so the "top
+   person" each part is measured against is this scope's top.
+2. **Minimum population.** 4. At 4 to 7 people the top group is one
+   person; chosen knowingly. `MIN_QUARTILE_PEOPLE = 4`.
+3. **Cache hit rate source.** Token-weighted from `usageEvents`, as
+   recommended.
+4. **Generated tips.** Fixed rules and fixed text, as recommended.
+5. **A5 "used" threshold.** Stays "1 day".
+6. **A8 features tried.** A8 unchanged. Its score loop moved into
+   `scoreAll()` in `leaderboard.ts` so A6 can rank by it; same output.
+
+### Built differently from the draft above
+
+- `quartileSplit(people)` takes `{ userId, rank, tokens }` rows, where
+  `rank` is the picked measure, instead of `(people, tokens)`.
+- Tip `gap` is always a share 0..1. The cache rule fires at 0.10 (10
+  percentage points / 100), so tips sort on one scale.
+- The response carries `rankBy`.
+- Empty state reads "Needs 4 or more...".
 
 ## Steps
 

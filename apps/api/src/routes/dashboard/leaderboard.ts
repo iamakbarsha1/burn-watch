@@ -162,6 +162,29 @@ async function leaderboardSettings(orgId: OrgId): Promise<LeaderboardSettings> {
 /** `value / top`, 0 when nobody has any. */
 const share = (value: number, top: number) => (top > 0 ? value / top : 0)
 
+export interface ScoreParts {
+  activeDays: number
+  /** Current streak. */
+  streak: number
+  tokens: number
+  /** Agents used plus MCP servers tried. */
+  features: number
+}
+
+/** The A8 score: each part against the top person in the same set. A6 ranks by it too. */
+export function scoreAll(parts: ScoreParts[]): number[] {
+  const top = (k: keyof ScoreParts) => Math.max(...parts.map((p) => p[k]))
+  const tops = { activeDays: top('activeDays'), streak: top('streak'), tokens: top('tokens'), features: top('features') }
+  return parts.map((p) =>
+    Math.round(
+      SCORE_WEIGHTS.activeDays * share(p.activeDays, tops.activeDays) +
+        SCORE_WEIGHTS.streak * share(p.streak, tops.streak) +
+        SCORE_WEIGHTS.tokens * share(p.tokens, tops.tokens) +
+        SCORE_WEIGHTS.features * share(p.features, tops.features),
+    ),
+  )
+}
+
 export async function leaderboardRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/leaderboard',
@@ -277,20 +300,10 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
         return { row, streak, features, featureCount: agents.length + features.mcpServers.length, score: 0 }
       })
 
-      // Each part against the top person in the same scope and range.
-      const top = (pick: (r: (typeof rows)[number]) => number) => Math.max(...rows.map(pick))
-      const topDays = top((r) => r.row.activeDays)
-      const topStreak = top((r) => r.streak.current)
-      const topTokens = top((r) => r.row.totalTokens)
-      const topFeatures = top((r) => r.featureCount)
-      for (const r of rows) {
-        r.score = Math.round(
-          SCORE_WEIGHTS.activeDays * share(r.row.activeDays, topDays) +
-            SCORE_WEIGHTS.streak * share(r.streak.current, topStreak) +
-            SCORE_WEIGHTS.tokens * share(r.row.totalTokens, topTokens) +
-            SCORE_WEIGHTS.features * share(r.featureCount, topFeatures),
-        )
-      }
+      const scores = scoreAll(
+        rows.map((r) => ({ activeDays: r.row.activeDays, streak: r.streak.current, tokens: r.row.totalTokens, features: r.featureCount })),
+      )
+      rows.forEach((r, i) => (r.score = scores[i]))
 
       const key: Record<LeaderboardSort, (r: (typeof rows)[number]) => number> = {
         activeDays: (r) => r.row.activeDays,

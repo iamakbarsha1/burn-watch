@@ -8,6 +8,23 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.17.0 (2026-11-23)
+
+R2 A6: top users vs rest.
+
+- New "Top users vs rest" section on `/adoption`, for admins and
+  managers. It compares the top quarter of Claude Code users with
+  everyone else on MCP, skills, subagents, plan mode, MCP servers and
+  cache hit rate. No names.
+- Rank by active days (default), Claude tokens or leaderboard score.
+- Up to three fixed tips name the biggest gaps.
+- Needs 4 or more Claude Code users in scope. Below that the section
+  says how many it has.
+- Cache hit rate is weighted by tokens from usage rows, not a mean of
+  daily rates.
+- New route `GET /v1/dashboard/adoption/practices`. No schema sync, no
+  agent release.
+
 ## web-v0.16.0 (2026-11-23)
 
 R2 C4: usage per ticket.

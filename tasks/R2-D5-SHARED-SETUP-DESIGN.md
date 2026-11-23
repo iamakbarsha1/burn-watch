@@ -26,7 +26,7 @@ MCP servers can ship now. Skill names cannot: the data does not carry them
 | MCP collection | `apps/agent/src/collectors/codeburn.ts:216-218` | Server = second `__` part of an `mcp__` tool name. |
 | Skill runs | `codeburn.ts:219-220` | A `Skill` tool call lands in `toolUsage.skill` as a count. The skill's name is dropped. |
 | Skill names | `codeburn.ts:247`, `packages/shared/src/schemas.ts:93` | `skillCounts` from `attributionSkill`. Claude Code sets it on few lines. |
-| Top quartile | A6 design, `quartile.ts` (not built) | `quartileSplit`, null below 8 people. |
+| Top quartile | `apps/api/src/routes/dashboard/quartile.ts` (A6, web-v0.17.0) | `quartileSplit`, null below `MIN_QUARTILE_PEOPLE` (4). |
 
 ## What the data says today
 
@@ -156,7 +156,7 @@ A "Recommended setup" block in the A6 section on `/adoption`.
   text such as:
   `MCP for .mcp.json: github, linear. Plugin: superpowers. Skills: (needs agent 0.6)`.
 - Unapproved servers carry a badge for admins only.
-- Empty states use `reason`: "Needs 8 or more Claude Code users in the
+- Empty states use `reason`: "Needs 4 or more Claude Code users in the
   org" or "Fewer than 2 top users in this team".
 
 ## Tests

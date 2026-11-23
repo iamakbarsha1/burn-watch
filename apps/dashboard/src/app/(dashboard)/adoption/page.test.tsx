@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { FeatureMatrixResponse, FunnelCounts, FunnelResponse, IdleSeatsResponse } from '@burn-watch/shared'
+import type { FeatureMatrixResponse, FunnelCounts, FunnelResponse, IdleSeatsResponse, PracticeGroup, PracticesResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   funnel: null as FunnelResponse | null,
   funnelAsked: [] as string[][],
   features: null as FeatureMatrixResponse | null,
+  practices: null as PracticesResponse | null,
+  rankAsked: [] as string[],
 }))
 
 vi.mock('next/navigation', () => ({
@@ -32,6 +34,11 @@ vi.mock('@/lib/api', () => ({
   fetchFeatures: async () => {
     if (!state.features) throw new Error('down')
     return state.features
+  },
+  fetchPractices: async (_from: string, _to: string, rankBy: string) => {
+    state.rankAsked.push(rankBy)
+    if (!state.practices) throw new Error('down')
+    return state.practices
   },
 }))
 vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => null }))
@@ -57,6 +64,8 @@ beforeEach(() => {
   state.funnel = null
   state.funnelAsked = []
   state.features = null
+  state.practices = null
+  state.rankAsked = []
 })
 
 describe('AdoptionPage', () => {
@@ -258,6 +267,65 @@ describe('AdoptionPage funnel', () => {
       expect(await render()).toContain('No Claude Code use in this range.')
       state.features = null
       expect(await render()).toContain('Could not read feature use.')
+    })
+  })
+
+  describe('Top users vs rest', () => {
+    const group = (over: Partial<PracticeGroup> = {}): PracticeGroup => ({
+      users: 1,
+      uses: { mcp: 1, skills: 0, subagents: 0, plan: 0 },
+      dayShare: { mcp: 1, skills: 0, subagents: 0, plan: 0 },
+      mcpServers: 2,
+      cacheHitRate: 95,
+      ...over,
+    })
+    const practices = (over: Partial<PracticesResponse> = {}): PracticesResponse => ({
+      from: '2026-11-01',
+      to: '2026-11-07',
+      rankBy: 'days',
+      population: 4,
+      minPopulation: 4,
+      top: group(),
+      rest: group({ users: 3, uses: { mcp: 0, skills: 0, subagents: 0, plan: 0 }, mcpServers: 0, cacheHitRate: null }),
+      tips: [{ id: 'mcp', gap: 1 }],
+      ...over,
+    })
+
+    it('shows the table and the tips, ranked by active days by default', async () => {
+      state.practices = practices()
+      const html = await render()
+      expect(state.rankAsked).toEqual(['days'])
+      expect(html).toContain('Top users vs rest')
+      expect(html).toContain('Top (1)')
+      expect(html).toContain('Rest (3)')
+      expect(html).toContain('95.0%')
+      expect(html).toContain('Most top users call MCP servers')
+      expect(html).not.toContain('compare the score with itself')
+    })
+
+    it('passes the picked ranking, keeps other params in the links, and warns on score', async () => {
+      state.practices = practices({ rankBy: 'score' })
+      const html = await render({ rankBy: 'score', from: '2026-11-01' })
+      expect(state.rankAsked).toEqual(['score'])
+      expect(html).toContain('href="?rankBy=tokens&amp;from=2026-11-01"')
+      expect(html).toContain('href="?from=2026-11-01"')
+      expect(html).toContain('compare the score with itself')
+    })
+
+    it('ignores an unknown ranking', async () => {
+      await render({ rankBy: 'cost' })
+      expect(state.rankAsked).toEqual(['days'])
+    })
+
+    it('says how many people the scope has below the minimum', async () => {
+      state.practices = practices({ population: 2, top: null, rest: null, tips: [] })
+      const html = await render()
+      expect(html).toContain('Needs 4 or more Claude Code users in range. This scope has 2.')
+      expect(html).not.toContain('Top (')
+    })
+
+    it('says when the comparison could not be read', async () => {
+      expect(await render()).toContain('Could not read the comparison.')
     })
   })
 })
