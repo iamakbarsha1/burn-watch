@@ -1,5 +1,6 @@
 import {
   PRACTICE_FEATURES,
+  type ChampionReason,
   type FeatureKey,
   type PracticeFeature,
   type PracticeGroup,
@@ -28,12 +29,14 @@ export interface Ranked {
  */
 export function quartileSplit<T extends Ranked>(people: T[]): { top: T[]; rest: T[] } | null {
   if (people.length < MIN_QUARTILE_PEOPLE) return null
-  const sorted = [...people].sort(
-    (a, b) => b.rank - a.rank || b.tokens - a.tokens || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0),
-  )
+  const sorted = [...people].sort(byRank)
   const cut = Math.ceil(sorted.length / 4)
   return { top: sorted.slice(0, cut), rest: sorted.slice(cut) }
 }
+
+/** Highest `rank` first, then tokens, then userId. */
+export const byRank = (a: Ranked, b: Ranked) =>
+  b.rank - a.rank || b.tokens - a.tokens || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0)
 
 /** Middle value, or the mean of the two middle values. Null for no values. */
 export function median(values: number[]): number | null {
@@ -78,4 +81,33 @@ export function practiceTips(top: PracticeGroup, rest: PracticeGroup): PracticeT
     .filter((t) => t.gap >= TIP_THRESHOLDS[t.id] - 1e-9)
     .sort((a, b) => b.gap - a.gap)
     .slice(0, 3)
+}
+
+/** R2 A7 Decision 2: a team of 2 has no champion, just "the other person". */
+export const MIN_CHAMPION_TEAM = 3
+
+export interface ChampionCandidate extends Ranked {
+  days: Record<FeatureKey, number | null>
+  hidden: boolean
+}
+
+/**
+ * R2 A7 Decision 1: the top 2 of a team by the picked ranking, no feature
+ * floor. Decision 3: `skipHidden` (a manager viewing) leaves out people who
+ * hid their name, and the next one takes the slot.
+ */
+export function suggestChampions<T extends ChampionCandidate>(
+  members: T[],
+  skipHidden: boolean,
+): { reason: ChampionReason; champions: { person: T; uses: PracticeFeature[]; canHelpWith: PracticeFeature[] }[] } {
+  if (members.length < MIN_CHAMPION_TEAM) return { reason: 'tooFew', champions: [] }
+  const used = (p: T) => PRACTICE_FEATURES.filter((k) => (p.days[k] ?? 0) > 0)
+  // Features fewer than half the team uses.
+  const rare = PRACTICE_FEATURES.filter((k) => members.filter((p) => (p.days[k] ?? 0) > 0).length * 2 < members.length)
+  const champions = members
+    .filter((p) => !(skipHidden && p.hidden))
+    .sort(byRank)
+    .slice(0, 2)
+    .map((person) => ({ person, uses: used(person), canHelpWith: used(person).filter((k) => rare.includes(k)) }))
+  return { reason: champions.length ? 'ok' : 'noneEligible', champions }
 }

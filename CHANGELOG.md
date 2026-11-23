@@ -8,6 +8,23 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.18.0 (2026-11-23)
+
+R2 A7: suggested champions.
+
+- New "Suggested champions" block in the "Top users vs rest" section on
+  `/adoption`. It shows the top 2 Claude Code users per team, ranked by
+  the same "Rank by" picker, with the features they use and the ones
+  they could help the team with.
+- Teams need 3 or more Claude Code users. Admins also see a "No team"
+  row.
+- People who hid their name on the leaderboard are never suggested to
+  managers. Admins see them with a note. When an org turns leaderboard
+  names off, managers see no champions.
+- A suggestion only. Nothing is stored and nobody is told.
+- `GET /v1/dashboard/adoption/practices` gains `champions` and
+  `namesOff`. No schema sync, no agent release.
+
 ## web-v0.17.0 (2026-11-23)
 
 R2 A6: top users vs rest.

@@ -27,6 +27,7 @@ import {
   type IdleSeatRow,
   type IdleSeatsResponse,
   type PracticesResponse,
+  type TeamChampions,
   type StuckPerson,
 } from '@burn-watch/shared'
 import { comparableTeams, readScope } from '../../plugins/jwt.js'
@@ -35,8 +36,8 @@ import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
 import { countFeatures, featureDays, type FeatureFields } from './features.js'
 import type { EnrichmentRange } from './enrichment.js'
-import { mcpServersPipeline, scoreAll } from './leaderboard.js'
-import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit } from './quartile.js'
+import { leaderboardSettings, mcpServersPipeline, scoreAll } from './leaderboard.js'
+import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, suggestChampions } from './quartile.js'
 import { streaks } from './streaks.js'
 
 const DAY_MS = 86_400_000
@@ -481,7 +482,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
 
   // R2 A6. The top quartile of Claude Code users against the rest. Aggregates only.
   fastify.get('/adoption/practices', async (request, reply) => {
-    const { role } = request.user
+    const { role, userId: viewerId } = request.user
     if (role !== 'admin' && role !== 'manager') {
       return reply.status(403).send({ error: 'Adoption requires admin or manager role' })
     }
@@ -501,12 +502,18 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     // Same population as A5: active users with a Claude Code day in range.
     const daysOf = await readFeatureDays(orgId, from, to, scope)
     const ids = [...daysOf.keys()]
-    const active = ids.length
-      ? await store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { _id: 1 } })
-      : []
+    const [active, teams, settings] = await Promise.all([
+      ids.length
+        ? store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1, hideOnLeaderboard: 1 } })
+        : Promise.resolve([]),
+      comparableTeams(request.user),
+      leaderboardSettings(orgId),
+    ])
     const userIds = active.map((u) => u._id)
-    const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE }
-    if (userIds.length < MIN_QUARTILE_PEOPLE) return { ...base, top: null, rest: null, tips: [] } satisfies PracticesResponse
+    // A7 privacy: as the leaderboard, names off hides everyone from a manager.
+    const namesOff = role !== 'admin' && !settings.showNames
+    const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE, namesOff }
+    if (userIds.length === 0) return { ...base, top: null, rest: null, tips: [], champions: [] } satisfies PracticesResponse
 
     const range = { orgId, userIds, from, to }
     const [tokenRows, mcpRows, snapshots] = await Promise.all([
@@ -543,12 +550,16 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       scoreAll(parts).forEach((score, i) => scoreOf.set(userIds[i], score))
     }
 
-    const people = userIds.map((userId) => {
+    const people = active.map((u) => {
+      const userId = u._id
       const t = tokensOf.get(userId)
       const docs = daysOf.get(userId)!
       const tokens = t?.tokens ?? 0
       return {
         userId,
+        name: u.name,
+        // A7 Decision 3: you are never hidden from yourself.
+        hidden: !!u.hideOnLeaderboard && userId !== viewerId,
         tokens,
         rank: rankBy === 'days' ? docs.length : rankBy === 'tokens' ? tokens : scoreOf.get(userId) ?? 0,
         activeDays: docs.length,
@@ -557,9 +568,46 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
         cacheHitRate: t && t.cacheable > 0 ? (t.read / t.cacheable) * 100 : null,
       }
     })
-    const split = quartileSplit(people)!
+    // R2 A7: champions per visible team, shown even below the A6 minimum.
+    const champions: TeamChampions[] = []
+    if (!namesOff) {
+      const visible = teams.filter((team) => !teamId || team._id === teamId)
+      const members = visible.length
+        ? await store.teamMembers.find({ orgId, teamId: { $in: visible.map((t) => t._id) }, userId: { $in: userIds } })
+        : []
+      const groups: { teamId: TeamId | null; teamName: string; ids: Set<string> }[] = visible.map((team) => ({
+        teamId: team._id,
+        teamName: team.name,
+        ids: new Set(members.filter((m) => m.teamId === team._id).map((m) => m.userId)),
+      }))
+      if (role === 'admin' && !teamId) {
+        const inTeam = new Set(members.map((m) => m.userId))
+        groups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
+      }
+      for (const g of groups) {
+        const team = people.filter((p) => g.ids.has(p.userId))
+        const { reason, champions: picked } = suggestChampions(team, role !== 'admin')
+        champions.push({
+          teamId: g.teamId,
+          teamName: g.teamName,
+          users: team.length,
+          reason,
+          champions: picked.map(({ person, uses, canHelpWith }) => ({
+            userId: person.userId,
+            name: person.name,
+            activeDays: person.activeDays,
+            hidden: person.hidden,
+            uses,
+            canHelpWith,
+          })),
+        })
+      }
+    }
+
+    const split = quartileSplit(people)
+    if (!split) return { ...base, top: null, rest: null, tips: [], champions } satisfies PracticesResponse
     const top = practiceGroup(split.top)
     const rest = practiceGroup(split.rest)
-    return { ...base, top, rest, tips: practiceTips(top, rest) } satisfies PracticesResponse
+    return { ...base, top, rest, tips: practiceTips(top, rest), champions } satisfies PracticesResponse
   })
 }

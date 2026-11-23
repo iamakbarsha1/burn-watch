@@ -4100,11 +4100,28 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect((await get('admin', `/v1/dashboard/adoption/practices${q}`)).statusCode).toBe(400)
   })
 
-  it('compares nothing below 4 people and reads no tokens', async () => {
-    mongoState.docs.claudeEnrichment = [day(USER_A, t), day(USER_B, t), day(U3, t)]
-    mongoState.docs.users = [{ _id: USER_A }, { _id: USER_B }, { _id: U3 }]
+  it('compares nothing below 4 people but still suggests champions', async () => {
+    mongoState.docs.claudeEnrichment = [day(USER_A, t), day(USER_A, from), day(USER_B, t), day(U3, t)]
+    mongoState.docs.users = [{ _id: USER_A, name: 'Ada' }, { _id: USER_B, name: 'Bo' }, { _id: U3, name: 'Cy' }]
     const body = (await get('admin')).json()
-    expect(body).toEqual({ from, to: t, rankBy: 'days', population: 3, minPopulation: 4, top: null, rest: null, tips: [] })
+    expect(body).toMatchObject({ population: 3, minPopulation: 4, top: null, rest: null, tips: [], namesOff: false })
+    expect(body.champions).toEqual([
+      {
+        teamId: null,
+        teamName: 'No team',
+        users: 3,
+        reason: 'ok',
+        champions: [
+          { userId: USER_A, name: 'Ada', activeDays: 2, hidden: false, uses: [], canHelpWith: [] },
+          expect.objectContaining({ activeDays: 1 }),
+        ],
+      },
+    ])
+  })
+
+  it('answers empty with no Claude Code users and reads no tokens', async () => {
+    const body = (await get('admin')).json()
+    expect(body).toMatchObject({ population: 0, top: null, champions: [] })
     expect(callsTo(mongoState, 'usageEvents', 'aggregate')).toEqual([])
   })
 
@@ -4123,8 +4140,10 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect(body.rest).toMatchObject({ users: 3, mcpServers: 0, cacheHitRate: 55 })
     expect(body.rest.uses.plan).toBeCloseTo(1 / 3)
     expect(body.tips).toEqual([{ id: 'mcp', gap: 1 }, { id: 'cache', gap: 0.4 }])
-    for (const id of [USER_A, USER_B, U3, U4]) expect(res.body).not.toContain(id)
-    expect(res.body).not.toContain('Name-')
+    // The comparison names no one; only A7 champions carry names.
+    const groups = JSON.stringify({ top: body.top, rest: body.rest, tips: body.tips })
+    for (const id of [USER_A, USER_B, U3, U4]) expect(groups).not.toContain(id)
+    expect(groups).not.toContain('Name-')
 
     const [pipeline] = callsTo(mongoState, 'usageEvents', 'aggregate')[0] as Document[][]
     expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, agent: 'claude', date: { $gte: from, $lte: t } })
@@ -4165,6 +4184,58 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
     expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B].sort())
     expect(res.json().population).toBe(0)
+  })
+
+  describe('champions (R2 A7)', () => {
+    const teamOfFour = () => {
+      seed()
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+      mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4].map((userId) => ({
+        teamId: TEAM_A, orgId: ORG_A, userId, role: userId === USER_A ? 'manager' : 'member',
+      }))
+    }
+    const names = (body: { champions: { teamName: string; champions: { name: string }[] }[] }) =>
+      Object.fromEntries(body.champions.map((t) => [t.teamName, t.champions.map((c) => c.name)]))
+
+    it('suggests the top 2 per team by the picked ranking, plus No team for an admin', async () => {
+      teamOfFour()
+      const body = (await get('admin')).json()
+      // USER_A has 3 days; the others tie on 1 day, so tokens decide: USER_B (900) next.
+      expect(names(body)).toEqual({ Platform: [`Name-${USER_A}`, `Name-${USER_B}`], 'No team': [] })
+      expect(body.champions[0]).toMatchObject({ teamId: TEAM_A, users: 4, reason: 'ok' })
+      expect(body.champions[0].champions[0]).toMatchObject({ uses: ['mcp'], canHelpWith: ['mcp'] })
+      expect(body.champions[1]).toMatchObject({ teamId: null, users: 0, reason: 'tooFew' })
+
+      const byTokens = (await get('admin', `${URL}&rankBy=tokens`)).json()
+      expect(names(byTokens).Platform[0]).toBe(`Name-${USER_B}`)
+    })
+
+    it('skips people who hid their name for a manager, but not the manager themself', async () => {
+      teamOfFour()
+      mongoState.docs.users = [USER_A, USER_B, U3, U4].map((_id) => ({ _id, name: `Name-${_id}`, hideOnLeaderboard: true }))
+      const manager = (await get('manager')).json()
+      // token() signs as USER_A by default.
+      expect(names(manager)).toEqual({ Platform: [`Name-${USER_A}`] })
+      expect(JSON.stringify(manager)).not.toContain(`Name-${USER_B}`)
+
+      const admin = (await get('admin')).json()
+      expect(admin.champions[0].champions.map((c: { hidden: boolean }) => c.hidden)).toEqual([false, true])
+    })
+
+    it('returns no champions to a manager when the org turned names off', async () => {
+      teamOfFour()
+      mongoState.docs.organizations = [{ _id: ORG_A, leaderboard: { showNames: false } }]
+      const manager = (await get('manager')).json()
+      expect(manager).toMatchObject({ namesOff: true, champions: [] })
+      expect(JSON.stringify(manager)).not.toContain('Name-')
+      expect((await get('admin')).json().namesOff).toBe(false)
+    })
+
+    it('narrows to the filtered team with no No-team row', async () => {
+      teamOfFour()
+      const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
+      expect(body.champions.map((t: { teamId: string }) => t.teamId)).toEqual([TEAM_A])
+    })
   })
 
   it('answers 404 to a team outside the org before reading usage', async () => {

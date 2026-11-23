@@ -70,9 +70,9 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.projectBreakdown[].branches': 'scoped', // Tickets, as keys; branch names are never shown
   'enrichment.projectBreakdown[].overheadK': 'none',
   'enrichment.topSessions': 'none',
-  'enrichment.toolUsage': 'scoped', // Activity
+  'enrichment.toolUsage': 'scoped', // Activity, Adoption
   'enrichment.shellUsage': 'scoped', // Activity
-  'enrichment.mcpUsage': 'scoped', // Activity, Leaderboard
+  'enrichment.mcpUsage': 'scoped', // Activity, Leaderboard, Adoption
   'enrichment.limitHitCount': 'admin', // limit-hit alerts
   'enrichment.claudeVersions': 'none',
   'enrichment.entrypointCounts': 'none',

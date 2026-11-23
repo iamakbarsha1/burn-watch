@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import type { PracticeGroup } from '@burn-watch/shared'
-import { MIN_QUARTILE_PEOPLE, median, practiceGroup, practiceTips, quartileSplit, type PracticePerson } from './quartile.js'
+import {
+  MIN_QUARTILE_PEOPLE,
+  median,
+  practiceGroup,
+  practiceTips,
+  quartileSplit,
+  suggestChampions,
+  type ChampionCandidate,
+  type PracticePerson,
+} from './quartile.js'
 
 const people = (n: number) => Array.from({ length: n }, (_, i) => ({ userId: `u${i}`, rank: n - i, tokens: 0 }))
 const ids = (xs: { userId: string }[]) => xs.map((x) => x.userId)
@@ -92,5 +101,50 @@ describe('practiceTips', () => {
 
   it('fires nothing when the rest do better', () => {
     expect(practiceTips(group({}, 50), group({ mcp: 1 }, 90))).toEqual([])
+  })
+})
+
+const member = (userId: string, rank: number, over: Partial<ChampionCandidate> = {}): ChampionCandidate => ({
+  userId,
+  rank,
+  tokens: 0,
+  hidden: false,
+  days: { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: null },
+  ...over,
+})
+
+describe('suggestChampions', () => {
+  it('needs 3 people', () => {
+    expect(suggestChampions([member('a', 9), member('b', 1)], false)).toEqual({ reason: 'tooFew', champions: [] })
+  })
+
+  it('takes the top 2 by rank, ties by tokens then userId', () => {
+    const team = [member('c', 5, { tokens: 1 }), member('b', 5, { tokens: 1 }), member('a', 5), member('d', 9)]
+    expect(suggestChampions(team, false).champions.map((c) => c.person.userId)).toEqual(['d', 'b'])
+  })
+
+  it('skips hidden people for a manager and keeps them for an admin', () => {
+    const team = [member('a', 9, { hidden: true }), member('b', 5), member('c', 1)]
+    expect(suggestChampions(team, true).champions.map((c) => c.person.userId)).toEqual(['b', 'c'])
+    expect(suggestChampions(team, false).champions.map((c) => c.person.userId)).toEqual(['a', 'b'])
+  })
+
+  it('says none is eligible when every member is hidden from the viewer', () => {
+    const team = ['a', 'b', 'c'].map((id) => member(id, 1, { hidden: true }))
+    expect(suggestChampions(team, true)).toEqual({ reason: 'noneEligible', champions: [] })
+  })
+
+  it('lists what a champion uses, and can help with what under half the team uses', () => {
+    const days = (mcp: number, skills: number, plan: number) => ({ mcp, skills, subagents: 0, plan, sdk: 1 })
+    // 4 people: MCP used by 3, skills by 2 (exactly half), plan by 1.
+    const team = [
+      member('a', 9, { days: days(1, 1, 1) }),
+      member('b', 1, { days: days(1, 1, 0) }),
+      member('c', 1, { days: days(1, 0, 0) }),
+      member('d', 1, { days: days(0, 0, 0) }),
+    ]
+    const [top] = suggestChampions(team, false).champions
+    expect(top.uses).toEqual(['mcp', 'skills', 'plan'])
+    expect(top.canHelpWith).toEqual(['plan'])
   })
 })
