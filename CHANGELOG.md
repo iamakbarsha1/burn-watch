@@ -8,6 +8,23 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.16.0 (2026-11-23)
+
+R2 C4: usage per ticket.
+
+- New `/tickets` page in the nav, same roles and range as `/projects`.
+  It shows Claude Code value, sessions, users, repos and days per Jira
+  ticket, read from Git branch names, plus a rollup per project key and
+  a "No ticket" row.
+- Only keys an admin lists count, so names like `UTF-8` are never read
+  as tickets. Matching ignores case, so `proj-123-fix` counts as
+  `PROJ-123`. Admins set the keys on the page and see upper-case keys
+  found in branch names as hints.
+- The API returns ticket keys and counts only, never branch names.
+  `/privacy` now shows branch data as visible to your scope.
+- Needs agent 0.4 or later. New routes `GET /v1/dashboard/tickets` and
+  `PUT /v1/dashboard/tickets/settings`. No schema sync, no agent release.
+
 ## web-v0.15.0 (2026-11-23)
 
 R2 B6: Claude accounts on `/governance`.

@@ -100,6 +100,10 @@ export function auditSentence(row: AuditRow, names: ReadonlyMap<string, string> 
         : 'Cleared the minimum Claude Code version'
     case 'org.claude_orgs':
       return d.count ? `Marked ${d.count} Claude ${d.count === 1 ? 'org' : 'orgs'} as the company's` : "Cleared the company's Claude org"
+    case 'org.ticket_prefixes':
+      return (d.prefixes as string[] | undefined)?.length
+        ? `Set ticket project keys to ${(d.prefixes as string[]).join(', ')}`
+        : 'Cleared the ticket project keys'
     case 'copilot.connect':
       return `Connected Copilot for GitHub org ${d.org}`
     case 'copilot.disconnect':

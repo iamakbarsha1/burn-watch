@@ -316,6 +316,32 @@ export interface OrgProjectSummary {
   userCount: number
 }
 
+// GET /v1/dashboard/tickets (R2 C4). Ticket keys come from Claude Code branch
+// names; raw branch names never leave the API.
+export interface TicketRow {
+  /** PROJ-123 */
+  key: string
+  cost: number
+  sessions: number
+  userCount: number
+  repoCount: number
+  days: number
+}
+
+export interface TicketUsageResponse {
+  from: string
+  to: string
+  /** Null when the admin has not set any project keys. */
+  prefixes: string[] | null
+  /** Sorted by cost, then key. */
+  tickets: TicketRow[]
+  projectKeys: { prefix: string; tickets: number; cost: number; sessions: number; userCount: number }[]
+  /** Branch cost with no allowed key. */
+  noTicket: { cost: number; sessions: number }
+  /** Upper-case prefixes seen in range that are not allowed yet, with distinct branch counts. Admins only, else null. */
+  suggestions: { prefix: string; branches: number }[] | null
+}
+
 // One budget alert as the dashboard sees it.
 //
 // `userId: null` means the alert watches the whole org, and `agent: null` means
@@ -738,6 +764,7 @@ export type AuditAction =
   | 'org.leaderboard_settings'
   | 'org.min_claude_version'
   | 'org.claude_orgs'
+  | 'org.ticket_prefixes'
   | 'copilot.connect'
   | 'copilot.disconnect'
   | 'copilot.sync'

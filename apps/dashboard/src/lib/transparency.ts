@@ -67,7 +67,7 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.writtenTokens': 'none',
   'enrichment.activityBreakdown': 'none',
   'enrichment.projectBreakdown': 'scoped', // Projects
-  'enrichment.projectBreakdown[].branches': 'none',
+  'enrichment.projectBreakdown[].branches': 'scoped', // Tickets, as keys; branch names are never shown
   'enrichment.projectBreakdown[].overheadK': 'none',
   'enrichment.topSessions': 'none',
   'enrichment.toolUsage': 'scoped', // Activity

@@ -1,6 +1,6 @@
 # R2 · C4 Usage per ticket: design
 
-Status: design drafted 2026-11-23, decisions open. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
+Status: built 2026-11-23 as web-v0.16.0. Decisions locked 2026-11-23. Decision 4 changed to a new `/tickets` page; the other five as recommended. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
 R2. Builds on the branch data R0.3 added (`tasks/R0.3-AGENT-PRIVACY-DESIGN.md`,
 decision 8) and on the Projects page.
 
@@ -60,7 +60,7 @@ In:
 - A pure function `ticketKey(branch, prefixes)` in the API.
 - `GET /v1/dashboard/tickets`: ticket rows and project-key rows.
 - An admin setting for allowed project keys, stored on the org.
-- A Tickets section on `/projects`.
+- A new `/tickets` page and nav item (Decision 4).
 - `/privacy`: branches move from "none" to "scoped".
 
 Out:
@@ -176,7 +176,7 @@ names. Types go in `packages/shared/src/types.ts` next to
 
 ## Dashboard
 
-On `/projects`, under the project table, a `Tickets` section using the
+A new `/tickets` page, linked in the nav after Projects, using the
 existing `TableFrame`, `Th`, `Td`, `Tr`, `EmptyRow`. Same range bar, since
 `/projects` is already range-scoped (`components/RangeBar.tsx:14`).
 
@@ -230,7 +230,7 @@ collector keeps reading `gitBranch` the same way
 Next web minor, `--latest=false` (memory: release per change). No agent
 release, no schema sync, no migration.
 
-## Decisions (open)
+## Decisions (locked 2026-11-23)
 
 1. **Allowlist or any match.** Recommended: admin allowlist required, with
    upper-case prefixes seen in the data offered as one-click suggestions.
@@ -243,8 +243,9 @@ release, no schema sync, no migration.
 3. **Case.** Recommended: match case-insensitively, then require an allowed
    prefix. Upper-case only is stricter but misses `proj-123-fix`, a common
    hand-typed form.
-4. **Where it shows.** Recommended: a section on `/projects`, same roles as
-   that page. A new nav item is more visible but adds a page for one table.
+4. **Where it shows.** Locked: a new `/tickets` page with its own nav item,
+   same roles and range bar as `/projects`. (Recommended was a section on
+   `/projects`; the user chose the page for visibility.)
 5. **Tokens per ticket.** Recommended: cost and sessions only for now. Adding
    tokens means new optional fields on `BranchEntrySchema`, which rides the
    next agent minor after 0.6.0, and only fills from then on.
@@ -252,6 +253,12 @@ release, no schema sync, no migration.
    Jira project". Epics, titles and status need a Jira integration
    (`OrgIntegrationDoc.provider` would gain `'jira'`); make it its own
    roadmap item if wanted.
+
+## Build notes (2026-11-23)
+
+- The key form lives on `/tickets` for admins, not on Admin, since C4 has its
+  own page now. No `GET /tickets/settings`: `GET /tickets` already returns
+  `prefixes` and `suggestions`.
 
 ## Steps
 

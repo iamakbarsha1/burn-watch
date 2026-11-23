@@ -233,6 +233,10 @@ export const DeviceSettingsSchema = z.object({
 export const ClaudeOrgsInputSchema = z.object({
   ids: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(50),
 })
+// R2 C4. Jira project keys; an empty list clears the setting.
+export const TicketPrefixesSchema = z.object({
+  prefixes: z.array(z.string().regex(/^[A-Z][A-Z0-9]{1,9}$/)).max(50),
+})
 export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
 
 // R1 B8. The audit log's `action` filter is a prefix from this closed list.
