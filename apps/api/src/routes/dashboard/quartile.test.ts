@@ -6,6 +6,7 @@ import {
   practiceGroup,
   practiceTips,
   quartileSplit,
+  recommendedSetup,
   suggestChampions,
   type ChampionCandidate,
   type PracticePerson,
@@ -146,5 +147,38 @@ describe('suggestChampions', () => {
     const [top] = suggestChampions(team, false).champions
     expect(top.uses).toEqual(['mcp', 'skills', 'plan'])
     expect(top.canHelpWith).toEqual(['plan'])
+  })
+})
+
+describe('recommendedSetup', () => {
+  const p = (...servers: string[]) => ({ servers })
+  const UUID = '0b5d1a2e-3c4f-4a6b-8c9d-0e1f2a3b4c5d'
+
+  it('needs a group of 2', () => {
+    expect(recommendedSetup([p('github')], [p('github')], null)).toEqual({ reason: 'smallGroup', items: [] })
+  })
+
+  it('keeps servers used by half the group and 2 people, and skips unnamed ones', () => {
+    const group = [p('github', 'linear', UUID), p('github', UUID), p('linear', 'solo'), p()]
+    const everyone = [...group, p('github'), p('github')]
+    const { items } = recommendedSetup(group, everyone, null)
+    expect(items).toEqual([
+      { key: 'github', source: 'local', topUsers: 2, teamUsers: 4, approved: null },
+      { key: 'linear', source: 'local', topUsers: 2, teamUsers: 2, approved: null },
+    ])
+  })
+
+  it('drops a server under half of the group even with 2 users', () => {
+    expect(recommendedSetup([p('a'), p('a'), p(), p(), p()], [], null).items).toEqual([])
+  })
+
+  it('maps sources and badges unapproved servers when approvals apply', () => {
+    const group = [p('plugin_x_y', 'claude_ai_Gmail', 'github'), p('plugin_x_y', 'claude_ai_Gmail', 'github')]
+    const { items } = recommendedSetup(group, group, new Set(['github']))
+    expect(items.map((i) => [i.key, i.source, i.approved])).toEqual([
+      ['claude_ai_Gmail', 'claude.ai', false],
+      ['github', 'local', true],
+      ['plugin_x_y', 'plugin', false],
+    ])
   })
 })

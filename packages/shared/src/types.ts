@@ -838,6 +838,29 @@ export interface TeamChampions {
   reason: ChampionReason
 }
 
+// R2 D5. Counts only: no names or user ids.
+export interface SetupItem {
+  /** The MCP server key as the agent reports it. */
+  key: string
+  /** local: add to .mcp.json. plugin: install the plugin. claude.ai: connect in claude.ai settings. */
+  source: Exclude<McpServerSource, 'unnamed'>
+  /** People in the reference group who used it, and in the whole group the card covers. */
+  topUsers: number
+  teamUsers: number
+  /** Admins only, when the org has any approval; null otherwise. */
+  approved: boolean | null
+}
+
+export interface TeamSetup {
+  /** Null for the card that covers the whole scope. */
+  teamId: string | null
+  teamName: string
+  /** Top-quartile members plus A7 champions. */
+  groupSize: number
+  reason: 'ok' | 'smallGroup'
+  items: SetupItem[]
+}
+
 export interface PracticesResponse {
   from: string
   to: string
@@ -854,6 +877,8 @@ export interface PracticesResponse {
   champions: TeamChampions[]
   /** The org turned leaderboard names off and the viewer is a manager. */
   namesOff: boolean
+  /** R2 D5: shared MCP setup per card. The scope card comes first. */
+  setup: TeamSetup[]
 }
 
 // R1 B8 audit log. A closed list, so a typo in a call site is a compile error.

@@ -8,6 +8,25 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v0.20.0 (2026-11-23)
+
+R2 D5: recommended setup, MCP half.
+
+- New "Recommended setup" cards in the "Top users vs rest" section on
+  `/adoption`: one for the whole org (or all your teams), then one per
+  team.
+- Each card lists MCP servers used by at least half of its top users
+  and champions, and by 2 or more of them. Servers are grouped as "Add
+  to .mcp.json", "Install plugin" and "Connect in claude.ai". Unnamed
+  servers are skipped.
+- A copy button gives a plain-text checklist per card.
+- Admins see a "not approved" badge once the org has approved any MCP
+  server.
+- Counts only, no names. Skill names need agent 0.6 or later and come in
+  a later release.
+- `GET /v1/dashboard/adoption/practices` gains `setup`. No schema sync,
+  no agent release.
+
 ## web-v0.19.0 (2026-11-23)
 
 R2 D6: onboarding score.

@@ -305,6 +305,7 @@ describe('AdoptionPage funnel', () => {
       tips: [{ id: 'mcp', gap: 1 }],
       champions: [],
       namesOff: false,
+      setup: [],
       ...over,
     })
 
@@ -385,6 +386,43 @@ describe('AdoptionPage funnel', () => {
     it('shows no champions block when there are no teams to show', async () => {
       state.practices = practices()
       expect(await render()).not.toContain('Suggested champions')
+    })
+  })
+
+  describe('Recommended setup', () => {
+    const base: PracticesResponse = {
+      from: '2026-11-01', to: '2026-11-07', rankBy: 'days', population: 2, minPopulation: 4,
+      top: null, rest: null, tips: [], champions: [], namesOff: false, setup: [],
+    }
+    const card = {
+      teamId: null,
+      teamName: 'Whole org',
+      groupSize: 3,
+      reason: 'ok' as const,
+      items: [
+        { key: 'github', source: 'local' as const, topUsers: 3, teamUsers: 5, approved: true },
+        { key: 'plugin_sp_x', source: 'plugin' as const, topUsers: 2, teamUsers: 2, approved: false },
+        { key: 'claude_ai_Gmail', source: 'claude.ai' as const, topUsers: 2, teamUsers: 4, approved: null },
+      ],
+    }
+
+    it('groups servers by source, counts them, and badges unapproved ones', async () => {
+      state.practices = { ...base, setup: [card, { teamId: 't1', teamName: 'Platform', groupSize: 1, reason: 'smallGroup', items: [] }] }
+      const html = await render()
+      expect(html).toContain('Recommended setup')
+      expect(html).toContain('Based on 3 top users')
+      expect(html).toContain('Add to .mcp.json')
+      expect(html).toContain('3 of 3 top, 5 in all')
+      expect(html.match(/not approved/g)).toHaveLength(1)
+      expect(html).toContain('Fewer than 2 top users here.')
+      expect(html).toContain('aria-label="Copy checklist for Whole org"')
+    })
+
+    it('builds a plain checklist', async () => {
+      const { setupChecklist } = await import('@/lib/setup')
+      expect(setupChecklist(card)).toBe(
+        'Recommended setup for Whole org\nAdd to .mcp.json: github\nInstall plugin: plugin_sp_x\nConnect in claude.ai: claude_ai_Gmail\nSkills: needs agent 0.6 or later',
+      )
     })
   })
 
