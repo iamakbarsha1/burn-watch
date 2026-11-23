@@ -2,13 +2,10 @@ import { ApiClient } from '../lib/api.js'
 import { loadConfig, updateConfig } from '../lib/config.js'
 import { ReferenceCollector } from '../collectors/reference.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
+import { UsageCollector, localDay } from '../collectors/usage.js'
+import { refreshPrices } from '../collectors/pricing.js'
+import { shadowDay, type DayCheck } from './compare.js'
 import { AGENT_VERSION } from '../version.js'
-
-// The reference collector is the only source of a cost figure. The codeburn pass needs the
-// day's Claude spend to split it across projects.
-function claudeCost(events: import('@burn-watch/shared').UsageEvent[]): number {
-  return events.reduce((sum, e) => (e.agent === 'claude' ? sum + e.costUsd : sum), 0)
-}
 
 function yesterdayDate(): string {
   const d = new Date()
@@ -83,6 +80,8 @@ export async function syncCommand(options: {
   }
 
   const reference = new ReferenceCollector(config.npxPath ?? 'npx')
+  // Prices first: codeburn and the shadow collector both price requests.
+  await refreshPrices(apiUrl)
   const codeburn = new CodeburnCollector(undefined, config.orgId)
 
   const ccAvailable = await reference.isAvailable()
@@ -106,12 +105,22 @@ export async function syncCommand(options: {
     }
     if (cbAvailable) {
       console.log('[burnwatch] Scanning JSONL files (single pass)...')
-      const costByDate = new Map<string, number>()
-      for (const [date, events] of eventsMap ?? []) {
-        costByDate.set(date, claudeCost(events))
-      }
-      enrichmentMap = await codeburn.collectRange(dates, costByDate)
+      enrichmentMap = await codeburn.collectRange(dates)
       console.log(`[burnwatch] Found enrichment for ${enrichmentMap.size} date(s)`)
+    }
+  }
+
+  // Shadow mode (0.5.x): our own collector runs beside the reference and is
+  // compared with it, never sent as usage. Local days, as the reference buckets
+  // them here. It must never break a sync.
+  let ownMap: Map<string, import('@burn-watch/shared').UsageEvent[]> | null = null
+  const shadowChecks: DayCheck[] = []
+  if (ccAvailable) {
+    try {
+      const own = new UsageCollector(undefined, undefined, localDay)
+      if (await own.isAvailable()) ownMap = await own.collectRange(dates)
+    } catch (err) {
+      console.warn(`[burnwatch][shadow] own collector failed: ${(err as Error).message}`)
     }
   }
 
@@ -123,11 +132,19 @@ export async function syncCommand(options: {
       : ccAvailable ? await reference.collect(date) : []
     const enrichment = enrichmentMap
       ? (enrichmentMap.get(date) ?? null)
-      : cbAvailable ? await codeburn.collect(date, claudeCost(events)) : null
+      : cbAvailable ? await codeburn.collect(date) : null
 
     if (events.length === 0 && !enrichment) {
       console.log(`  Skipped — no data`)
       continue
+    }
+
+    let referenceDiff: ReturnType<typeof shadowDay>['referenceDiff'] | undefined
+    if (ownMap) {
+      const shadow = shadowDay(date, events, ownMap.get(date) ?? [])
+      shadowChecks.push(...shadow.checks)
+      for (const c of shadow.checks) if (!c.ok) console.log(`  New collector differs (${c.agent}): ${c.why.join('; ')}`)
+      if (shadow.referenceDiff.length) referenceDiff = shadow.referenceDiff
     }
 
     try {
@@ -137,6 +154,7 @@ export async function syncCommand(options: {
         events,
         enrichment,
         agentVersion: AGENT_VERSION,
+        ...(referenceDiff ? { referenceDiff } : {}),
       })
 
       const claudeEvents = events.filter((e) => e.agent === 'claude')
@@ -154,6 +172,21 @@ export async function syncCommand(options: {
     }
   }
 
-  updateConfig({ lastSyncAt: new Date().toISOString(), repoAccessWarning: codeburn.repoWarning })
+  updateConfig({
+    lastSyncAt: new Date().toISOString(),
+    repoAccessWarning: codeburn.repoWarning,
+    ...(ownMap
+      ? {
+          lastCompare: {
+            at: new Date().toISOString(),
+            agentDays: shadowChecks.length,
+            failed: shadowChecks
+              .filter((c) => !c.ok)
+              .slice(0, 5)
+              .map((c) => ({ date: c.date, agent: c.agent, why: c.why.join('; ').slice(0, 300) })),
+          },
+        }
+      : {}),
+  })
   console.log('[burnwatch] Done')
 }

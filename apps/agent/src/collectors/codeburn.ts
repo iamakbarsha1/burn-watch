@@ -1,28 +1,14 @@
-import { existsSync, readdirSync, statSync } from 'fs'
-import { createReadStream } from 'fs'
-import { createInterface } from 'readline'
-import { homedir } from 'os'
-import { dirname, join } from 'path'
+import { existsSync, statSync } from 'fs'
+import { dirname } from 'path'
 import { createHmac } from 'crypto'
-import type { ClaudeEnrichment } from '@burn-watch/shared'
+import type { ClaudeEnrichment, PriceTable } from '@burn-watch/shared'
 import type { EnrichmentCollector } from './base.js'
 import { probeGit, repoIdentity, run, sshHostResolver, type RepoIdentity, type Run } from './repo.js'
+import { claudeFiles, claudeLines, claudeParser, claudeRecord, utcTimestamp } from './parsers/claude.js'
+import { emptyStats } from './parsers/types.js'
+import { loadPriceTable, priceRecord } from './pricing.js'
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB — skip files larger than this
-
-function findJsonlFiles(dir: string): string[] {
-  const files: string[] = []
-  if (!existsSync(dir)) return files
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      files.push(...findJsonlFiles(fullPath))
-    } else if (entry.name.endsWith('.jsonl')) {
-      files.push(fullPath)
-    }
-  }
-  return files
-}
 
 // A transcript records the cwd of the turn, so one repo worked from its root
 // and from two app directories arrives as three projects. Group on the
@@ -82,14 +68,14 @@ export function limitNotice(entry: any): string | null {
   return typeof text === 'string' && LIMIT_NOTICE.test(text) ? text : null
 }
 
-interface TokenBucket {
+interface CostBucket {
   sessions: Set<string>
-  tokens: number
+  cost: number
 }
 
-interface ProjectBucket extends TokenBucket, RepoIdentity {
+interface ProjectBucket extends CostBucket, RepoIdentity {
   cacheReadTokens: number
-  branches: Map<string, TokenBucket>
+  branches: Map<string, CostBucket>
 }
 
 interface DateBucket {
@@ -150,34 +136,30 @@ export class CodeburnCollector implements EnrichmentCollector {
    * another. Without it no hashes are sent.
    */
   constructor(
-    private claudeDir: string = join(homedir(), '.claude', 'projects'),
+    private roots: string[] = claudeParser.roots(),
     private orgId = '',
     private runner: Run = run,
+    private table: PriceTable = loadPriceTable(),
   ) {
     this.resolveHost = sshHostResolver(runner)
   }
 
   async isAvailable(): Promise<boolean> {
-    return existsSync(this.claudeDir)
+    return this.roots.some((r) => existsSync(r))
   }
 
-  async collect(date: string, claudeCostUsd = 0): Promise<ClaudeEnrichment | null> {
-    const result = await this.collectRange([date], new Map([[date, claudeCostUsd]]))
-    return result.get(date) ?? null
+  async collect(date: string): Promise<ClaudeEnrichment | null> {
+    return (await this.collectRange([date])).get(date) ?? null
   }
 
-  // Single pass over all JSONL files, accumulates data for all requested dates simultaneously.
-  //
-  // `claudeCostByDate` carries the authoritative per-day Claude spend from
-  // the reference collector. The transcripts hold token counts but no prices, and the project
-  // sees that collector as the only source of a cost figure, so per-project cost is
-  // that day's total split by each project's share of the day's tokens — never
-  // priced here independently.
-  async collectRange(
-    dates: string[],
-    claudeCostByDate: Map<string, number> = new Map(),
-  ): Promise<Map<string, ClaudeEnrichment>> {
-    const files = findJsonlFiles(this.claudeDir)
+  // Single pass over the transcripts claude.ts finds, for all requested dates
+  // at once. Requests are the parser's records, deduped on its key, and each is
+  // priced on its own, so a project's cost is the sum of its requests.
+  async collectRange(dates: string[]): Promise<Map<string, ClaudeEnrichment>> {
+    if (dates.length === 0) return new Map()
+    const files = claudeFiles(this.roots, [...dates].sort()[0])
+    // Skipped lines are counted by UsageCollector; nothing reads these.
+    const stats = emptyStats()
     const dateSet = new Set(dates)
     const buckets = new Map<string, DateBucket>()
     const rootCache = new Map<string, string>()
@@ -185,11 +167,11 @@ export class CodeburnCollector implements EnrichmentCollector {
     // session-owner records carry no timestamp, so they are joined to days
     // through sessionId after the pass.
     const owners = new Map<string, { accountUuid?: unknown; organizationUuid?: unknown }>()
-    // Claude Code writes one line per content block of a streamed reply, each
-    // with the same message.id, requestId and usage, and a resumed or forked
-    // session copies earlier lines into its own file. Count each request once
-    // across the whole run, keeping the first line seen, and each tool call
-    // once by its tool_use id, since the blocks of one reply sit on different lines.
+    // Claude Code writes one line per content block of a streamed reply, and a
+    // resumed or forked session copies earlier lines into its own file. Count
+    // each request once by the parser's key, keeping the first line seen, and
+    // each tool call once by its tool_use id, since the blocks of one reply sit
+    // on different lines.
     const seenRequests = new Set<string>()
     const seenToolUses = new Set<string>()
 
@@ -200,21 +182,17 @@ export class CodeburnCollector implements EnrichmentCollector {
         continue
       }
 
-      const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
       try {
-        for await (const line of rl) {
-          if (!line) continue
-          let entry: any
-          try { entry = JSON.parse(line) } catch { continue }
+        for await (const line of claudeLines(file, stats)) {
+          const entry = line as any
 
           if (entry.type === 'session-owner') {
             if (typeof entry.sessionId === 'string') owners.set(entry.sessionId, entry)
             continue
           }
 
-          const ts: string = entry.timestamp ?? entry.message?.timestamp ?? ''
-          const date = ts.slice(0, 10)
-          if (!dateSet.has(date)) continue
+          const date = utcTimestamp(entry.timestamp ?? entry.message?.timestamp, stats)?.slice(0, 10)
+          if (!date || !dateSet.has(date)) continue
 
           if (!buckets.has(date)) buckets.set(date, newBucket())
           const b = buckets.get(date)!
@@ -243,32 +221,25 @@ export class CodeburnCollector implements EnrichmentCollector {
               }
             }
 
-            // A line missing either id is counted, as before.
-            const msgId = entry.message.id
-            const reqId = entry.requestId
-            if (typeof msgId === 'string' && msgId && typeof reqId === 'string' && reqId) {
-              const key = `${msgId}:${reqId}`
-              if (seenRequests.has(key)) continue
-              seenRequests.add(key)
-            }
+            // Limit notices are synthetic lines with no request behind them.
+            const notice = limitNotice(entry)
+            if (notice) b.limitNotices.add(notice)
+
+            const rec = claudeRecord(entry, stats)
+            if (!rec || seenRequests.has(rec.key)) continue
+            seenRequests.add(rec.key)
 
             b.callCount++
 
             const sessionId: string = entry.sessionId ?? entry.session_id ?? ''
             if (sessionId) b.sessions.add(sessionId)
 
-            const u = entry.message.usage ?? {}
-            const input = u.input_tokens ?? 0
-            const output = u.output_tokens ?? 0
-            const cacheCreate = u.cache_creation_input_tokens ?? 0
-            const cacheRead = u.cache_read_input_tokens ?? 0
-            b.inputTokens += input
-            b.outputTokens += output
-            b.cacheCreateTokens += cacheCreate
-            b.cacheReadTokens += cacheRead
-
-            const notice = limitNotice(entry)
-            if (notice) b.limitNotices.add(notice)
+            b.inputTokens += rec.input
+            b.outputTokens += rec.output
+            b.cacheCreateTokens += rec.cacheWrite5m + rec.cacheWrite1h
+            b.cacheReadTokens += rec.cacheRead
+            // An unpriced model adds nothing; its tokens show in the usage events.
+            const cost = priceRecord(this.table, rec) ?? 0
 
             tally(b.claudeVersions, entry.version)
             tally(b.entrypointCounts, entry.entrypoint)
@@ -288,24 +259,23 @@ export class CodeburnCollector implements EnrichmentCollector {
               const key = remote ?? name
               let p = b.projects.get(key)
               if (!p) {
-                p = { name, remote, sessions: new Set(), tokens: 0, cacheReadTokens: 0, branches: new Map() }
+                p = { name, remote, sessions: new Set(), cost: 0, cacheReadTokens: 0, branches: new Map() }
                 b.projects.set(key, p)
               }
-              const tokens = input + output + cacheCreate + cacheRead
               if (sessionId) p.sessions.add(sessionId)
-              p.tokens += tokens
-              p.cacheReadTokens += cacheRead
+              p.cost += cost
+              p.cacheReadTokens += rec.cacheRead
 
               // A detached HEAD names no branch.
               const branch = typeof entry.gitBranch === 'string' ? entry.gitBranch.slice(0, 200) : ''
               if (branch && branch !== 'HEAD') {
                 let br = p.branches.get(branch)
                 if (!br) {
-                  br = { sessions: new Set(), tokens: 0 }
+                  br = { sessions: new Set(), cost: 0 }
                   p.branches.set(branch, br)
                 }
                 if (sessionId) br.sessions.add(sessionId)
-                br.tokens += tokens
+                br.cost += cost
               }
             }
           }
@@ -320,15 +290,10 @@ export class CodeburnCollector implements EnrichmentCollector {
 
     const result = new Map<string, ClaudeEnrichment>()
     for (const [date, b] of buckets) {
-      if (b.callCount === 0) continue
+      // A day blocked by a limit has notices but no requests; it still counts.
+      if (b.callCount === 0 && b.limitNotices.size === 0) continue
 
       const readable = b.inputTokens + b.cacheCreateTokens + b.cacheReadTokens
-      const dayTokens = readable + b.outputTokens
-      const dayCost = claudeCostByDate.get(date) ?? 0
-      // ponytail: tokens are a flat weight, so a project on a cheaper model is
-      // charged above its real share. Weight by model price if the split ever
-      // has to be exact.
-      const share = (tokens: number) => (dayTokens > 0 ? dayCost * (tokens / dayTokens) : 0)
       const hashes = (field: 'accountUuid' | 'organizationUuid') => {
         if (!this.orgId) return []
         const ids = new Set<string>()
@@ -351,12 +316,12 @@ export class CodeburnCollector implements EnrichmentCollector {
         activityBreakdown: [],
         topSessions: [],
         projectBreakdown: Array.from(b.projects.values()).map((p) => {
-          const cost = share(p.tokens)
+          const cost = p.cost
           const sessions = p.sessions.size
           return {
             path: p.name,
             remote: p.remote,
-            branches: Array.from(p.branches, ([name, br]) => ({ name, cost: share(br.tokens), sessions: br.sessions.size }))
+            branches: Array.from(p.branches, ([name, br]) => ({ name, cost: br.cost, sessions: br.sessions.size }))
               .sort((x, y) => y.cost - x.cost)
               .slice(0, 50),
             cost,

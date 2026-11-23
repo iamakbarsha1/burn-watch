@@ -126,6 +126,7 @@ export async function usageRoutes(fastify: FastifyInstance) {
             lastSeenAt: new Date(),
             ...(payload.agentVersion ? { agentVersion: payload.agentVersion } : {}),
             ...(claudeVersion ? { claudeVersion } : {}),
+            ...(payload.referenceDiff ? { referenceDiff: { date: payload.date, agents: payload.referenceDiff } } : {}),
           },
         },
       )

@@ -107,12 +107,29 @@ export const ClaudeEnrichmentSchema = z.object({
     .describe('Claude organization IDs, hashed the same way. Agent 0.4.0+'),
 })
 
+// Temporary, agent 0.5.0 to 0.6.x: the old and new usage collectors' totals for
+// the same day, so the new one can be checked on every laptop before it takes over.
+export const ReferenceDiffSchema = z
+  .array(
+    z.object({
+      agent: AgentNameSchema.describe('AI tool'),
+      refTokens: z.number().int().nonnegative().describe('Tokens counted by the old usage collector'),
+      ownTokens: z.number().int().nonnegative().describe('Tokens counted by the new one'),
+      refCostUsd: z.number().nonnegative().describe('Cost from the old usage collector'),
+      ownCostUsd: z.number().nonnegative().describe('Cost from the new one'),
+    }),
+  )
+  .max(5)
+
 export const UsagePayloadSchema = z.object({
   deviceId: z.string().uuid().describe('BurnWatch ID for this laptop'),
   date: z.string().regex(dateRegex).describe('Day the sync covers'),
   events: z.array(UsageEventSchema).max(500).describe('Token and cost totals per agent and model'),
   enrichment: ClaudeEnrichmentSchema.nullable().describe('Claude Code activity detail, read from local transcripts'),
   agentVersion: z.string().min(1).max(50).optional().describe('BurnWatch agent version. Agent 0.4.0+'),
+  referenceDiff: ReferenceDiffSchema.optional().describe(
+    "Per tool, the day's tokens and cost from the old and the new usage collector, to check the new one before it takes over. Temporary. Agent 0.5.0+",
+  ),
 })
 
 export const RegisterDeviceSchema = z.object({

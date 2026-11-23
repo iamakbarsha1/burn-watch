@@ -80,6 +80,8 @@ export interface DeviceConfig {
   lastSyncAt: string | null
   npxPath: string | null   // full path to npx binary resolved at registration time
   repoAccessWarning?: string | null   // last sync's macOS privacy block, for `burnwatch status`
+  // Agent 0.5.0 to 0.6.x: last sync's check of the new usage collector against the old one.
+  lastCompare?: { at: string; agentDays: number; failed: { date: string; agent: string; why: string }[] } | null
 }
 
 // Dashboard API response types

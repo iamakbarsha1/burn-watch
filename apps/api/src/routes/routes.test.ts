@@ -1836,6 +1836,15 @@ describe('POST /v1/usage', () => {
     expect(update.$set).toMatchObject({ agentVersion: '0.4.0', claudeVersion: '2.1.330' })
   })
 
+  it('keeps the last collector diff on the device, with its day', async () => {
+    liveDeviceToken()
+    knownUser()
+    const referenceDiff = [{ agent: 'claude', refTokens: 10, ownTokens: 10, refCostUsd: 1.5, ownCostUsd: 1.5 }]
+    await submit({ ...payload, agentVersion: '0.5.0', referenceDiff })
+    const [[, update]] = mongoCalls('devices', 'updateOne') as [unknown, { $set: Record<string, unknown> }][]
+    expect(update.$set.referenceDiff).toEqual({ date: payload.date, agents: referenceDiff })
+  })
+
   it('leaves both versions alone for a 0.3 agent that sends neither', async () => {
     liveDeviceToken()
     knownUser()
