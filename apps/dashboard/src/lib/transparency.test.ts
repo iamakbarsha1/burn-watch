@@ -36,4 +36,10 @@ describe('transparency field list', () => {
     expect(audienceOf('nope')).toBeUndefined()
     expect(audienceOf('enrichment.newField')).toBeUndefined()
   })
+
+  it('marks the fields Adoption (A5 to A7) reads as visible to the viewer scope', () => {
+    for (const f of ['skillCounts', 'sidechainMessages', 'permissionModeCounts', 'entrypointCounts', 'toolUsage', 'mcpUsage']) {
+      expect(audienceOf(`enrichment.${f}`), f).toBe('scoped')
+    }
+  })
 })

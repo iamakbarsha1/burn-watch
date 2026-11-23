@@ -75,10 +75,10 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.mcpUsage': 'scoped', // Activity, Leaderboard, Adoption
   'enrichment.limitHitCount': 'admin', // limit-hit alerts
   'enrichment.claudeVersions': 'none',
-  'enrichment.entrypointCounts': 'none',
-  'enrichment.skillCounts': 'none',
-  'enrichment.sidechainMessages': 'none',
-  'enrichment.permissionModeCounts': 'none',
+  'enrichment.entrypointCounts': 'scoped', // Adoption
+  'enrichment.skillCounts': 'scoped', // Adoption
+  'enrichment.sidechainMessages': 'scoped', // Adoption
+  'enrichment.permissionModeCounts': 'scoped', // Adoption
   'enrichment.accountHashes': 'admin', // Governance, as labels; the hash is never shown
   'enrichment.claudeOrgHashes': 'admin', // Governance, as labels; the hash is never shown
   referenceDiff: 'none',
