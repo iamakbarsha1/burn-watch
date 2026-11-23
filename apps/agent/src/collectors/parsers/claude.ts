@@ -65,6 +65,31 @@ export function claudeRecord(entry: any, stats: ParseStats): UsageRecord | null 
   }
 }
 
+/** Transcript files under the roots, skipping any last written before `since` (YYYY-MM-DD). */
+export function claudeFiles(roots: string[], since: string): string[] {
+  // Transcripts are append-only, so a file last written before `since` holds nothing new.
+  const from = Date.parse(`${since}T00:00:00Z`)
+  const files: string[] = []
+  for (const root of roots) {
+    if (!existsSync(root)) continue
+    for (const file of jsonlFiles(root)) if (statSync(file).mtimeMs >= from) files.push(file)
+  }
+  return files
+}
+
+/** Each parsed line of one transcript. Lines that are not JSON are counted and skipped. */
+export async function* claudeLines(file: string, stats: ParseStats): AsyncIterable<unknown> {
+  const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
+  for await (const line of rl) {
+    if (!line) continue
+    try {
+      yield JSON.parse(line)
+    } catch {
+      stats.badLines++
+    }
+  }
+}
+
 export const claudeParser: AgentParser = {
   agent: 'claude',
 
@@ -82,26 +107,11 @@ export const claudeParser: AgentParser = {
   },
 
   async *read(roots, since, stats) {
-    // Transcripts are append-only, so a file last written before `since` holds nothing new.
-    const from = Date.parse(`${since}T00:00:00Z`)
-    for (const root of roots) {
-      if (!existsSync(root)) continue
-      for (const file of jsonlFiles(root)) {
-        if (statSync(file).mtimeMs < from) continue
-        stats.files++
-        const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
-        for await (const line of rl) {
-          if (!line) continue
-          let entry: unknown
-          try {
-            entry = JSON.parse(line)
-          } catch {
-            stats.badLines++
-            continue
-          }
-          const rec = claudeRecord(entry, stats)
-          if (rec) yield rec
-        }
+    for (const file of claudeFiles(roots, since)) {
+      stats.files++
+      for await (const entry of claudeLines(file, stats)) {
+        const rec = claudeRecord(entry, stats)
+        if (rec) yield rec
       }
     }
   },

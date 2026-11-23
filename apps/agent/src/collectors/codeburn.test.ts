@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createHmac } from 'crypto'
+import { createHmac, randomUUID } from 'crypto'
+import type { PriceTable } from '@burn-watch/shared'
 import { CodeburnCollector, deniedWarning } from './codeburn.js'
+import type { Run } from './repo.js'
 
 // `fs` exports are not configurable under ESM, so `vi.spyOn` cannot touch them.
 // This wraps the two functions the size guard sits between instead: `statSync`
@@ -42,7 +44,8 @@ function assistant(blocks: unknown[], timestamp = `${DATE}T10:00:00.000Z`) {
   return JSON.stringify({
     type: 'assistant',
     timestamp,
-    message: { role: 'assistant', content: blocks },
+    uuid: randomUUID(),
+    message: { role: 'assistant', model: 'm', content: blocks, usage: { input_tokens: 0, output_tokens: 0 } },
   })
 }
 
@@ -56,14 +59,17 @@ function turn(opts: {
   cacheCreate?: number
   cacheRead?: number
   timestamp?: string
+  model?: string
 }) {
   return JSON.stringify({
     type: 'assistant',
+    uuid: randomUUID(),
     timestamp: opts.timestamp ?? `${DATE}T10:00:00.000Z`,
     sessionId: opts.session,
     cwd: opts.cwd,
     message: {
       role: 'assistant',
+      model: opts.model ?? 'm',
       content: [],
       usage: {
         input_tokens: opts.input ?? 0,
@@ -97,6 +103,7 @@ function streamed(opts: {
 }) {
   return JSON.stringify({
     type: 'assistant',
+    uuid: randomUUID(),
     timestamp: `${DATE}T10:00:00.000Z`,
     sessionId: opts.session,
     cwd: opts.cwd,
@@ -104,6 +111,7 @@ function streamed(opts: {
     message: {
       ...(opts.msg ? { id: opts.msg } : {}),
       role: 'assistant',
+      model: 'm',
       content: [opts.block],
       usage: {
         input_tokens: opts.input ?? 0,
@@ -116,6 +124,19 @@ function streamed(opts: {
 }
 
 let root: string
+
+// $1 a token for `m`, so a cost reads as a token count; `cheap` is a tenth of that.
+const table: PriceTable = {
+  version: '2026-11-22+litellm.aaaaaaa',
+  source: 'test',
+  models: {
+    m: { input: 1, output: 1, cacheWrite5m: 1, cacheWrite1h: 1, cacheRead: 1 },
+    cheap: { input: 0.1, output: 0.1, cacheWrite5m: 0.1, cacheWrite1h: 0.1, cacheRead: 0.1 },
+  },
+  aliases: {},
+}
+
+const collector = (orgId = '', runner?: Run) => new CodeburnCollector([root], orgId, runner, table)
 
 function writeSession(name: string, lines: string[]) {
   const dir = join(root, 'my-project')
@@ -137,7 +158,7 @@ afterEach(() => {
 
 describe('CodeburnCollector', () => {
   it('reports nothing when the projects directory does not exist', async () => {
-    const collector = new CodeburnCollector(join(root, 'nope'))
+    const collector = new CodeburnCollector([join(root, 'nope')])
     expect(await collector.isAvailable()).toBe(false)
     expect(await collector.collect(DATE)).toBeNull()
   })
@@ -148,7 +169,7 @@ describe('CodeburnCollector', () => {
       assistant([toolUse('Edit')]),
       JSON.stringify({ type: 'user', timestamp: `${DATE}T10:00:01.000Z` }),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.callCount).toBe(2)
   })
 
@@ -158,7 +179,7 @@ describe('CodeburnCollector', () => {
       assistant([toolUse('Bash', { command: '  git status --short' })]),
       assistant([toolUse('mcp__neon__run_sql')]),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     // Tool names are lowercased on the way into the bucket.
     expect(enrichment?.toolUsage).toEqual({ read: 2 })
     // Shell usage keys on the first word of the command, after trimming.
@@ -173,7 +194,7 @@ describe('CodeburnCollector', () => {
       assistant([toolUse('Read')]),
       assistant([toolUse('Read')], '2026-11-04T10:00:00.000Z'),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.callCount).toBe(1)
   })
 
@@ -183,7 +204,7 @@ describe('CodeburnCollector', () => {
       '',
       assistant([toolUse('Read')]),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.callCount).toBe(1)
   })
 
@@ -191,7 +212,7 @@ describe('CodeburnCollector', () => {
     const nested = join(root, 'org', 'repo', 'deep')
     mkdirSync(nested, { recursive: true })
     writeFileSync(join(nested, 'session.jsonl'), assistant([toolUse('Read')]))
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.callCount).toBe(1)
   })
 
@@ -204,7 +225,7 @@ describe('CodeburnCollector', () => {
     fsControl.fakeSize = 51 * 1024 * 1024
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
 
     expect(enrichment).toBeNull()
     expect(fsControl.readCalls).toBe(0)
@@ -216,7 +237,7 @@ describe('CodeburnCollector', () => {
       assistant([toolUse('Read')]),
       assistant([toolUse('Grep')], '2026-11-04T09:00:00.000Z'),
     ])
-    const byDate = await new CodeburnCollector(root).collectRange(['2026-11-04', DATE])
+    const byDate = await collector().collectRange(['2026-11-04', DATE])
     expect([...byDate.keys()].sort()).toEqual(['2026-11-04', '2026-11-05'])
     expect(byDate.get('2026-11-04')?.toolUsage).toEqual({ grep: 1 })
   })
@@ -227,7 +248,7 @@ describe('CodeburnCollector', () => {
       turn({ session: 's1' }),
       turn({ session: 's2' }),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.callCount).toBe(3)
     expect(enrichment?.sessionCount).toBe(2)
   })
@@ -236,39 +257,47 @@ describe('CodeburnCollector', () => {
     writeSession('a.jsonl', [
       turn({ session: 's1', input: 100, cacheCreate: 300, cacheRead: 600, output: 50 }),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     // Hit rate is cache reads over everything read in: 600 / (100 + 300 + 600).
     expect(enrichment?.cacheHitRate).toBe(60)
     // Written tokens are output only, so the 1000 read in must not leak here.
     expect(enrichment?.writtenTokens).toBe(50)
   })
 
-  it('groups projects by cwd and splits the day cost by token share', async () => {
+  it('groups projects by cwd and sums each project\'s priced requests', async () => {
     writeSession('a.jsonl', [
       turn({ session: 's1', cwd: '/work/alpha', input: 300, cacheRead: 2000 }),
       turn({ session: 's2', cwd: '/work/alpha', input: 300 }),
       turn({ session: 's3', cwd: '/work/beta', input: 400 }),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE, 30)
+    const enrichment = await collector().collect(DATE)
 
     const alpha = enrichment?.projectBreakdown.find((p) => p.path === 'alpha')
     const beta = enrichment?.projectBreakdown.find((p) => p.path === 'beta')
 
-    // alpha holds 2600 of 3000 tokens, so it carries 2600/3000 of the $30.
-    expect(alpha?.cost).toBeCloseTo(26, 10)
-    expect(beta?.cost).toBeCloseTo(4, 10)
-    // The split is exhaustive: the parts add back up to what the reference collector reported.
-    expect((alpha?.cost ?? 0) + (beta?.cost ?? 0)).toBeCloseTo(30, 10)
+    // $1 a token: alpha burned 2600 tokens, beta 400.
+    expect(alpha?.cost).toBeCloseTo(2600, 10)
+    expect(beta?.cost).toBeCloseTo(400, 10)
 
     expect(alpha?.sessions).toBe(2)
-    expect(alpha?.avgPerSession).toBeCloseTo(13, 10)
+    expect(alpha?.avgPerSession).toBeCloseTo(1300, 10)
     expect(alpha?.overheadK).toBe(2)
     expect(beta?.overheadK).toBe(0)
   })
 
-  it('reports no cost rather than a priced guess when the reference collector gave none', async () => {
-    writeSession('a.jsonl', [turn({ session: 's1', cwd: '/work/alpha', input: 100 })])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+  it('prices each request at its own model, so a cheaper model costs less per token', async () => {
+    writeSession('a.jsonl', [
+      turn({ session: 's1', cwd: '/work/alpha', input: 1000 }),
+      turn({ session: 's2', cwd: '/work/beta', input: 1000, model: 'cheap' }),
+    ])
+    const e = await collector().collect(DATE)
+    expect(e?.projectBreakdown.find((p) => p.path === 'alpha')?.cost).toBeCloseTo(1000, 10)
+    expect(e?.projectBreakdown.find((p) => p.path === 'beta')?.cost).toBeCloseTo(100, 10)
+  })
+
+  it('reports no cost rather than a guess for a model with no price', async () => {
+    writeSession('a.jsonl', [turn({ session: 's1', cwd: '/work/alpha', input: 100, model: 'unknown-model' })])
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.projectBreakdown).toEqual([
       { path: 'alpha', remote: null, branches: [], cost: 0, sessions: 1, avgPerSession: 0, overheadK: 0 },
     ])
@@ -282,14 +311,14 @@ describe('CodeburnCollector', () => {
       turn({ session: 's1', cwd: repo, input: 100 }),
       turn({ session: 's2', cwd: join(repo, 'apps', 'api'), input: 100 }),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE, 10)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.projectBreakdown).toHaveLength(1)
-    expect(enrichment?.projectBreakdown[0]).toMatchObject({ path: 'repo', remote: null, sessions: 2, cost: 10 })
+    expect(enrichment?.projectBreakdown[0]).toMatchObject({ path: 'repo', remote: null, sessions: 2, cost: 200 })
   })
 
   it('names a cwd that is in no checkout by its own folder', async () => {
     writeSession('a.jsonl', [turn({ session: 's1', cwd: '/nowhere/at/all', input: 100 })])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.projectBreakdown[0].path).toBe('all')
   })
 
@@ -298,10 +327,11 @@ describe('CodeburnCollector', () => {
       turn({ session: 's1', input: 500 }),
       turn({ session: 's2', cwd: '/work/alpha', input: 500 }),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE, 10)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.projectBreakdown.map((p) => p.path)).toEqual(['alpha'])
-    // The cwd-less turn still dilutes the share, so alpha gets half, not all.
-    expect(enrichment?.projectBreakdown[0].cost).toBeCloseTo(5, 10)
+    // The cwd-less turn's cost stays out of every project.
+    expect(enrichment?.projectBreakdown[0].cost).toBeCloseTo(500, 10)
+    expect(enrichment?.callCount).toBe(2)
   })
 })
 
@@ -326,7 +356,7 @@ describe('limit-hit counting', () => {
       limitHit('Claude AI usage limit reached|1762344000'),
       limitHit('5-hour limit reached ∙ resets 3pm'),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.limitHitCount).toBe(3)
   })
 
@@ -335,27 +365,27 @@ describe('limit-hit counting', () => {
       assistant([{ type: 'text', text: "You've hit your session limit" }]),
       limitHit('API Error: 500 Internal server error'),
     ])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.limitHitCount).toBe(0)
   })
 
   it('counts the same notice once per day, even across sessions', async () => {
     writeSession('a.jsonl', [limitHit(SESSION), limitHit(SESSION)])
     writeSession('b.jsonl', [limitHit(SESSION)])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.limitHitCount).toBe(1)
   })
 
   it('counts the same notice on two days twice', async () => {
     writeSession('a.jsonl', [limitHit(SESSION), limitHit(SESSION, '2026-11-04T10:00:00.000Z')])
-    const byDate = await new CodeburnCollector(root).collectRange(['2026-11-04', DATE])
+    const byDate = await collector().collectRange(['2026-11-04', DATE])
     expect(byDate.get('2026-11-04')?.limitHitCount).toBe(1)
     expect(byDate.get(DATE)?.limitHitCount).toBe(1)
   })
 
   it('skips malformed lines', async () => {
     writeSession('a.jsonl', ['{"type":"assistant","isApiErrorMessage":true', limitHit(SESSION)])
-    const enrichment = await new CodeburnCollector(root).collect(DATE)
+    const enrichment = await collector().collect(DATE)
     expect(enrichment?.limitHitCount).toBe(1)
   })
 })
@@ -378,7 +408,7 @@ describe('streamed duplicate lines', () => {
     mkdirSync(sub, { recursive: true })
     writeFileSync(join(sub, 'agent-1.jsonl'), streamed({ ...r1, block: toolUse('Bash', { command: 'git status' }, 'toolu_1') }))
 
-    const e = await new CodeburnCollector(root).collect(DATE, 20)
+    const e = await collector().collect(DATE)
 
     expect(e?.callCount).toBe(2)
     expect(e?.writtenTokens).toBe(300)
@@ -388,9 +418,9 @@ describe('streamed duplicate lines', () => {
 
     const alpha = e?.projectBreakdown.find((p) => p.path === 'alpha')
     const beta = e?.projectBreakdown.find((p) => p.path === 'beta')
-    // alpha burned 1350 of 2000 tokens, beta 650.
-    expect(alpha?.cost).toBeCloseTo(13.5, 10)
-    expect(beta?.cost).toBeCloseTo(6.5, 10)
+    // Each request priced once: alpha burned 1350 tokens, beta 650.
+    expect(alpha?.cost).toBeCloseTo(1350, 10)
+    expect(beta?.cost).toBeCloseTo(650, 10)
     expect(alpha?.overheadK).toBe(1)
     expect(alpha?.sessions).toBe(1)
 
@@ -399,13 +429,13 @@ describe('streamed duplicate lines', () => {
     expect(e?.toolUsage).toEqual({ read: 1 })
   })
 
-  it('counts every line that lacks a message id or request id, as before', async () => {
+  it('keys a line that lacks a message id or request id by its uuid', async () => {
     writeSession('a.jsonl', [
       streamed({ ...r1, req: undefined, block: { type: 'text', text: 'x' } }),
       streamed({ ...r1, req: undefined, block: { type: 'text', text: 'x' } }),
       streamed({ ...r1, msg: undefined, block: { type: 'text', text: 'x' } }),
     ])
-    const e = await new CodeburnCollector(root).collect(DATE)
+    const e = await collector().collect(DATE)
     expect(e?.callCount).toBe(3)
     expect(e?.writtenTokens).toBe(150)
   })
@@ -427,6 +457,7 @@ function rich(opts: {
 }) {
   return JSON.stringify({
     type: 'assistant',
+    uuid: randomUUID(),
     timestamp: opts.timestamp ?? `${DATE}T10:00:00.000Z`,
     sessionId: opts.session,
     cwd: opts.cwd,
@@ -435,7 +466,7 @@ function rich(opts: {
     entrypoint: opts.entrypoint,
     isSidechain: opts.sidechain ?? false,
     ...(opts.skill ? { attributionSkill: opts.skill } : {}),
-    message: { role: 'assistant', content: [], usage: { input_tokens: opts.input ?? 0, output_tokens: 0 } },
+    message: { role: 'assistant', model: 'm', content: [], usage: { input_tokens: opts.input ?? 0, output_tokens: 0 } },
   })
 }
 
@@ -458,7 +489,7 @@ describe('0.4 transcript fields', () => {
       rich({ session: 's1', version: '2.1.0', entrypoint: 'cli', sidechain: true }),
       rich({ session: 's2', version: '2.2.0', entrypoint: 'sdk-ts', skill: 'review' }),
     ])
-    const e = await new CodeburnCollector(root).collect(DATE)
+    const e = await collector().collect(DATE)
     expect(e?.claudeVersions).toEqual({ '2.1.0': 2, '2.2.0': 1 })
     expect(e?.entrypointCounts).toEqual({ cli: 2, 'sdk-ts': 1 })
     expect(e?.skillCounts).toEqual({ review: 2 })
@@ -474,7 +505,7 @@ describe('0.4 transcript fields', () => {
       JSON.stringify({ type: 'permission-mode', sessionId: 's1', permissionMode: 'bypassPermissions' }),
       rich({ session: 's1' }),
     ])
-    const e = await new CodeburnCollector(root).collect(DATE)
+    const e = await collector().collect(DATE)
     expect(e?.permissionModeCounts).toEqual({ plan: 2 })
   })
 
@@ -485,26 +516,26 @@ describe('0.4 transcript fields', () => {
       rich({ session: 's2', cwd: '/work/alpha', input: 50, branch: 'HEAD' }),
       rich({ session: 's2', cwd: '/work/alpha', input: 50, branch: '' }),
     ])
-    const e = await new CodeburnCollector(root).collect(DATE, 10)
+    const e = await collector().collect(DATE)
     const alpha = e!.projectBreakdown[0]
     expect(alpha.branches).toEqual([
-      { name: 'main', cost: 6, sessions: 1 },
-      { name: 'feat/ABC-12', cost: 3, sessions: 1 },
+      { name: 'main', cost: 600, sessions: 1 },
+      { name: 'feat/ABC-12', cost: 300, sessions: 1 },
     ])
     // Branch cost is a part of project cost; the rest is HEAD and unnamed turns.
     const branchSum = alpha.branches!.reduce((sum, b) => sum + b.cost, 0)
-    expect(alpha.cost).toBeCloseTo(branchSum + 1, 10)
+    expect(alpha.cost).toBeCloseTo(branchSum + 100, 10)
   })
 
   it('joins timestamp-less session-owner records to days by sessionId, hashed', async () => {
     writeSession('a.jsonl', [owner('s1'), owner('s2'), rich({ session: 's1' })])
     writeSession('b.jsonl', [rich({ session: 's3' })])
-    const e = await new CodeburnCollector(root, 'org-1').collect(DATE)
+    const e = await collector('org-1').collect(DATE)
     const expected = (raw: string) => createHmac('sha256', 'org-1').update(raw).digest('hex')
     expect(e?.accountHashes).toEqual([expected(ACCOUNT)])
     expect(e?.claudeOrgHashes).toEqual([expected(CLAUDE_ORG)])
     // Another BurnWatch org gets a different hash for the same account.
-    const other = await new CodeburnCollector(root, 'org-2').collect(DATE)
+    const other = await collector('org-2').collect(DATE)
     expect(other?.accountHashes).not.toEqual(e?.accountHashes)
   })
 
@@ -516,7 +547,7 @@ describe('0.4 transcript fields', () => {
       rich({ session: 's1', cwd: repo, input: 10, branch: 'main' }),
       rich({ session: 's1', cwd: '/gone/folder/sub', input: 10 }),
     ])
-    const e = await new CodeburnCollector(root, 'org-1', async () => null).collect(DATE, 1)
+    const e = await collector('org-1', async () => null).collect(DATE)
     const wire = JSON.stringify(e)
     expect(wire).not.toContain(ACCOUNT)
     expect(wire).not.toContain(CLAUDE_ORG)
@@ -529,7 +560,7 @@ describe('0.4 transcript fields', () => {
     writeSession('a.jsonl', [
       assistant([toolUse('Bash', { command: '/opt/tools/bin/deploy --flag' }), toolUse('Bash', { command: 'deploy' })]),
     ])
-    const e = await new CodeburnCollector(root).collect(DATE)
+    const e = await collector().collect(DATE)
     expect(e?.shellUsage).toEqual({ deploy: 2 })
   })
 
@@ -540,7 +571,7 @@ describe('0.4 transcript fields', () => {
       rich({ session: 's1', cwd: join(root, 'one'), input: 10 }),
       rich({ session: 's2', cwd: join(root, 'two'), input: 10 }),
     ])
-    const e = await new CodeburnCollector(root, '', runner).collect(DATE)
+    const e = await collector('', runner).collect(DATE)
     expect(e?.projectBreakdown).toHaveLength(1)
     expect(e?.projectBreakdown[0]).toMatchObject({ path: 'repo', remote: 'github.com/org/repo', sessions: 2 })
     // No orgId, no hashes.
@@ -560,9 +591,9 @@ describe('macOS privacy block', () => {
     ])
     fsControl.denyUnder = blocked
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const collector = new CodeburnCollector(root, '', async () => 'git@github.com:org/never.git')
+    const c = collector('', async () => 'git@github.com:org/never.git')
 
-    const enrichment = await collector.collect(DATE)
+    const enrichment = await c.collect(DATE)
 
     expect(enrichment!.projectBreakdown.map((p) => [p.path, p.remote]).sort()).toEqual([
       ['burn-watch', null],
@@ -570,16 +601,16 @@ describe('macOS privacy block', () => {
     ])
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn.mock.calls[0][0]).toMatch(/^\[burnwatch\]\[repo\] macOS blocked reading \S+ \(2 repos sent without a remote\)\. Allow "burnwatch"/)
-    expect(collector.repoWarning).toContain('Full Disk Access')
+    expect(c.repoWarning).toContain('Full Disk Access')
   })
 
   it('says nothing when every repo was readable', async () => {
     writeSession('a.jsonl', [turn({ session: 's1', cwd: root, input: 10 })])
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const collector = new CodeburnCollector(root, '', async () => null)
-    await collector.collect(DATE)
+    const c = collector('', async () => null)
+    await c.collect(DATE)
     expect(warn).not.toHaveBeenCalled()
-    expect(collector.repoWarning).toBeNull()
+    expect(c.repoWarning).toBeNull()
   })
 
   it('names each blocked folder once', async () => {
