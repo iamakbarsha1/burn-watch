@@ -144,7 +144,11 @@ function resolveAgent(entry: RefDailyEntry): AgentName | null {
 }
 
 export class ReferenceCollector implements UsageCollector {
-  constructor(private npxPath: string = 'npx') {}
+  /** `extraArgs` go after the date range; `compare` uses them to pin UTC days and offline prices. */
+  constructor(
+    private npxPath: string = 'npx',
+    private extraArgs: string[] = [],
+  ) {}
 
   async isAvailable(): Promise<boolean> {
     return (
@@ -171,7 +175,7 @@ export class ReferenceCollector implements UsageCollector {
       // Phase 3 of the own-collector design deletes this call and the package name below.
       result = await runCommand(
         this.npxPath,
-        ['ccusage@latest', 'daily', '--json', '--since', since, '--until', until],
+        ['ccusage@latest', 'daily', '--json', '--since', since, '--until', until, ...this.extraArgs],
         120_000,
       )
     } catch (err: any) {

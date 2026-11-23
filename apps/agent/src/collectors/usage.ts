@@ -5,6 +5,9 @@ import { claudeParser } from './parsers/claude.js'
 import { emptyStats, type AgentParser, type ParseStats } from './parsers/types.js'
 import { loadPriceTable, priceRecord } from './pricing.js'
 
+/** Agents with a parser of our own. The rest still come from the reference collector. */
+export const PARSERS: AgentParser[] = [claudeParser]
+
 export type CollectSummary = {
   stats: Partial<Record<string, ParseStats>>
   unpriced: Record<string, number> // model -> tokens
@@ -18,7 +21,7 @@ export class UsageCollector implements Collector {
   summary: CollectSummary = { stats: {}, unpriced: {} }
 
   constructor(
-    private parsers: AgentParser[] = [claudeParser],
+    private parsers: AgentParser[] = PARSERS,
     private table: PriceTable = loadPriceTable(),
   ) {}
 

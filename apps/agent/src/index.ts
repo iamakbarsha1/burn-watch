@@ -3,6 +3,7 @@ import { execSync } from 'child_process'
 import { registerCommand } from './commands/register.js'
 import { syncCommand } from './commands/sync.js'
 import { statusCommand } from './commands/status.js'
+import { compareCommand } from './commands/compare.js'
 import {
   installSchedule,
   uninstallSchedule,
@@ -39,6 +40,13 @@ program
   .command('status')
   .description('Show agent status and last sync info')
   .action(statusCommand)
+
+program
+  .command('compare')
+  .description('Compare our own usage collector with the reference, per UTC day (temporary)')
+  .option('--days <n>', 'Closed UTC days to compare', '14')
+  .option('--agent <name>', 'Only this agent')
+  .action(compareCommand)
 
 program
   .command('update')
