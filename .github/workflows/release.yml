@@ -22,6 +22,13 @@ jobs:
       - name: Install dependencies
         run: bun install --no-save
 
+      # The agent imports values from @burn-watch/shared (price table, schemas),
+      # and that package resolves to its dist/. Through v0.4.2 the agent only
+      # imported types, which bun erases, so nothing built it.
+      - name: Build shared package
+        working-directory: packages/shared
+        run: bun run build
+
       # bun --compile cross-compiles every target from one host, so there is no
       # build matrix to keep in step with the four build scripts or with the
       # assets the install scripts go looking for.
