@@ -11,6 +11,9 @@ import {
   type FunnelCounts,
   type FunnelResponse,
   type FunnelStop,
+  type OnboardingCounts,
+  type OnboardingPerson,
+  type OnboardingResponse,
   type ChampionReason,
   type PracticeFeature,
   type PracticeGroup,
@@ -18,7 +21,7 @@ import {
   type PracticesResponse,
   type TipId,
 } from '@burn-watch/shared'
-import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchPractices, fetchTeams } from '@/lib/api'
+import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchOnboarding, fetchPractices, fetchTeams } from '@/lib/api'
 import { agentById } from '@/lib/agents'
 import { formatCost, formatRange, resolveRange } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
@@ -46,9 +49,10 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
   const rankBy = PRACTICE_RANKS.find((r) => r === params.rankBy) ?? 'days'
-  const [data, funnel, features, practices] = await Promise.all([
+  const [data, funnel, onboarding, features, practices] = await Promise.all([
     fetchIdleSeats(idleDays, team?.id).catch(() => null),
     fetchFunnel(from, to, team?.id).catch(() => null),
+    fetchOnboarding(from, to, team?.id).catch(() => null),
     fetchFeatures(from, to, team?.id).catch(() => null),
     fetchPractices(from, to, rankBy, team?.id).catch(() => null),
   ])
@@ -152,6 +156,8 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
         </Section>
 
         <FunnelSection data={funnel} />
+
+        <OnboardingSection data={onboarding} />
 
         <FeaturesSection data={features} />
 
@@ -281,6 +287,107 @@ function FunnelSection({ data }: { data: FunnelResponse | null }) {
             </details>
           )}
         </>
+      )}
+    </Section>
+  )
+}
+
+/** "n of m" for people whose window is over, with a % from `min` finished windows (D6 Decision 5). */
+function onboardedOf(c: OnboardingCounts, min: number) {
+  const done = c.onboarded + c.missed
+  if (done === 0) return '—'
+  return `${c.onboarded} of ${done}${done >= min ? ` (${Math.round((c.onboarded / done) * 100)}%)` : ''}`
+}
+
+/** What a person still lacks, in plain words. */
+function missing(p: OnboardingPerson, d: OnboardingResponse) {
+  const gaps: string[] = []
+  if (p.activeWeek1 < d.activeDaysPerWeek) gaps.push(`week 1: ${p.activeWeek1} of ${d.activeDaysPerWeek} days`)
+  if (p.activeWeek2 < d.activeDaysPerWeek) gaps.push(`week 2: ${p.activeWeek2} of ${d.activeDaysPerWeek} days`)
+  if (p.features.length < d.minFeatures) gaps.push(`features: ${p.features.length} of ${d.minFeatures}`)
+  return gaps.join(' · ')
+}
+
+function OnboardingRow({ name, c, min }: { name: string; c: OnboardingCounts; min: number }) {
+  return (
+    <Tr>
+      <Td className="font-medium text-ink">{name}</Td>
+      <Td numeric>{c.cohort}</Td>
+      <Td numeric>{onboardedOf(c, min)}</Td>
+      <Td numeric>{c.missed}</Td>
+      <Td numeric>{c.inProgress}</Td>
+      <Td numeric>{c.noFeatureData}</Td>
+    </Tr>
+  )
+}
+
+function OnboardingSection({ data }: { data: OnboardingResponse | null }) {
+  const teamName = new Map(data?.teams.map((t) => [t.teamId, t.teamName]))
+  const teamsOf = (p: OnboardingPerson) => (p.teamIds.length ? p.teamIds.map((id) => teamName.get(id) ?? id).join(', ') : 'No team')
+  const lists = data
+    ? [
+        { key: 'inProgress', label: 'In progress', when: (p: OnboardingPerson) => `day ${p.dayOfWindow} of 14` },
+        { key: 'missed', label: 'Missed', when: (p: OnboardingPerson) => `first sync ${p.firstSync}` },
+      ].map((l) => ({ ...l, people: data.people.filter((p) => p.state === l.key) }))
+    : []
+  return (
+    <Section
+      title="Onboarding"
+      description="People whose first sync is in this range. Onboarded: tokens on 2 or more days in each of their first two weeks, and 2 or more Claude Code features in their first 14 days. No feature data: no Claude Code use in those 14 days, so they are not scored."
+    >
+      <TableFrame>
+        <table className="w-full">
+          <thead>
+            <tr>
+              <Th>Team</Th>
+              <Th numeric>New</Th>
+              <Th numeric>Onboarded</Th>
+              <Th numeric>Missed</Th>
+              <Th numeric>In progress</Th>
+              <Th numeric>No feature data</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {data === null ? (
+              <EmptyRow colSpan={6}>Could not read onboarding. Try again in a moment.</EmptyRow>
+            ) : data.total.cohort === 0 ? (
+              <EmptyRow colSpan={6}>Nobody had a first sync in this range.</EmptyRow>
+            ) : (
+              <>
+                <OnboardingRow name="Total" c={data.total} min={data.minForPercent} />
+                {data.teams.map((t) => (
+                  <OnboardingRow key={t.teamId} name={t.teamName} c={t} min={data.minForPercent} />
+                ))}
+                {data.noTeam && <OnboardingRow name="No team" c={data.noTeam} min={data.minForPercent} />}
+              </>
+            )}
+          </tbody>
+        </table>
+      </TableFrame>
+      {data && (
+        <p className="mt-3 text-xs text-ink-2">
+          Onboarded counts people whose 14 days are over. A percentage shows from {data.minForPercent} of them.
+        </p>
+      )}
+      {lists.map(
+        (l) =>
+          l.people.length > 0 && (
+            <details key={l.key} className="mt-4">
+              <summary className="cursor-pointer text-sm font-medium text-ink">
+                {l.label} ({l.people.length})
+              </summary>
+              <ul className="mt-2 space-y-1 text-sm">
+                {l.people.map((p) => (
+                  <li key={p.userId} className="flex flex-wrap gap-x-3">
+                    <span className="text-ink">{p.name}</span>
+                    <span className="text-ink-2">{teamsOf(p)}</span>
+                    <span className="tabular-nums text-ink-3">{l.when(p)}</span>
+                    <span className="text-ink-2">{missing(p, data!)}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ),
       )}
     </Section>
   )

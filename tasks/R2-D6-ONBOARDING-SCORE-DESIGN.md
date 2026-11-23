@@ -1,6 +1,6 @@
 # R2 · D6 Onboarding score: design
 
-Status: draft 2026-11-23, decisions open. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
+Status: decisions locked and built as web-v0.19.0, 2026-11-23. Roadmap: `tasks/ROLLOUT-ROADMAP.md`
 R2, row D6 ("Onboarding score: weekly active + 2 features within 14
 days"). Builds on A3 (`tasks/R1-A3-ADOPTION-FUNNEL-DESIGN.md`) for first
 sync and the active rule, and A5 (`tasks/R2-A5-FEATURE-MATRIX-DESIGN.md`)
@@ -177,27 +177,31 @@ list). Names, no emails.
 Next web minor, `--latest=false`. No agent release, no schema sync. Prod
 shows the empty state for ranges after 2026-05-20, which is correct.
 
-## Decisions (open)
+## Decisions (locked 2026-11-23)
 
-1. **"Weekly active".** Tokens on 2 or more days in week 2 (days 8 to 14).
-   Recommended: it reuses A3's "2 days" rule and checks people came back
-   after the first week, which week 1 alone cannot show. Other choices:
-   2 days in each of week 1 and week 2 (stricter), or 2 days anywhere in 14
-   (passes someone who stopped on day 3).
-2. **Which features count.** Any 2 of A5's five, each on 1 day or more.
-   Recommended. Other choice: a fixed pair (say MCP and skills), which
-   bakes one team's habits into the score.
-3. **Cohort.** First sync inside the page range. Recommended: the range
-   picker already means "this period" everywhere. Other choice: a fixed
-   last 90 days, which ignores the picker.
-4. **People with no Claude Code data in the window.** `noFeatureData`,
-   left out of the score. Recommended: features are Claude Code only (A5),
-   and old history predates enrichment. Other choice: score them on weekly
-   active alone, which makes the score mean two things.
-5. **Minimum for a percentage.** 5 people with a finished window.
-   Recommended. Below that, show counts only.
-6. **Hide my name.** Not applied to the lists. Recommended, same reasoning
-   as A3's stuck list: it lists people to help, it does not rank them.
+1. **"Weekly active".** Tokens on 2 or more days in week 1 (days 1 to 7)
+   and 2 or more days in week 2 (days 8 to 14), any agent. Stricter than
+   the draft's "week 2 only". `ACTIVE_DAYS_PER_WEEK = 2`.
+2. **Which features count.** Any 2 of A5's five, each on 1 day or more, as
+   recommended. SDK counts when known.
+3. **Cohort.** First sync inside the page range, as recommended.
+4. **No Claude Code data in the window.** `noFeatureData`, left out of the
+   score, as recommended.
+5. **Minimum for a percentage.** 5 finished windows, as recommended.
+6. **Hide my name.** Not applied to the lists, as recommended.
+
+### Built differently from the draft above
+
+- `OnboardingResult` also has `activeWeek1`, for Decision 1.
+- `onboardingOf(firstSync, tokenDates, docs, lastSynced)` takes the rows,
+  not a person object. `lastSynced` is today minus 1.
+- The response carries `activeDaysPerWeek`, `minFeatures` and
+  `minForPercent`, so the page states the rules from the API.
+- The section sits after Funnel and before Features, as planned. Its
+  lists say what each person lacks ("week 1: 1 of 2 days · features: 1
+  of 2").
+- Enrichment is read with A5's `readFeatureDays`, now with `date` in the
+  projection.
 
 ## Steps
 

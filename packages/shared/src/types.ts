@@ -736,6 +736,54 @@ export interface FeatureMatrixResponse {
   people: FeaturePerson[]
 }
 
+// GET /v1/dashboard/adoption/onboarding (R2 D6). New people in the range and
+// whether they got going in their first 14 days. Admins see the org, managers their teams.
+export type OnboardingState = 'onboarded' | 'missed' | 'inProgress' | 'noFeatureData'
+
+export interface OnboardingResult {
+  state: OnboardingState
+  /** Days with tokens in days 1 to 7 and 8 to 14 of the window, any agent. */
+  activeWeek1: number
+  activeWeek2: number
+  /** A5 features used at least once in the window. */
+  features: FeatureKey[]
+  /** 1 to 14: how far into the window the last synced day is. */
+  dayOfWindow: number
+}
+
+export interface OnboardingCounts {
+  /** People whose first sync is in range. */
+  cohort: number
+  onboarded: number
+  missed: number
+  inProgress: number
+  noFeatureData: number
+}
+
+export interface OnboardingPerson extends OnboardingResult {
+  userId: string
+  name: string
+  /** Visible teams only. */
+  teamIds: string[]
+  firstSync: string
+}
+
+export interface OnboardingResponse {
+  from: string
+  to: string
+  /** Rules, so the page can say them. */
+  activeDaysPerWeek: number
+  minFeatures: number
+  /** Below this many finished windows the page shows counts, not a percentage. */
+  minForPercent: number
+  total: OnboardingCounts
+  teams: ({ teamId: string; teamName: string } & OnboardingCounts)[]
+  /** Admins only, with no team filter; null otherwise. */
+  noTeam: OnboardingCounts | null
+  /** Missed and in progress only, names shown (D6 Decision 6). */
+  people: OnboardingPerson[]
+}
+
 // GET /v1/dashboard/adoption/practices (R2 A6). The top quartile of Claude Code
 // users against everyone else. Aggregates only: no names or user ids.
 /** What ranks people into the top quartile: active days, Claude tokens, or the A8 leaderboard score. */
