@@ -12,7 +12,7 @@ const row = (over: Partial<AdminDeviceRow> = {}): AdminDeviceRow => ({
   userName: 'Ada',
   userEmail: 'ada@example.com',
   revoked: false,
-  agentVersion: '0.4.0',
+  agentVersion: '0.6.0',
   claudeVersion: '2.1.330',
   ...over,
 })
@@ -27,6 +27,12 @@ describe('deviceVersionStatus', () => {
     ['an old agent, even with a minimum', row({ agentVersion: '0.2.4', claudeVersion: null }), '2.1.0', 'unknown'],
   ] as const)('%s', (_, r, min, claude) => {
     expect(deviceVersionStatus(r, min).claude).toBe(claude)
+  })
+
+  it('asks for an update below 0.6.0, compared as numbers', () => {
+    expect(deviceVersionStatus(row({ agentVersion: '0.5.1' }), null)).toMatchObject({ agentOld: false, updateAgent: true })
+    expect(deviceVersionStatus(row({ agentVersion: '0.6.0' }), null).updateAgent).toBe(false)
+    expect(deviceVersionStatus(row({ agentVersion: '0.10.0' }), null).updateAgent).toBe(false)
   })
 
   it('flags an agent below 0.4.0, compared as numbers', () => {

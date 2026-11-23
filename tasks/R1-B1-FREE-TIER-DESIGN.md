@@ -12,7 +12,7 @@ Pure read over `usageEvents`. No schema change, no agent change, no migration.
 
 ## What the data says today
 
-`isFreeTier` is set by the agent (`apps/agent/src/collectors/ccusage.ts:80,93`):
+`isFreeTier` is set by the agent (`apps/agent/src/collectors/reference.ts:80,93`):
 
 ```ts
 isFreeTier: FREE_TIER_AGENTS.has(agent) || cost === 0   // FREE_TIER_AGENTS = {'qwen'}
@@ -27,11 +27,11 @@ Prod `usageEvents`, all time (read-only query, 2026-11-22):
 
 Two gaps follow from the agent rule:
 
-1. **False positives.** `cost === 0` also fires for any model ccusage has no
+1. **False positives.** `cost === 0` also fires for any model the previous collector has no
    price for (a new Claude or Codex model). That is "unpriced", not "free tier".
    No such rows exist in prod today.
 2. **Gemini free tier is invisible.** Gemini CLI signed in with a personal
-   Google account is free, but ccusage prices it at list rate, so the row has a
+   Google account is free, but the previous collector prices it at list rate, so the row has a
    cost and `isFreeTier: false`. The proposal names Gemini as a B1 target. The
    agent cannot tell today; it would need to read Gemini CLI's auth type
    (for example `selectedAuthType` in `~/.gemini/settings.json`). That is an

@@ -61,11 +61,6 @@ export interface DeviceDoc {
   agentVersion: string
   /** Highest Claude Code version in the last submit. Null until a 0.4.0 agent submits. */
   claudeVersion: string | null
-  /** Agent 0.5.0 to 0.6.x: old vs new usage collector totals from the last submit that sent them. */
-  referenceDiff?: {
-    date: string
-    agents: { agent: string; refTokens: number; ownTokens: number; refCostUsd: number; ownCostUsd: number }[]
-  }
   lastSeenAt: Date
   createdAt: Date
 }

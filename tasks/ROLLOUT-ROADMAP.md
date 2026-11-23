@@ -40,7 +40,7 @@ Items use the proposal's IDs (A1, B3, C1, ...). Each one gets a BW ticket in
 | C3 Seat-cost allocation | Finance has to want per-client cost split | — |
 | D3 Seat simulator | Depends on A2 | — |
 | D4 Anomaly flags | "Shared credentials" flag overlaps B6; agree on tone first | — |
-| **Own usage collector** | Replace the third-party usage collector (npx + node at runtime) with a built-in parser for Claude/Qwen/Gemini/Codex/Copilot logs, so the agent is one self-contained binary we can ship to employees and the public. Decided by the user 2026-11-22. Design: `tasks/AGENT-OWN-COLLECTOR-DESIGN-PART1.md` and `PART2.md`, decisions locked 2026-11-23. ✅ Phase 0 built, web-v0.12.0 on branch `feat/own-collector-phase-0`: collector renamed to `ReferenceCollector`, price table pinned to LiteLLM `18fe30f` (213 models), `GET /v1/prices`, optional `unpriced` on usage events. No agent change, no schema sync. Next: phase 1 (shadow, agent 0.5.0), build order step 4 | Shipping the agent outside the build team |
+| **Own usage collector** | Replace the third-party usage collector (npx + node at runtime) with a built-in parser for Claude/Qwen/Gemini/Codex/Copilot logs, so the agent is one self-contained binary we can ship to employees and the public. Decided by the user 2026-11-22. Design: `tasks/AGENT-OWN-COLLECTOR-DESIGN.md`. ✅ Built: phase 0 (web-v0.12.0), shadow (agent 0.5.0), cutover and cleanup (agent 0.6.0, web-v0.21.0). Claude Code only; Codex, Gemini CLI, Qwen and Copilot CLI are "not collected" until each gets a parser from a real sample. No node, no npx, UTC days, CI guard on the old name | Shipping the agent outside the build team |
 
 ### Facts needed from the org before R1
 
@@ -256,16 +256,16 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 Shipped 2026-11-22/23: R1 B8 (web-v0.10.0), prod-check fixes (web-v0.10.1, agent
 v0.4.1), R2 B5 (web-v0.11.0), enrichment dedupe (agent v0.4.2), own collector
-phase 0 (web-v0.12.0), own collector phase 1 shadow (web-v0.13.0, agent v0.5.0).
-Next: own collector build order step 8, parsers for Qwen, Gemini CLI, Codex and
-Copilot CLI from `burnwatch compare --dump-shape <agent>` samples, then two weeks
-of shadow data (`referenceDiff` on devices) before 0.6.0. Still open: confirm or
+phase 0 (web-v0.12.0), own collector phase 1 shadow (web-v0.13.0, agent v0.5.0),
+own collector cutover and cleanup (agent v0.6.0, web-v0.21.0).
+Next: watch the first 0.6.0 syncs (cutover day, UTC days, no unpriced models),
+check a Windows laptop, and add parsers for other agents only when a real
+sample exists. Still open: confirm or
 rule out the macOS `~/Desktop` block after an 18:00 sync (`burnwatch status`,
-`projectBreakdown.remote`), `burnwatch compare` on Windows, re-send past days to
+`projectBreakdown.remote`), re-send past days to
 correct doubled enrichment, `/users` and `/devices` table width, seat prices
 (org fact #1), Vercel Pro, `COPILOT_ENCRYPTION_KEY` on prod, R2 A5 design.
 
 ```
-BurnWatch: check `burnwatch status` and projectBreakdown.remote after the 18:00 sync (macOS ~/Desktop block); confirm the new-collector line in status.
-Then own collector step 8: collect --dump-shape samples for Qwen, Gemini CLI, Codex, Copilot CLI and write the first parser per tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md.
+BurnWatch: after the first 18:00 sync on agent 0.6.0, check `burnwatch status` (per-agent lines, prices version) and prod rows for the cutover day; confirm no unpriced Claude models and no double-counted boundary day.
 ```

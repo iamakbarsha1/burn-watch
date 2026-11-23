@@ -37,7 +37,7 @@ const row = (over: Partial<AdminDeviceRow>): AdminDeviceRow => ({
   userName: 'Ada',
   userEmail: 'ada@example.com',
   revoked: false,
-  agentVersion: '0.4.0',
+  agentVersion: '0.6.0',
   claudeVersion: '2.1.330',
   ...over,
 })
@@ -95,7 +95,7 @@ describe('DevicesPage versions', () => {
   it('summarises active devices, leaving revoked rows out', async () => {
     state.min = '2.1.0'
     const text = (await render()).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')
-    expect(text).toContain('Agent 0.4.0+: 3 of 4 active devices. Below the Claude Code minimum: 1. Unknown: 1.')
+    expect(text).toContain('Agent 0.6.0+: 3 of 4 active devices. Below the Claude Code minimum: 1. Unknown: 1.')
     expect(text).toContain('gone')
   })
 

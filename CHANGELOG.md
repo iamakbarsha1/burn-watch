@@ -8,6 +8,44 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## Agent v0.6.0 (2026-11-23)
+
+Own usage collector, cutover and cleanup. The agent now collects usage
+itself. It no longer needs node or `npx`, and it no longer runs a
+third-party tool.
+
+- Usage events come from the agent's own Claude Code reader, bucketed by
+  UTC day. Earlier agents used the laptop's local day.
+- An upgraded device does not re-send days the previous collector already
+  sent. On its first 0.6.0 sync it stores `ownCollectorFrom`, the UTC day
+  of its last sync, and skips earlier days. A new device backfills as
+  before. For a non-UTC user, a few hours around that one day are counted
+  twice or not at all (5.5 hours for IST).
+- Fix: a request whose streamed lines were written on both sides of
+  midnight counted on the later day when only that day was synced. The
+  earliest copy now decides the day. This was the 2026-11-22 mismatch in
+  `burnwatch status` (211,255 tokens).
+- Codex, Gemini CLI, Qwen and Copilot CLI are not collected from laptops
+  until each has a parser. `burnwatch status` prints one line per tool:
+  file count, "not found" or "not collected", plus the price table version.
+- Sync warns when a model has no price. That model's rows are sent as
+  `unpriced`, never as free.
+- Removed: `burnwatch compare`, `--dump-shape`, the shadow comparison,
+  `referenceDiff` in the upload, and `npxPath` in the config. Old config
+  files that still have those keys keep working.
+
+## web-v0.21.0 (2026-11-23)
+
+- `/devices` shows "Update agent" for agents below 0.6.0, the first that
+  needs no node. The version-fields threshold stays 0.4.0.
+- The usage upload no longer takes `referenceDiff`. 0.5.x agents that
+  still send it are accepted and the field is dropped. `/privacy` no
+  longer lists it.
+- Setup page and `docs/INSTALL.md`: backfill reads Claude Code logs
+  directly; other tools are not collected from laptops yet.
+- CI fails if the previous collector's name appears in the repo.
+- No schema sync.
+
 ## web-v0.20.0 (2026-11-23)
 
 R2 D5: recommended setup, MCP half.

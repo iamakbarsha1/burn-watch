@@ -3,7 +3,6 @@ import { createInterface } from 'readline'
 import { ApiClient } from '../lib/api.js'
 import { saveConfig, backupConfig, configuredApiUrl, DEFAULT_API_URL } from '../lib/config.js'
 import { installSchedule, isScheduleInstalled } from '../lib/cron.js'
-import { execSync } from 'child_process'
 import { AGENT_VERSION } from '../version.js'
 
 async function prompt(question: string): Promise<string> {
@@ -14,16 +13,6 @@ async function prompt(question: string): Promise<string> {
       resolve(answer.trim())
     })
   })
-}
-
-function detectNpxPath(): string {
-  try {
-    // `which` is not a Windows command; `where` is, and may print several matches.
-    const finder = process.platform === 'win32' ? 'where npx' : 'which npx'
-    return execSync(finder, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\r?\n/)[0]
-  } catch {
-    return 'npx'
-  }
 }
 
 // Someone has to open the dashboard and type the code, so a tighter poll only
@@ -50,8 +39,6 @@ export async function registerCommand(options: { apiUrl?: string }) {
     console.error('[burnwatch] Invalid email')
     process.exit(1)
   }
-
-  const npxPath = detectNpxPath()
 
   // Step 1: Request registration — get verification code
   let pendingId: string
@@ -111,7 +98,7 @@ export async function registerCommand(options: { apiUrl?: string }) {
         refreshToken: response.refreshToken,
         registeredAt: new Date().toISOString(),
         lastSyncAt: null,
-        npxPath,
+        ownCollectorFrom: null,
       })
 
       console.log()

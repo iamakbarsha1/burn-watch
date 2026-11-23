@@ -40,11 +40,11 @@ Size: `S` under an hour · `M` half a day · `L` a day or more
 | BW-26 | P5 | Remove the double type assertion in `overview.ts` | **done** | S | — |
 | BW-27 | P3 | Enforce device token revocation | **done** | M | — |
 | BW-28 | P5 | Share the dashboard query schema and cache wrapper | **done (half void)** | S | — |
-| BW-29 | P5 | De-duplicate the event builder in `ccusage.ts` | **done** | S | — |
+| BW-29 | P5 | De-duplicate the event builder in `reference.ts` | **done** | S | — |
 | BW-30 | **P0** | `verify-device` has no approval gate — self-service device tokens | **done** | M | — |
 | BW-31 | P4 | Agent default `--api-url` pointed at a domain that never existed | **done** | S | — |
 | BW-32 | P4 | launchd plist named the runtime, not the burnwatch binary | **done** | S | — |
-| BW-33 | P4 | Copilot usage silently dropped by the ccusage collector | **done** | S | — |
+| BW-33 | P4 | Copilot usage silently dropped by the previous third-party collector | **done** | S | — |
 | BW-34 | **P2** | Agent never collects project breakdown and cache stats | **done** | M | — |
 | BW-35 | P3 | Projects "Users" column counts rows, not users | **done** | S | BW-34 |
 | BW-36 | P5 | Sidebar shows the Admin link to every role | **done** | S | — |
@@ -841,17 +841,17 @@ Cover:
 - `AGENT_MAP` resolution including the `gemini cli` variant and model-name
   fallback (`claude`/`qwen`/`gemini`/`codex`/`gpt`)
 - Qwen marked `isFreeTier`, and the zero-cost fallback for other agents
-- Per-model rows produced when ccusage reports a model breakdown
+- Per-model rows produced when the previous collector reports a model breakdown
 - codeburn JSONL parsing: activity, project, tool, shell and MCP extraction
 - codeburn size guard skips oversized files rather than reading them
 
-Use a small recorded ccusage JSON fixture. Do not call the real CLI.
+Use a small recorded JSON fixture of the previous collector's output. Do not call the real CLI.
 
-**Done 2026-11-05.** 21 tests across `ccusage.test.ts` and `codeburn.test.ts`.
+**Done 2026-11-05.** 21 tests across `reference.test.ts` and `codeburn.test.ts`.
 
 Parsing is behind private methods on both collectors, so rather than widen
 their visibility the tests fake the boundary below them and drive the real
-public path. For ccusage that is `child_process.spawn`, replaced with an
+public path. For the previous collector that is `child_process.spawn`, replaced with an
 emitter that plays back the fixture — which also puts the `--since`/`--until`
 date reformatting under test, something a direct call to the parser would skip.
 For codeburn it is the filesystem: the collector's scan directory was hardcoded
@@ -869,12 +869,12 @@ it turns it green.
 - `processFile` in `codeburn.ts` was 56 lines of dead code. `collectRange`
   inlines the same logic and `collect` delegates to it; nothing called
   `processFile`. Deleted.
-- `ccusage.ts` duplicates its whole event-building block between `parseOutput`
+- `reference.ts` duplicates its whole event-building block between `parseOutput`
   and `collectRange` — roughly 30 lines, twice. Left alone, out of scope here,
   but the two copies can drift. Worth a ticket.
 
 **Acceptance**
-- [x] Tests run without `npx ccusage` or `~/.claude` present
+- [x] Tests run without `npx` (the previous collector) or `~/.claude` present
 - [x] Fixtures committed under `apps/agent/test/fixtures/`
 
 ### BW-12 · Shared Zod schema tests
@@ -887,7 +887,7 @@ drift between agent and API.
 
 The invalid cases are drawn from how each field actually goes wrong rather than
 from generic type violations: `date` is rejected as `20261105`, which is the
-`YYYYMMDD` form the agent passes to ccusage and could leak back through; the
+`YYYYMMDD` form the agent passes to the previous collector and could leak back through; the
 `events` array is tested at 500 and 501 against its `.max(500)` boundary;
 `enrichment: null` is covered because every non-Claude agent sends exactly that.
 
@@ -1275,7 +1275,7 @@ blocker 1 dissolves without registering anything. OAuth exists to let many
 orgs self-serve a connection, and BurnWatch serves one company.
 
 Premise correction 1: "Copilot columns are always zero" is false. BW-33 fixed
-the collector, and `apps/agent/src/collectors/ccusage.ts:14` maps `copilot`
+the collector, and `apps/agent/src/collectors/reference.ts:14` maps `copilot`
 like any other agent. Production holds 22 copilot rows, 36,006,868 tokens and
 $32.12 spanning 2026-05-19 to 2026-07-10. The per-developer Copilot spend this
 ticket set out to obtain already arrives through the normal device path.
@@ -1302,7 +1302,7 @@ float, which GitHub documents as "a metrics signal for analyzing consumption,
 not a billed total". One credit is $0.01.
 
 So the org pull can supply real Copilot tokens, and only an approximation of
-Copilot cost. It also supplies something ccusage cannot at any accuracy, which
+Copilot cost. It also supplies something the previous collector cannot at any accuracy, which
 is who holds a seat. An assigned Copilot Business seat costs $19/month whether
 or not anyone opens an editor, and an unused seat is waste a spend dashboard
 should be the thing that catches.
@@ -1317,7 +1317,7 @@ discriminator.
 filtered on `(user_id, date)` alone. Two sources writing copilot rows for one
 developer on one day would be summed, doubling their Copilot spend. The fix is
 a `source` column plus a per-agent preference in the aggregation: where a
-developer has ccusage rows for an agent on a date, the org-sourced rows for
+developer has agent rows for an agent on a date, the org-sourced rows for
 that agent are ignored. Resolution sits at read time rather than at write
 time on purpose, because write-time skipping gives a different answer
 depending on which source synced first, and backfills reorder that routinely.
@@ -1402,7 +1402,7 @@ Four defects were found reviewing it, and all four are fixed here:
       boundary; the admin card still has to show which of the two reasons it is
 - [ ] ~~Copilot usage lands in `usage_events` and flows to snapshots~~ amended:
       real tokens and credit-derived cost land in `usage_events` behind
-      `source`, one row per developer-day, and ccusage wins wherever both
+      `source`, one row per developer-day, and the previous collector wins wherever both
       sources cover one developer-day
 - [ ] Seat coverage pulled and reconciled against BurnWatch users
 - [ ] Admin card reflects real connection state
@@ -1434,7 +1434,7 @@ settled:
    events, both get a snapshot, both feed budget alerts, and nothing in the
    response says so. Raised by two reviewers. Wants a partial unique index on
    `(org_id, lower(github_username))`, which is a migration.
-2. The two sources disagree about what a day is. ccusage reports a
+2. The two sources disagree about what a day is. The previous collector reports a
    developer's local day; the GitHub report is UTC. A US Pacific developer
    working after 16:00 local lands under D for the agent and D+1 for the org,
    where no agent copilot row exists, so the org row counts in full and the
@@ -1442,9 +1442,9 @@ settled:
    symmetric here: a UTC+5:30 developer working 00:00 to 05:30 lands under D
    for the agent and D-1 for the org.
 
-   **Measured 2026-11-10, no longer inferred.** `ccusage daily --help` does
-   carry `-z, --timezone <timezone>` (IANA), and `ccusage.ts:133` does not
-   pass it, so the agent writes whatever ccusage's default bucketing calls a
+   **Measured 2026-11-10, no longer inferred.** `<previous collector> daily --help` does
+   carry `-z, --timezone <timezone>` (IANA), and `reference.ts:133` does not
+   pass it, so the agent writes whatever the previous collector's default bucketing calls a
    day. Running the same range twice on one real machine, default against
    `-z UTC`, rebuckets real money between adjacent days:
 
@@ -1469,7 +1469,7 @@ settled:
    `d±1` is written, which is the same family of defect as BW-41. Two bugs of
    one shape is reason enough on its own.
 
-   The real fault is upstream. The agent knows its own timezone and ccusage
+   The real fault is upstream. The agent knows its own timezone and the previous collector
    takes `-z UTC`. Bucket both sources by UTC and the existing per-day SQL is
    correct as written. The cost is that a developer's "today" shifts by their
    offset and historical rows stay local-bucketed unless backfilled, which
@@ -1478,7 +1478,7 @@ settled:
    **Decided 2026-11-10: leave local bucketing.** `-z UTC` is not passed and
    no backfill runs. Three reasons, in order of weight.
 
-   *The flip is not scoped to the defect.* ccusage buckets every agent at
+   *The flip is not scoped to the defect.* The previous collector buckets every agent at
    once, so `-z UTC` rebuckets Claude as well, and Claude is where the money
    is — $2,983.53 of $3,038.53 all-time on the one machine with real history,
    measured 2026-11-05. The table above is that rebucketing: up to $98.94
@@ -1493,7 +1493,7 @@ settled:
    that has never run against a real org is the wrong order to do it in.
 
    *The backfill cannot be finished centrally.* `usage_events` stores a daily
-   total, not session timestamps, so rebucketing means re-running ccusage
+   total, not session timestamps, so rebucketing means re-running the previous collector
    against the JSONL on each developer's machine — fifty of them, some since
    rotated or pruned. A partial backfill leaves one table holding two
    definitions of a day with no column saying which row has which. That is
@@ -1835,10 +1835,10 @@ with extra parameters from loosening validation for the other three.
       cache was deleted before the ticket was written
 - [x] Route tests unchanged and passing
 
-### BW-29 · De-duplicate the event builder in `ccusage.ts`
+### BW-29 · De-duplicate the event builder in `reference.ts`
 **Size S** · no blockers
 
-`ccusage.ts` builds the same `UsageEvent` roughly 30 lines at a time in two
+`reference.ts` builds the same `UsageEvent` roughly 30 lines at a time in two
 places: `parseOutput` (`:84-103`) and `collectRange` (`:169-188`). The copies
 are currently identical, which is the point — they can drift, and a free-tier
 or token-summing rule fixed in one would silently stay wrong in the other.
@@ -2015,17 +2015,17 @@ asserting the runtime is rejected was mutation-checked against the old
 - [x] A test fails if the resolver accepts the bare runtime
 - [x] Existing broken plists have a repair path
 
-### BW-33 · Copilot usage silently dropped by the ccusage collector
+### BW-33 · Copilot usage silently dropped by the previous third-party collector
 **Size S** · done 2026-11-05
 
-`AGENT_MAP` in `apps/agent/src/collectors/ccusage.ts` listed claude, qwen,
+`AGENT_MAP` in `apps/agent/src/collectors/reference.ts` listed claude, qwen,
 gemini and codex. It did not list copilot, even though `AgentName`
 (`packages/shared/src/types.ts:30`) and the `usage_events.agent` column comment
 both name copilot as a supported agent. An unmapped name resolves to `null` and
 `parseOutput` skips the entry, so every Copilot day was discarded without a
 warning. On this machine that is 14 days, $32.12 and 36.0M tokens.
 
-The investigation started from a different suspicion: that ccusage emits
+The investigation started from a different suspicion: that the previous collector emits
 `agent: 'all'` rows whose `metadata.agents` holds several agents, making the
 `agents?.length === 1` guard fall through to the model-name heuristic and
 collapse everything onto one agent. That is not what happens. Across all 61 days
@@ -2102,10 +2102,10 @@ nowhere, so there is no reader to satisfy and no ground truth in a transcript
 for what counts as "Debugging" rather than "Coding". Fill them when a page
 asks.
 
-Per-project cost is the day's ccusage Claude spend split by that project's
+Per-project cost is the day's Claude spend from the previous collector split by that project's
 share of the day's tokens. The transcripts carry token counts and no prices,
-and the standing rule is that ccusage is the only source of a cost figure, so
-nothing is priced independently here. The parts sum back to the ccusage total
+and the standing rule is that the previous collector is the only source of a cost figure, so
+nothing is priced independently here. The parts sum back to the previous collector total
 exactly; verified against 2026-11-05 on a real machine.
 
 Two things the real data forced that the ticket did not anticipate:
@@ -2403,9 +2403,9 @@ systemd timer on Linux, so anyone who followed the page ended up with two
 schedules firing the same sync. Windows was not mentioned at all, in either
 document, despite `build:windows-x64` shipping on 2026-11-06.
 
-**The worse half was not documentation.** `CcusageCollector` spawns `npx`
+**The worse half was not documentation.** `ReferenceCollector` spawns `npx`
 through `child_process.spawn` with no shell. On Windows `npx` is `npx.cmd`,
-which a bare spawn will not resolve: it fails `ENOENT`, `runCcusage` logs a
+which a bare spawn will not resolve: it fails `ENOENT`, `runReference` logs a
 spawn error and returns null, and `collect` returns an empty array. No throw,
 no non-zero exit. A Windows developer would have registered, watched the
 schedule install, and reported zero usage every evening for ever, with the
@@ -2416,7 +2416,7 @@ on top of that would have been shipping a lie.
 
 `spawn` now takes `shell: process.platform === 'win32'`. Nothing else changes
 on macOS or Linux. The arguments are fixed strings plus a `YYYYMMDD` date, so
-there is nothing for a shell to mangle. Two tests in `ccusage.test.ts` fake
+there is nothing for a shell to mangle. Two tests in `reference.test.ts` fake
 `process.platform` and assert the option both ways; deleting the line turns
 both red.
 
@@ -2687,9 +2687,9 @@ lockfile diff. Use the `packageManager` version, or discard that hunk.
 **Size S** · R2 · found while designing R1 B1 on 2026-11-22
 
 The agent sets `isFreeTier` as `FREE_TIER_AGENTS.has(agent) || cost === 0`
-(`apps/agent/src/collectors/ccusage.ts`), and `FREE_TIER_AGENTS` holds only
+(`apps/agent/src/collectors/reference.ts`), and `FREE_TIER_AGENTS` holds only
 `qwen`. Gemini CLI signed in with a personal Google account is free, and that
-tier may allow Google to train on inputs. ccusage still prices those tokens at
+tier may allow Google to train on inputs. The previous collector still prices those tokens at
 list rate, so the row carries a cost and `isFreeTier: false`. Prod confirms it:
 all Gemini rows are `isFreeTier: false` with a non-zero cost.
 

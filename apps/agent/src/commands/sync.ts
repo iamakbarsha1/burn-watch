@@ -1,11 +1,10 @@
 import { ApiClient } from '../lib/api.js'
 import { loadConfig, updateConfig } from '../lib/config.js'
-import { ReferenceCollector } from '../collectors/reference.js'
 import { CodeburnCollector } from '../collectors/codeburn.js'
-import { UsageCollector, localDay } from '../collectors/usage.js'
+import { UsageCollector } from '../collectors/usage.js'
 import { refreshPrices } from '../collectors/pricing.js'
-import { shadowDay, type DayCheck } from './compare.js'
 import { AGENT_VERSION } from '../version.js'
+import type { ClaudeEnrichment, DeviceConfig, UsageEvent } from '@burn-watch/shared'
 
 function yesterdayDate(): string {
   const d = new Date()
@@ -49,6 +48,17 @@ export function selectDates(options: {
   return [yesterdayDate()]
 }
 
+/**
+ * The first UTC day this collector may send. The server keeps the first rows
+ * sent for a day, so a day the previous collector already sent is not re-sent:
+ * a device that synced before gets the UTC day of its last sync. The previous
+ * collector sent the day before that one by default. A new device has no cutover.
+ */
+export function cutoverDay(config: Pick<DeviceConfig, 'lastSyncAt' | 'ownCollectorFrom'>): string | null {
+  if (config.ownCollectorFrom !== undefined) return config.ownCollectorFrom
+  return config.lastSyncAt ? config.lastSyncAt.slice(0, 10) : null
+}
+
 export async function syncCommand(options: {
   date?: string
   last7?: boolean
@@ -79,57 +89,45 @@ export async function syncCommand(options: {
     process.exit(1)
   }
 
-  const reference = new ReferenceCollector(config.npxPath ?? 'npx')
-  // Prices first: codeburn and the shadow collector both price requests.
+  const from = cutoverDay(config)
+  if (config.ownCollectorFrom === undefined) updateConfig({ ownCollectorFrom: from })
+  const before = from ? dates.filter((d) => d < from) : []
+  if (before.length) {
+    console.log(`[burnwatch] Not re-sending ${before.length} day(s) before ${from}: the previous collector sent them`)
+    dates = dates.filter((d) => !before.includes(d))
+  }
+
+  // Prices first: both collectors price requests.
   await refreshPrices(apiUrl)
+  const usage = new UsageCollector()
   const codeburn = new CodeburnCollector(undefined, config.orgId)
 
-  const ccAvailable = await reference.isAvailable()
+  const usageAvailable = await usage.isAvailable()
   const cbAvailable = await codeburn.isAvailable()
 
-  if (!ccAvailable) {
-    console.warn('[burnwatch] Usage collector not available — no local AI log directories found')
+  if (!usageAvailable) {
+    console.warn('[burnwatch] No local Claude Code logs found')
   }
 
   console.log(`[burnwatch] Syncing ${dates.length} date(s)...`)
 
-  // Pre-collect everything in single passes when syncing multiple dates
-  let eventsMap: Map<string, import('@burn-watch/shared').UsageEvent[]> | null = null
-  let enrichmentMap: Map<string, import('@burn-watch/shared').ClaudeEnrichment> | null = null
-
-  if (dates.length > 1) {
-    if (ccAvailable) {
-      console.log('[burnwatch] Fetching usage for full date range (single call)...')
-      eventsMap = await reference.collectRange(dates)
-      console.log(`[burnwatch] Found usage data for ${eventsMap.size} date(s)`)
-    }
-    if (cbAvailable) {
-      console.log('[burnwatch] Scanning JSONL files (single pass)...')
-      enrichmentMap = await codeburn.collectRange(dates)
-      console.log(`[burnwatch] Found enrichment for ${enrichmentMap.size} date(s)`)
-    }
+  // One pass over the logs for the whole range.
+  const eventsMap = usageAvailable ? await usage.collectRange(dates) : new Map<string, UsageEvent[]>()
+  let enrichmentMap: Map<string, ClaudeEnrichment> | null = null
+  if (dates.length > 1 && cbAvailable) {
+    console.log('[burnwatch] Scanning JSONL files (single pass)...')
+    enrichmentMap = await codeburn.collectRange(dates)
+    console.log(`[burnwatch] Found enrichment for ${enrichmentMap.size} date(s)`)
   }
-
-  // Shadow mode (0.5.x): our own collector runs beside the reference and is
-  // compared with it, never sent as usage. Local days, as the reference buckets
-  // them here. It must never break a sync.
-  let ownMap: Map<string, import('@burn-watch/shared').UsageEvent[]> | null = null
-  const shadowChecks: DayCheck[] = []
-  if (ccAvailable) {
-    try {
-      const own = new UsageCollector(undefined, undefined, localDay)
-      if (await own.isAvailable()) ownMap = await own.collectRange(dates)
-    } catch (err) {
-      console.warn(`[burnwatch][shadow] own collector failed: ${(err as Error).message}`)
-    }
+  const unpriced = Object.entries(usage.summary.unpriced)
+  if (unpriced.length) {
+    console.warn(`[burnwatch] No price for: ${unpriced.map(([m, t]) => `${m} (${t.toLocaleString('en-US')} tokens)`).join(', ')}`)
   }
 
   for (const date of dates) {
     console.log(`[burnwatch][sync] ${date}`)
 
-    const events = eventsMap
-      ? (eventsMap.get(date) ?? [])
-      : ccAvailable ? await reference.collect(date) : []
+    const events = eventsMap.get(date) ?? []
     const enrichment = enrichmentMap
       ? (enrichmentMap.get(date) ?? null)
       : cbAvailable ? await codeburn.collect(date) : null
@@ -139,14 +137,6 @@ export async function syncCommand(options: {
       continue
     }
 
-    let referenceDiff: ReturnType<typeof shadowDay>['referenceDiff'] | undefined
-    if (ownMap) {
-      const shadow = shadowDay(date, events, ownMap.get(date) ?? [])
-      shadowChecks.push(...shadow.checks)
-      for (const c of shadow.checks) if (!c.ok) console.log(`  New collector differs (${c.agent}): ${c.why.join('; ')}`)
-      if (shadow.referenceDiff.length) referenceDiff = shadow.referenceDiff
-    }
-
     try {
       const result = await api.postUsage({
         deviceId: config.deviceId,
@@ -154,18 +144,12 @@ export async function syncCommand(options: {
         events,
         enrichment,
         agentVersion: AGENT_VERSION,
-        ...(referenceDiff ? { referenceDiff } : {}),
       })
 
-      const claudeEvents = events.filter((e) => e.agent === 'claude')
-      const qwenEvents = events.filter((e) => e.agent === 'qwen')
-      const claudeCostTotal = claudeEvents.reduce((sum, e) => sum + e.costUsd, 0)
-      const qwenTokenTotal = qwenEvents.reduce((sum, e) => sum + e.totalTokens, 0)
-
+      const claudeCostTotal = events.filter((e) => e.agent === 'claude').reduce((sum, e) => sum + e.costUsd, 0)
       console.log(
         `  Accepted: ${result.accepted} | Skipped: ${result.skipped}` +
-        (claudeEvents.length ? ` | Claude: $${claudeCostTotal.toFixed(2)}` : '') +
-        (qwenEvents.length ? ` | Qwen: ${(qwenTokenTotal / 1_000_000).toFixed(1)}M tokens (free)` : '')
+        (events.length ? ` | Claude: $${claudeCostTotal.toFixed(2)}` : ''),
       )
     } catch (err: any) {
       console.error(`  Error: ${err.message}`)
@@ -175,18 +159,6 @@ export async function syncCommand(options: {
   updateConfig({
     lastSyncAt: new Date().toISOString(),
     repoAccessWarning: codeburn.repoWarning,
-    ...(ownMap
-      ? {
-          lastCompare: {
-            at: new Date().toISOString(),
-            agentDays: shadowChecks.length,
-            failed: shadowChecks
-              .filter((c) => !c.ok)
-              .slice(0, 5)
-              .map((c) => ({ date: c.date, agent: c.agent, why: c.why.join('; ').slice(0, 300) })),
-          },
-        }
-      : {}),
   })
   console.log('[burnwatch] Done')
 }
