@@ -18,6 +18,8 @@ import {
 import {
   IdleSeatsQuerySchema,
   type AgentName,
+  type FeatureMatrixResponse,
+  type FeaturePerson,
   type FunnelCounts,
   type FunnelResponse,
   type FunnelStop,
@@ -29,6 +31,7 @@ import { comparableTeams, readScope } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
 import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
+import { countFeatures, featureDays, type FeatureFields } from './features.js'
 
 const DAY_MS = 86_400_000
 const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / DAY_MS
@@ -365,5 +368,82 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       noTeam: role === 'admin' && !teamId ? countFunnel(people.filter((p) => p.teamIds.length === 0), t) : null,
       stuck: stuckList(people, t, teamName),
     } satisfies FunnelResponse
+  })
+
+  // R2 A5. Who used MCP, skills, subagents, plan mode and the SDK in range.
+  fastify.get('/adoption/features', async (request, reply) => {
+    const { role, userId: viewerId } = request.user
+    if (role !== 'admin' && role !== 'manager') {
+      return reply.status(403).send({ error: 'Adoption requires admin or manager role' })
+    }
+    const parsed = FunnelQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const from = parsed.data.from as IsoDate
+    const to = parsed.data.to as IsoDate
+    const { teamId } = parsed.data
+    const scope = await readScope(request.user, teamId)
+    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    await auditView(request, 'adoption', scope, teamId)
+
+    const store = getStore()
+    const orgId = request.user.orgId as OrgId
+    const [docs, teams] = await Promise.all([
+      store.claudeEnrichment.find(
+        { orgId, date: { $gte: from, $lte: to }, ...(scope && { userId: { $in: scope } }) },
+        {
+          projection: {
+            userId: 1, toolUsage: 1, mcpUsage: 1, skillCounts: 1,
+            sidechainMessages: 1, permissionModeCounts: 1, entrypointCounts: 1,
+          },
+        },
+      ),
+      comparableTeams(request.user),
+    ])
+    // One enrichment doc per person per day, so a person's doc count is their active days.
+    const daysOf = new Map<UserId, FeatureFields[]>()
+    for (const d of docs) daysOf.set(d.userId, [...(daysOf.get(d.userId) ?? []), d])
+    const ids = [...daysOf.keys()]
+    const teamName = new Map(teams.map((t) => [t._id, t.name]))
+    const [users, members] = ids.length
+      ? await Promise.all([
+          store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1, hideOnLeaderboard: 1 } }),
+          teams.length
+            ? store.teamMembers.find({ orgId, teamId: { $in: [...teamName.keys()] }, userId: { $in: ids } })
+            : Promise.resolve([]),
+        ])
+      : [[], []]
+    const teamsOf = new Map<UserId, TeamId[]>()
+    for (const m of members) {
+      if (!daysOf.has(m.userId) || !teamName.has(m.teamId)) continue
+      teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
+    }
+
+    const people: FeaturePerson[] = users.map((u) => ({
+      userId: u._id,
+      // Decision 5: the leaderboard's "Hide my name" holds here too, except for admins and yourself.
+      name: role !== 'admin' && u._id !== viewerId && u.hideOnLeaderboard ? 'Hidden' : u.name,
+      teamIds: teamsOf.get(u._id) ?? [],
+      activeDays: daysOf.get(u._id)!.length,
+      days: featureDays(daysOf.get(u._id)!),
+    }))
+    const usedCount = (p: FeaturePerson) => Object.values(p.days).filter((n) => (n ?? 0) > 0).length
+    people.sort((a, b) => usedCount(b) - usedCount(a) || a.name.localeCompare(b.name))
+
+    return {
+      from,
+      to,
+      total: countFeatures(people),
+      teams: teams
+        .filter((team) => !teamId || team._id === teamId)
+        .map((team) => ({
+          teamId: team._id,
+          teamName: team.name,
+          ...countFeatures(people.filter((p) => p.teamIds.includes(team._id))),
+        })),
+      noTeam: role === 'admin' && !teamId ? countFeatures(people.filter((p) => p.teamIds.length === 0)) : null,
+      people,
+    } satisfies FeatureMatrixResponse
   })
 }

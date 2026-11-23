@@ -627,6 +627,43 @@ export interface FunnelResponse {
   stuck: StuckPerson[]
 }
 
+// R2 A5 feature matrix. Claude Code only.
+export const FEATURE_KEYS = ['mcp', 'skills', 'subagents', 'plan', 'sdk'] as const
+export type FeatureKey = (typeof FEATURE_KEYS)[number]
+
+export interface FeatureCounts {
+  /** People with at least one Claude Code day in range. */
+  users: number
+  /** People who used each feature on at least one day. */
+  used: Record<FeatureKey, number>
+  /** People with a day from agent 0.4.0+, the only ones whose SDK use is known. */
+  sdkKnown: number
+}
+
+export interface FeaturePerson {
+  userId: string
+  /** "Hidden" for a manager when the person hides their name on the leaderboard. */
+  name: string
+  /** Visible teams only. */
+  teamIds: string[]
+  /** Days with Claude Code use in range. */
+  activeDays: number
+  /** Days each feature was used. `sdk` is null when no day in range came from agent 0.4.0+. */
+  days: Record<FeatureKey, number | null>
+}
+
+export interface FeatureMatrixResponse {
+  from: string
+  to: string
+  /** Each person once, even when in two teams. */
+  total: FeatureCounts
+  /** Visible teams by name. A person in two teams counts in both. */
+  teams: ({ teamId: string; teamName: string } & FeatureCounts)[]
+  /** People in no visible team. Admins only, with no team filter; null otherwise. */
+  noTeam: FeatureCounts | null
+  people: FeaturePerson[]
+}
+
 // R1 B8 audit log. A closed list, so a typo in a call site is a compile error.
 export type AuditAction =
   | 'device.approve'
