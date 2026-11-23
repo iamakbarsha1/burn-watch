@@ -8,6 +8,43 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## Agent v0.5.0 (2026-11-23)
+
+Own usage collector, phase 1 (shadow). Usage events still come from the
+old collector. The new one runs beside it on every sync, and its numbers
+are only compared with the old ones.
+
+- Sync runs the new collector on the same local days and prints a line
+  for any day where the two differ: tokens must match exactly per model,
+  cost within 0.5% (or $0.01 on a day under $2). The upload carries a
+  small `referenceDiff` (per tool: tokens and cost from each collector),
+  and `burnwatch status` shows the last result.
+- `burnwatch compare --days N [--agent a]` checks the last N closed UTC
+  days per day, tool and model, and exits 1 on a mismatch. On the build
+  machine Claude matches exactly on every day it has (Nov 17 to 22), in
+  UTC and in IST days.
+- `burnwatch compare --dump-shape <agent>` prints the shape of an agent's
+  local logs: key names, counts and value types, never values. Keys that
+  look like ids or paths print as `<key>`. Use it to send us the format of
+  Codex, Gemini CLI, Qwen or Copilot CLI logs.
+- Claude enrichment now reads the same deduped requests as the new
+  collector and prices each one. A project's and a branch's cost is the
+  sum of its own requests, not a token share of the day, so a project on
+  a cheaper model no longer carries more than its share. `callCount`
+  counts requests only; usage-limit notices no longer add to it.
+- Claude transcripts are also read from `CLAUDE_CONFIG_DIR` and
+  `~/.config/claude/projects`, not only `~/.claude/projects`.
+- Sync fetches the model price table from `GET /v1/prices` at most once a
+  day and keeps the built-in one if that fails.
+
+## web-v0.13.0 (2026-11-23)
+
+- The usage upload takes an optional `referenceDiff` from agent 0.5.0.
+  The API keeps the last one on the device, with its day. No page shows
+  it; `/privacy` lists it as stored, not shown. It goes away when the new
+  collector takes over.
+- No schema sync.
+
 ## web-v0.12.0 (2026-11-23)
 
 Groundwork for the agent's own usage collector (phase 0). Nothing reads

@@ -256,15 +256,16 @@ session rule. R0.1 and R0.2 can run in parallel; R0.3 can start alongside them.
 
 Shipped 2026-11-22/23: R1 B8 (web-v0.10.0), prod-check fixes (web-v0.10.1, agent
 v0.4.1), R2 B5 (web-v0.11.0), enrichment dedupe (agent v0.4.2), own collector
-phase 0 (web-v0.12.0). Next: own collector phase 1 (build order step 4:
-`parsers/claude.ts`, `pricing.ts`, `usage.ts`) per
-`tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md`. Still open: confirm or rule out the
-macOS `~/Desktop` block after an 18:00 sync on agent 0.4.1+ (`burnwatch status`,
-`projectBreakdown.remote`), re-send past days on 0.4.2 to correct doubled
-enrichment, `/users` and `/devices` table width, seat prices (org fact #1),
-Vercel Pro, `COPILOT_ENCRYPTION_KEY` on prod, R2 A5 design.
+phase 0 (web-v0.12.0), own collector phase 1 shadow (web-v0.13.0, agent v0.5.0).
+Next: own collector build order step 8, parsers for Qwen, Gemini CLI, Codex and
+Copilot CLI from `burnwatch compare --dump-shape <agent>` samples, then two weeks
+of shadow data (`referenceDiff` on devices) before 0.6.0. Still open: confirm or
+rule out the macOS `~/Desktop` block after an 18:00 sync (`burnwatch status`,
+`projectBreakdown.remote`), `burnwatch compare` on Windows, re-send past days to
+correct doubled enrichment, `/users` and `/devices` table width, seat prices
+(org fact #1), Vercel Pro, `COPILOT_ENCRYPTION_KEY` on prod, R2 A5 design.
 
 ```
-BurnWatch: check `burnwatch status` and projectBreakdown.remote after the 18:00 sync (macOS ~/Desktop block).
-Then own collector phase 1, build order step 4: parsers/claude.ts, pricing.ts, usage.ts with tests per tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md.
+BurnWatch: check `burnwatch status` and projectBreakdown.remote after the 18:00 sync (macOS ~/Desktop block); confirm the new-collector line in status.
+Then own collector step 8: collect --dump-shape samples for Qwen, Gemini CLI, Codex, Copilot CLI and write the first parser per tasks/AGENT-OWN-COLLECTOR-DESIGN-PART2.md.
 ```
