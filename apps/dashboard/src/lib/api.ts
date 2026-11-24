@@ -3,10 +3,8 @@ import { GroupTooSmallError } from './group-too-small'
 import { cookies } from 'next/headers'
 import type {
   OverviewResponse,
-  LeaderboardEntry,
-  LeaderboardSort,
-  LeaderboardSettings,
-  LeaderboardSettingsResponse,
+  MyUsageResponse,
+  UsageDistributionResponse,
   TrendPoint,
   ToolUsageSummary,
   OrgProjectSummary,
@@ -126,28 +124,14 @@ export async function fetchOverview(
   return apiFetch(`/v1/dashboard/overview?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}`)
 }
 
-export async function fetchLeaderboard(
-  from: string,
-  to: string,
-  orgId: string,
-  teamId?: string,
-  sort?: LeaderboardSort,
-): Promise<LeaderboardEntry[]> {
-  const sortQuery = sort ? `&sort=${sort}` : ''
-  return apiFetch(`/v1/dashboard/leaderboard?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}${sortQuery}`)
+// Any role. The caller's own numbers only; the API takes the user from the token.
+export async function fetchMyUsage(from: string, to: string): Promise<MyUsageResponse> {
+  return apiFetch(`/v1/dashboard/me/usage?from=${from}&to=${to}`)
 }
 
-export async function fetchLeaderboardSettings(): Promise<LeaderboardSettingsResponse> {
-  return apiFetch('/v1/dashboard/leaderboard/settings')
-}
-
-// Admin only; the API answers 403 to anyone else.
-export async function saveLeaderboardSettings(input: LeaderboardSettings): Promise<LeaderboardSettings> {
-  return apiMutate('PUT', '/v1/dashboard/leaderboard/settings', input)
-}
-
-export async function setHideOnLeaderboard(hideOnLeaderboard: boolean): Promise<{ hideOnLeaderboard: boolean }> {
-  return apiMutate('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard })
+// Admin or manager. Counts per band, no names; 403 group_too_small under MIN_GROUP_SIZE people.
+export async function fetchUsageDistribution(from: string, to: string, teamId?: string): Promise<UsageDistributionResponse> {
+  return apiFetch(`/v1/dashboard/usage-distribution?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
 export async function fetchTrends(

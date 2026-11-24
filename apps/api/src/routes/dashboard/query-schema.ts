@@ -14,8 +14,8 @@ export const dateRangeFields = {
 
 /**
  * Raw (pre-refine) `date`/`from`/`to` shape. Spread this into a route's own
- * `z.object({...})` when it needs extra fields — leaderboard's `limit`/
- * `offset` — before applying its own `.refine`.
+ * `z.object({...})` when it needs extra fields, before applying its own
+ * `.refine`.
  */
 export const dateQueryShape = {
   date: dateString().optional(),
@@ -36,8 +36,8 @@ export const refuse = (reply: FastifyReply, scope: ScopeRefusal) =>
 /**
  * `date`/`from`/`to`, refined so a request carries either a single date or a
  * complete range. Overview, activity, and projects take exactly this shape;
- * leaderboard and trends compose `dateQueryShape` / `dateRangeFields` instead
- * because each adds its own fields and its own refine message.
+ * trends composes `dateQueryShape` / `dateRangeFields` instead
+ * because it adds its own fields and its own refine message.
  */
 export const dateQuerySchema = z
   .object(dateQueryShape)

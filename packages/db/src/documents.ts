@@ -4,7 +4,6 @@ import type {
   AgentName,
   AuditAction,
   AuditTarget,
-  LeaderboardSettings,
   ProjectEntry,
   SessionEntry,
 } from '@burn-watch/shared'
@@ -29,8 +28,6 @@ export interface OrganizationDoc {
   slug: string
   githubOrg: string | null
   createdAt: Date
-  /** R1 A8. Absent = developerView own, showNames true, showOthersCost false. */
-  leaderboard?: LeaderboardSettings
   /** R2 B5. Absent = no minimum, nothing flagged for Claude Code. */
   minClaudeVersion?: string
   /** R2 B6. Claude org hashes that are the company's. Absent = not set, no outside-org flags. */
@@ -48,8 +45,6 @@ export interface UserDoc {
   role: 'admin' | 'manager' | 'developer'
   isActive: boolean
   createdAt: Date
-  /** R1 A8. Shows as "Anonymous" on the leaderboard to everyone but admins and themselves. */
-  hideOnLeaderboard?: boolean
 }
 
 export interface DeviceDoc {

@@ -60,7 +60,7 @@ read goes to MongoDB on every request.
      via `routes/dashboard/enrichment.ts`, not in Node
    - Nothing is cached. Each request reads MongoDB.
 
-4. **Display** — Next.js dashboard renders overview, leaderboard, trends, activity, and project breakdowns
+4. **Display** — Next.js dashboard renders overview, trends, activity, and project breakdowns, plus a private "My usage" page for each person
 
 ## Component Breakdown
 
@@ -96,7 +96,7 @@ read goes to MongoDB on every request.
 | File | Purpose |
 |------|---------|
 | `src/app/(dashboard)/page.tsx` | Overview (summary cards, agent breakdown) |
-| `src/app/(dashboard)/users/page.tsx` | Developer leaderboard |
+| `src/app/(dashboard)/me/page.tsx` | My usage: the signed-in person's own numbers |
 | `src/app/(dashboard)/trends/page.tsx` | Burn trend chart |
 | `src/app/(dashboard)/activity/page.tsx` | Activity breakdown (Claude enrichment) |
 | `src/app/(dashboard)/projects/page.tsx` | Project cost breakdown |

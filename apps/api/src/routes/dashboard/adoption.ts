@@ -37,9 +37,8 @@ import { comparableTeams, readScope } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
 import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
-import { countFeatures, featureDays, type FeatureFields } from './features.js'
+import { countFeatures, featureDays, mcpServersPipeline, type FeatureFields } from './features.js'
 import type { EnrichmentRange } from './enrichment.js'
-import { leaderboardSettings, mcpServersPipeline, scoreAll } from './leaderboard.js'
 import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, recommendedSetup, suggestChampions } from './quartile.js'
 import { streaks } from './streaks.js'
 import {
@@ -452,7 +451,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const teamName = new Map(teams.map((t) => [t._id, t.name]))
     const [users, members] = ids.length
       ? await Promise.all([
-          store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1, hideOnLeaderboard: 1 } }),
+          store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1 } }),
           teams.length
             ? store.teamMembers.find({ orgId, teamId: { $in: [...teamName.keys()] }, userId: { $in: ids } })
             : Promise.resolve([]),
@@ -466,8 +465,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
 
     const people: FeaturePerson[] = users.map((u) => ({
       userId: u._id,
-      // Decision 5: the leaderboard's "Hide my name" holds here too, except for admins and yourself.
-      name: role !== 'admin' && u._id !== viewerId && u.hideOnLeaderboard ? 'Hidden' : u.name,
+      name: u.name,
       teamIds: teamsOf.get(u._id) ?? [],
       activeDays: daysOf.get(u._id)!.length,
       days: featureDays(daysOf.get(u._id)!),
@@ -594,55 +592,25 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     // Same population as A5: active users with a Claude Code day in range.
     const daysOf = await readFeatureDays(orgId, from, to, scope)
     const ids = [...daysOf.keys()]
-    const [active, teams, settings] = await Promise.all([
+    const [active, teams] = await Promise.all([
       ids.length
-        ? store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1, hideOnLeaderboard: 1 } })
+        ? store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1 } })
         : Promise.resolve([]),
       comparableTeams(request.user),
-      leaderboardSettings(orgId),
     ])
     const userIds = active.map((u) => u._id)
-    // A7 privacy: as the leaderboard, names off hides everyone from a manager.
-    const namesOff = role !== 'admin' && !settings.showNames
-    const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE, namesOff }
+    const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE }
     if (userIds.length === 0) return { ...base, top: null, rest: null, tips: [], champions: [], setup: [] } satisfies PracticesResponse
 
     const range = { orgId, userIds, from, to }
-    const [tokenRows, mcpRows, snapshots, approvals] = await Promise.all([
+    const [tokenRows, mcpRows, approvals] = await Promise.all([
       store.usageEvents.aggregate<{ _id: UserId; tokens: number; read: number; cacheable: number }>(claudeTokensPipeline(range)),
       store.claudeEnrichment.aggregate<{ _id: UserId; servers: string[] }>(mcpServersPipeline(range)),
-      // The A8 score needs all-time active days for the streak; read only when asked for.
-      rankBy === 'score'
-        ? store.dailySnapshots.find(
-            { orgId, userId: { $in: userIds }, totalTokens: { $gt: 0 } },
-            { projection: { userId: 1, date: 1, totalTokens: 1, byAgent: 1 } },
-          )
-        : Promise.resolve([]),
       // D5: approval badges are for admins, as Governance > MCP is.
       role === 'admin' ? store.mcpApprovals.find({ orgId }, { projection: { server: 1 } }) : Promise.resolve([]),
     ])
     const tokensOf = new Map(tokenRows.map((r) => [r._id, r]))
     const serversOf = new Map(mcpRows.map((r) => [r._id, r.servers]))
-
-    // Decision 1: the A8 score within this population, so tops are this scope's tops.
-    const scoreOf = new Map<UserId, number>()
-    if (rankBy === 'score') {
-      const now = today()
-      const parts = userIds.map((id) => {
-        const mine = snapshots.filter((s) => s.userId === id)
-        const inRange = mine.filter((s) => s.date >= from && s.date <= to)
-        const agents = new Set(
-          inRange.flatMap((s) => Object.entries(s.byAgent ?? {}).filter(([, v]) => (v?.tokens ?? 0) > 0).map(([k]) => k)),
-        )
-        return {
-          activeDays: inRange.length,
-          streak: streaks(mine.map((s) => s.date), now).current,
-          tokens: inRange.reduce((sum, s) => sum + s.totalTokens, 0),
-          features: agents.size + (serversOf.get(id)?.length ?? 0),
-        }
-      })
-      scoreAll(parts).forEach((score, i) => scoreOf.set(userIds[i], score))
-    }
 
     const people = active.map((u) => {
       const userId = u._id
@@ -652,10 +620,8 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       return {
         userId,
         name: u.name,
-        // A7 Decision 3: you are never hidden from yourself.
-        hidden: !!u.hideOnLeaderboard && userId !== viewerId,
         tokens,
-        rank: rankBy === 'days' ? docs.length : rankBy === 'tokens' ? tokens : scoreOf.get(userId) ?? 0,
+        rank: rankBy === 'days' ? docs.length : tokens,
         activeDays: docs.length,
         days: featureDays(docs),
         mcpServers: serversOf.get(userId)?.length ?? 0,
@@ -676,30 +642,27 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
 
     // R2 A7: champions per visible team, shown even below the A6 minimum.
     const champions: TeamChampions[] = []
-    if (!namesOff) {
-      const champGroups = [...groups]
-      if (role === 'admin' && !teamId) {
-        const inTeam = new Set(members.map((m) => m.userId))
-        champGroups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
-      }
-      for (const g of champGroups) {
-        const team = people.filter((p) => g.ids.has(p.userId))
-        const { reason, champions: picked } = suggestChampions(team, role !== 'admin')
-        champions.push({
-          teamId: g.teamId,
-          teamName: g.teamName,
-          users: team.length,
-          reason,
-          champions: picked.map(({ person, uses, canHelpWith }) => ({
-            userId: person.userId,
-            name: person.name,
-            activeDays: person.activeDays,
-            hidden: person.hidden,
-            uses,
-            canHelpWith,
-          })),
-        })
-      }
+    const champGroups = [...groups]
+    if (role === 'admin' && !teamId) {
+      const inTeam = new Set(members.map((m) => m.userId))
+      champGroups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
+    }
+    for (const g of champGroups) {
+      const team = people.filter((p) => g.ids.has(p.userId))
+      const { reason, champions: picked } = suggestChampions(team)
+      champions.push({
+        teamId: g.teamId,
+        teamName: g.teamName,
+        users: team.length,
+        reason,
+        champions: picked.map(({ person, uses, canHelpWith }) => ({
+          userId: person.userId,
+          name: person.name,
+          activeDays: person.activeDays,
+          uses,
+          canHelpWith,
+        })),
+      })
     }
 
     // R2 D5 Decision 1: the reference group is the org top quartile plus the

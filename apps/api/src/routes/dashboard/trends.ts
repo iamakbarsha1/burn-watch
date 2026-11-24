@@ -36,7 +36,7 @@ interface TrendsFacet {
 /**
  * One point per day that has any snapshot, with its per-agent split.
  *
- * Two `$facet` branches for the same reason the leaderboard uses two: unwinding
+ * Two `$facet` branches: unwinding
  * `byAgent` before the day totals would count each day's `totalCostMicros` once
  * per agent active that day.
  *

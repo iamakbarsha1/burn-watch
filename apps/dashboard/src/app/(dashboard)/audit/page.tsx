@@ -24,7 +24,7 @@ const AREAS: Record<(typeof AUDIT_ACTION_PREFIXES)[number], string> = {
   'alert.': 'Alerts',
   'policy.': 'Governance policy',
   'mcp.': 'MCP approvals',
-  'org.': 'Organization and leaderboard',
+  'org.': 'Organization',
   'copilot.': 'Copilot',
   'view.': 'Views',
 }

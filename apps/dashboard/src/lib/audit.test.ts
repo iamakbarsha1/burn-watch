@@ -54,6 +54,7 @@ describe('auditSentence', () => {
     ['copilot.sync', { detail: { day: '2026-11-09', reportPublished: true, written: 4 } }, 'Ran a Copilot sync for 2026-11-09: 4 rows written'],
     ['view.governance', { target: { type: 'team', id: 't', label: 'Platform' }, detail: { people: 6 } }, 'Viewed Governance for Platform (6 people)'],
     ['view.leaderboard', { target: { type: 'scope', id: null, label: 'org' } }, 'Viewed Leaderboard for the whole org'],
+    ['view.usage_distribution', { target: { type: 'team', id: 't', label: 'Platform' }, detail: { people: 6 } }, 'Viewed Usage distribution for Platform (6 people)'],
     ['view.adoption', { target: { type: 'scope', id: null, label: 'managed teams' }, detail: { people: 1 } }, 'Viewed Adoption for their teams (1 person)'],
     ['view.audit', { target: { type: 'scope', id: null, label: 'org' } }, 'Viewed the audit log for the whole org'],
   ])('%s reads as a sentence', (action, over, expected) => {

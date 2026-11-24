@@ -1,7 +1,7 @@
 # BurnWatch v2: no micromanagement
 
 Branch: `main-v2` (cut from `main` at `bbf5a9a`, 2026-11-24).
-Status: Phase 0 built on `main-v2` (2026-11-24). Phases 1 to 5 not started.
+Status: Phase 0 merged into `main-v2` (PR #42). Phase 1 built on `v2/p1-no-ranking` (2026-11-24). Phases 2 to 5 not started.
 
 ## Why
 
@@ -62,14 +62,21 @@ Known gaps after Phase 0:
 - Budget alerts still use `viewerScope` and are not checked for group size (Phase 3 reworks them).
 - Some route tests pass a 1-person admin team filter only because the admin is the one member (the self exemption).
 
-### Phase 1: no ranking
+### Phase 1: no ranking (built 2026-11-24)
 
-- [ ] Delete leaderboard route, score, `SCORE_WEIGHTS`, per-person cost, value multiple, no-ticket per person.
-- [ ] New `GET /v1/dashboard/me/usage`: the caller's own days, streak, cost, features, onboarding checklist, setup checks, seat status. Reuse `streaks.ts` and the onboarding and feature helpers, scoped to the caller.
-- [ ] New "My usage" page (replaces the leaderboard part of `users/page.tsx`).
-- [ ] Team usage distribution for managers (counts per band, k >= 5).
-- [ ] Remove `LeaderboardSettingsForm.tsx`, the settings route and schema, `hideOnLeaderboard` route and form. Migration in `packages/db` unsets `leaderboard` on orgs and `hideOnLeaderboard` on users.
-- [ ] Shared types: drop `LeaderboardEntry`, `LeaderboardSettings*`.
+- [x] Deleted `leaderboard.ts`: the leaderboard route, score, `SCORE_WEIGHTS`, per-person cost, value multiple, API spend per person. Practices (A6) ranks by days or tokens only. `mcpServersPipeline` moved to `features.ts`.
+- [x] New `GET /v1/dashboard/me/usage`: the caller's own active days, all-time streak, tokens, sessions, cost, per-agent split, agents and MCP servers used. Every read is filtered to the caller's id. Not audited.
+- [x] New "My usage" page at `/me`, replacing `/users`.
+- [x] New `GET /v1/dashboard/usage-distribution`: admin and manager, counts per band (none, 1 to 2, 3 to 4, 5+ days a week). Refused under 5 active people, admins included. Card on the Adoption page.
+- [x] Removed `LeaderboardSettingsForm.tsx`, the settings routes and schema, the `hideOnLeaderboard` route and form. Migration `0005_drop_leaderboard_settings` unsets `leaderboard` on orgs and `hideOnLeaderboard` on users. Old audit rows (`org.leaderboard_settings`, `view.leaderboard`) still read.
+- [x] Shared types: dropped `LeaderboardEntry`, `LeaderboardSort`, `LeaderboardSettings*`.
+- [x] `KNOWN_LEAKS`: the two P1 entries removed. The check covers `/me/usage` (200 for every role) and `/usage-distribution` (k rule).
+
+Moved to later phases: onboarding checklist on "My usage" (Phase 2), setup checks and seat status on "My usage" (Phase 3).
+
+Known gaps after Phase 1:
+- Champions (A7) no longer skip people who had hidden their name, because the hide flag is gone. Phase 2 replaces auto-picked champions with opt-in volunteers. Do not release between Phase 1 and Phase 2.
+- The no-individuals check finds names, ids and emails. It does not find another person's numbers without a name. Route tests cover `/me/usage` for that.
 
 ### Phase 2: adoption without names
 

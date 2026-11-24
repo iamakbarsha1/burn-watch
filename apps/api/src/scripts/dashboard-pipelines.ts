@@ -1,5 +1,5 @@
 /**
- * The five dashboard aggregations, plus the admin roster, admin devices and
+ * The dashboard aggregations, plus the admin roster, admin devices and
  * rate-limit pipelines, run against a real MongoDB, checked against
  * figures worked out by hand.
  *
@@ -59,8 +59,8 @@ import {
   type UserId,
 } from '@burn-watch/db'
 import { toolUsageTotals } from '../routes/dashboard/activity.js'
-import { leaderboardPipeline, mcpServersPipeline } from '../routes/dashboard/leaderboard.js'
 import { dayBefore } from '../routes/dashboard/dates.js'
+import { mcpServersPipeline } from '../routes/dashboard/features.js'
 import { overviewPipeline } from '../routes/dashboard/overview.js'
 import { projectTotals } from '../routes/dashboard/projects.js'
 import { trendsPipeline } from '../routes/dashboard/trends.js'
@@ -427,102 +427,14 @@ async function overview(store: Store) {
   })
 }
 
-async function leaderboard(store: Store) {
-  // A zero-token day for DI, inside the range: it must not count as active.
-  await store.dailySnapshots.insertOne(snapshot(DI, MINE, D1, { gemini: slice(0, 0) }, 1))
-  let facet
-  try {
-    ;[facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2))
-  } finally {
-    await store.dailySnapshots.deleteOne({ _id: dayKey(DI, D1) })
-  }
-  const users = facet.users as {
-    _id: string
-    totalCostMicros: number
-    totalTokens: number
-    sessions: number
-    activeDays: number
-  }[]
-
-  check('leaderboard ranks by active days, ties on tokens, and excludes other orgs', () => {
-    assert.deepEqual(
-      users.map((u) => u._id),
-      [ADA, BO, DI],
-      'ADA has two days; BO and DI one each, and BO moved more tokens. DI outspends both, so this is not spend',
-    )
-  })
-
-  check('leaderboard counts only days with tokens as active', () => {
-    assert.deepEqual(
-      users.map((u) => u.activeDays),
-      [2, 1, 1],
-      'DI has a zero-token day in range',
-    )
-  })
-
-  check('leaderboard folds a person days into one row', () => {
-    const ada = users.find((u) => u._id === ADA)!
-    assert.equal(ada.totalCostMicros, microsFromUsd(9))
-    assert.equal(ada.totalTokens, 3_500, 'tokens, not a second reading of cost')
-    assert.equal(ada.sessions, 5, 'ADA: 2 on D1 plus 3 on D2')
-    // BO spent nothing and still moved seven thousand tokens. A `totalTokens`
-    // that quietly summed cost would read zero here and look plausible.
-    assert.equal(users.find((u) => u._id === BO)!.totalTokens, 7_000)
-  })
-
-  check('leaderboard keeps per-agent totals attached to the right person', () => {
-    const agents = facet.agents as {
-      _id: { userId: string; agent: string }
-      tokens: number
-      costMicros: number
-    }[]
-    const ada = agents.filter((a) => a._id.userId === ADA)
-    assert.deepEqual(
-      ada.map((a) => a._id.agent).sort(),
-      ['claude', 'copilot'],
-      'ADA never ran qwen; BO did',
-    )
-    const claude = ada.find((a) => a._id.agent === 'claude')!
-    assert.equal(claude.costMicros, microsFromUsd(8))
-    // Both columns, from one row. Every assertion here used to read costMicros
-    // and none read tokens, so `tokens: {$sum: '$entries.v.costMicros'}`
-    // survived every layer — on the per-agent token column the page prints.
-    assert.equal(claude.tokens, 3_000)
-    const freeTier = agents.find((a) => a._id.userId === BO && a._id.agent === 'qwen')!
-    assert.equal(freeTier.costMicros, 0)
-    assert.equal(freeTier.tokens, 7_000, 'a zero cost must not drag the token count to zero')
-    assert.equal(agents.some((a) => a._id.userId === ZED), false)
-  })
-
-  // Two people level on days and tokens: `_id` decides, the same way every time.
-  const TIE = [newId<UserId>(), newId<UserId>()].sort()
-  for (const id of [...TIE].reverse()) await store.dailySnapshots.insertOne(snapshot(id, MINE, D1, { claude: slice(50, 1) }, 1))
-  let tied
-  try {
-    ;[tied] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2))
-  } finally {
-    await store.dailySnapshots.deleteMany({ userId: { $in: TIE } })
-  }
-  check('leaderboard breaks a tie on days and tokens by id, so paging is stable', () => {
-    const ids = (tied.users as { _id: string }[]).map((u) => u._id)
-    assert.deepEqual(ids.slice(-2), TIE, 'inserted in reverse id order')
-  })
-
-  check('leaderboard sees everyone in range, including people with no active day', () => {
-    // The integrity check the route runs reads this branch, so a person with
-    // only zero-token days is still resolved against `users`.
-    const everyone = (facet.everyone as { ids: string[] }[])[0].ids
-    assert.deepEqual([...everyone].sort(), [ADA, BO, DI].sort())
-    assert.equal(everyone.includes(ZED), false)
-  })
-
+async function mcpServers(store: Store) {
   const mcp = await store.claudeEnrichment.aggregate<{ _id: string; servers: string[] }>(
     mcpServersPipeline({ orgId: MINE, from: D1, to: D2 }),
   )
   const scopedMcp = await store.claudeEnrichment.aggregate<{ _id: string; servers: string[] }>(
     mcpServersPipeline({ orgId: MINE, userIds: [BO], from: D1, to: D2 }),
   )
-  check('leaderboard MCP servers: distinct keys per person, other orgs and other people left out', () => {
+  check('MCP servers: distinct keys per person, other orgs and other people left out', () => {
     const byUser = Object.fromEntries(mcp.map((r) => [r._id, [...r.servers].sort()]))
     assert.deepEqual(byUser, { [ADA]: ['neon'], [BO]: ['neon'] }, 'ZED has github in the other org')
     assert.deepEqual(scopedMcp.map((r) => r._id), [BO])
@@ -538,12 +450,11 @@ async function leaderboard(store: Store) {
  * and its inner join dropped such a row if it somehow had. MongoDB enforces
  * neither, and a half-finished Phase 7 backfill produces exactly this.
  *
- * The three routes answer differently on purpose, and this pins which is which
+ * Activity and projects both count the orphan on purpose, and this pins that
  * so the next person reading the diff finds a decision rather than a drift.
  */
 async function orphans(store: Store) {
   const GHOST = newId<UserId>()
-  await store.dailySnapshots.insertOne(snapshot(GHOST, MINE, D2, { claude: slice(100, 2) }, 1))
   await store.claudeEnrichment.insertOne(
     enrichment(GHOST, MINE, D2, {
       toolUsage: { bash: 100 },
@@ -551,21 +462,13 @@ async function orphans(store: Store) {
     }),
   )
   try {
-    const [facet] = await store.dailySnapshots.aggregate(leaderboardPipeline(MINE, D1, D2))
-    check('leaderboard surfaces an orphan for the integrity check', () => {
-      const everyone = (facet.everyone as { ids: string[] }[])[0].ids
-      assert.equal(everyone.includes(GHOST), true)
-    })
-
     const rows = await store.claudeEnrichment.aggregate<{ tool: string; count: number }>(
       toolUsageTotals({ orgId: MINE, from: D1, to: D2 }),
     )
     check('activity counts an orphan document, where the Postgres join dropped it', () => {
-      // Deliberate, and the opposite of what the leaderboard does. These two
-      // routes report org-level totals and never name a person; `orgId` is on
-      // the enrichment document itself, so the spend is attributable without
-      // `users` and dropping it would under-report the org. The leaderboard
-      // cannot do the same because its whole output is a list of names.
+      // Deliberate. These two routes report org-level totals and never name a
+      // person; `orgId` is on the enrichment document itself, so the spend is
+      // attributable without `users` and dropping it would under-report the org.
       assert.equal(rows.find((r) => r.tool === 'bash')!.count, 108, 'ADA 5 + 3, ghost 100')
     })
 
@@ -576,7 +479,6 @@ async function orphans(store: Store) {
       assert.equal(byPath.find((p) => p.path === 'acme/widgets')!.userCount, 3)
     })
   } finally {
-    await store.dailySnapshots.deleteOne({ _id: dayKey(GHOST, D2) })
     await store.claudeEnrichment.deleteOne({ _id: dayKey(GHOST, D2) })
   }
 }
@@ -961,7 +863,7 @@ async function main() {
     await clean(store)
     await seed(store)
     await overview(store)
-    await leaderboard(store)
+    await mcpServers(store)
     await trends(store)
     await activity(store)
     await projects(store)

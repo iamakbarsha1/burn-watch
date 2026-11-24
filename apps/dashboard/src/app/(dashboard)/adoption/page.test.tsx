@@ -9,6 +9,8 @@ import type {
   OnboardingResponse,
   PracticeGroup,
   PracticesResponse,
+  Team,
+  UsageDistributionResponse,
 } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
@@ -21,6 +23,9 @@ const state = vi.hoisted(() => ({
   practices: null as PracticesResponse | null,
   onboarding: null as OnboardingResponse | null,
   rankAsked: [] as string[],
+  distribution: null as UsageDistributionResponse | 'tooSmall' | null,
+  distributionAsked: [] as unknown[][],
+  teams: [] as Team[],
 }))
 
 vi.mock('next/navigation', () => ({
@@ -30,7 +35,7 @@ vi.mock('next/navigation', () => ({
 }))
 vi.mock('@/lib/session', () => ({ getUserRole: async () => state.role }))
 vi.mock('@/lib/api', () => ({
-  fetchTeams: async () => [],
+  fetchTeams: async () => state.teams,
   fetchIdleSeats: async (idleDays: number) => {
     state.asked.push(idleDays)
     if (!state.data) throw new Error('down')
@@ -54,8 +59,16 @@ vi.mock('@/lib/api', () => ({
     if (!state.practices) throw new Error('down')
     return state.practices
   },
+  fetchUsageDistribution: async (...args: unknown[]) => {
+    state.distributionAsked.push(args)
+    if (state.distribution === 'tooSmall') throw new GroupTooSmallError('group_too_small')
+    if (!state.distribution) throw new Error('down')
+    return state.distribution
+  },
 }))
 vi.mock('@/components/TeamFilter', () => ({ TeamFilter: () => null }))
+
+const { GroupTooSmallError } = await import('@/lib/group-too-small')
 
 const { default: AdoptionPage } = await import('./page')
 
@@ -81,6 +94,9 @@ beforeEach(() => {
   state.practices = null
   state.onboarding = null
   state.rankAsked = []
+  state.distribution = null
+  state.distributionAsked = []
+  state.teams = []
 })
 
 describe('AdoptionPage', () => {
@@ -241,7 +257,45 @@ describe('AdoptionPage funnel', () => {
     expect(await render()).toContain('Could not read the funnel.')
   })
 
-  describe('Features', () => {
+  describe('Usage distribution', () => {
+    const dist: UsageDistributionResponse = {
+      from: '2026-11-01',
+      to: '2026-11-30',
+      people: 12,
+      bands: { none: 2, '1-2': 3, '3-4': 4, '5+': 3 },
+    }
+
+    it('shows the four band counts with plain labels and the total, for the picked range', async () => {
+      state.distribution = dist
+      const html = await render({ from: '2026-11-01', to: '2026-11-30' })
+      expect(state.distributionAsked).toEqual([['2026-11-01', '2026-11-30', undefined]])
+      expect(html).toContain('How often people use an agent')
+      for (const [label, n] of [['Not used', 2], ['1 to 2 days a week', 3], ['3 to 4 days a week', 4], ['5 or more days a week', 3]]) {
+        expect(html).toMatch(new RegExp(`${label}</dt><dd[^>]*>${n}</dd>`))
+      }
+      expect(html).toContain('12 people in total.')
+    })
+
+    it('passes the picked team', async () => {
+      state.teams = [{ id: 't1', name: 'Platform' } as Team]
+      state.distribution = dist
+      await render({ from: '2026-11-01', to: '2026-11-30', teamId: 't1' })
+      expect(state.distributionAsked).toEqual([['2026-11-01', '2026-11-30', 't1']])
+    })
+
+    it('shows the group-too-small notice in the card, and keeps the rest of the page', async () => {
+      state.distribution = 'tooSmall'
+      const html = await render()
+      expect(html).toContain('fewer than 5 people')
+      expect(html).toContain('Idle seats')
+    })
+
+    it('says so when it cannot be read', async () => {
+      expect(await render()).toContain('Could not read usage.')
+    })
+  })
+
+    describe('Features', () => {
     const none = { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: 0 }
     const matrix = (over: Partial<FeatureMatrixResponse> = {}): FeatureMatrixResponse => ({
       from: '2026-11-16',
@@ -251,7 +305,7 @@ describe('AdoptionPage funnel', () => {
       noTeam: null,
       people: [
         { userId: 'u1', name: 'Ada', teamIds: ['t1'], activeDays: 3, days: { mcp: 3, skills: 1, subagents: 0, plan: 0, sdk: 0 } },
-        { userId: 'u2', name: 'Hidden', teamIds: [], activeDays: 1, days: { mcp: 1, skills: 0, subagents: 0, plan: 0, sdk: null } },
+        { userId: 'u2', name: 'Bo', teamIds: [], activeDays: 1, days: { mcp: 1, skills: 0, subagents: 0, plan: 0, sdk: null } },
       ],
       ...over,
     })
@@ -267,13 +321,13 @@ describe('AdoptionPage funnel', () => {
       expect(html).toContain('0 of 1')
     })
 
-    it('lists people with day counts, team names and hidden names', async () => {
+    it('lists people with day counts and team names', async () => {
       state.features = matrix()
       const html = await render()
       expect(html).toContain('Per person (2)')
       expect(html).toContain('3 days')
       expect(html).toContain('Platform')
-      expect(html).toContain('Hidden')
+      expect(html).toContain('Bo')
       expect(html).toContain('No team')
     })
 
@@ -304,7 +358,6 @@ describe('AdoptionPage funnel', () => {
       rest: group({ users: 3, uses: { mcp: 0, skills: 0, subagents: 0, plan: 0 }, mcpServers: 0, cacheHitRate: null }),
       tips: [{ id: 'mcp', gap: 1 }],
       champions: [],
-      namesOff: false,
       setup: [],
       ...over,
     })
@@ -318,21 +371,21 @@ describe('AdoptionPage funnel', () => {
       expect(html).toContain('Rest (3)')
       expect(html).toContain('95.0%')
       expect(html).toContain('Most top users call MCP servers')
-      expect(html).not.toContain('compare the score with itself')
     })
 
-    it('passes the picked ranking, keeps other params in the links, and warns on score', async () => {
-      state.practices = practices({ rankBy: 'score' })
-      const html = await render({ rankBy: 'score', from: '2026-11-01' })
-      expect(state.rankAsked).toEqual(['score'])
-      expect(html).toContain('href="?rankBy=tokens&amp;from=2026-11-01"')
+    it('passes the picked ranking and keeps other params in the links', async () => {
+      state.practices = practices({ rankBy: 'tokens' })
+      const html = await render({ rankBy: 'tokens', from: '2026-11-01' })
+      expect(state.rankAsked).toEqual(['tokens'])
       expect(html).toContain('href="?from=2026-11-01"')
-      expect(html).toContain('compare the score with itself')
+      expect(html).toContain('Claude tokens')
+      expect(html).not.toMatch(/leaderboard/i)
     })
 
-    it('ignores an unknown ranking', async () => {
+    it('ignores an unknown ranking, including the removed score', async () => {
       await render({ rankBy: 'cost' })
-      expect(state.rankAsked).toEqual(['days'])
+      await render({ rankBy: 'score' })
+      expect(state.rankAsked).toEqual(['days', 'days'])
     })
 
     it('says how many people the scope has below the minimum', async () => {
@@ -346,7 +399,7 @@ describe('AdoptionPage funnel', () => {
       expect(await render()).toContain('Could not read the comparison.')
     })
 
-    it('lists champions per team, the hidden note, and reasons for teams without one', async () => {
+    it('lists champions per team, and reasons for teams without one', async () => {
       state.practices = practices({
         top: null,
         rest: null,
@@ -358,8 +411,8 @@ describe('AdoptionPage funnel', () => {
             users: 3,
             reason: 'ok',
             champions: [
-              { userId: 'u1', name: 'Ada', activeDays: 18, hidden: false, uses: ['mcp', 'skills'], canHelpWith: ['skills'] },
-              { userId: 'u2', name: 'Bo', activeDays: 9, hidden: true, uses: [], canHelpWith: [] },
+              { userId: 'u1', name: 'Ada', activeDays: 18, uses: ['mcp', 'skills'], canHelpWith: ['skills'] },
+              { userId: 'u2', name: 'Bo', activeDays: 9, uses: [], canHelpWith: [] },
             ],
           },
           { teamId: null, teamName: 'No team', users: 2, reason: 'tooFew', champions: [] },
@@ -372,15 +425,9 @@ describe('AdoptionPage funnel', () => {
       expect(html).toContain('The top 2 per team by active days.')
       expect(html).toContain('Ada')
       expect(html).toContain('MCP, Skills')
-      expect(html).toContain('Hidden from leaderboard')
+      expect(html).toContain('Bo')
+      expect(html).not.toContain('Hidden')
       expect(html).toContain('Too few users to suggest (2 users)')
-    })
-
-    it('says names are off instead of listing champions', async () => {
-      state.practices = practices({ namesOff: true })
-      const html = await render()
-      expect(html).toContain('Names are off for this org.')
-      expect(html).not.toContain('<th scope="col" class="px-4 py-3 text-xs font-medium tracking-wide text-ink-2 uppercase whitespace-nowrap text-left">Champion</th>')
     })
 
     it('shows no champions block when there are no teams to show', async () => {
@@ -392,7 +439,7 @@ describe('AdoptionPage funnel', () => {
   describe('Recommended setup', () => {
     const base: PracticesResponse = {
       from: '2026-11-01', to: '2026-11-07', rankBy: 'days', population: 2, minPopulation: 4,
-      top: null, rest: null, tips: [], champions: [], namesOff: false, setup: [],
+      top: null, rest: null, tips: [], champions: [], setup: [],
     }
     const card = {
       teamId: null,

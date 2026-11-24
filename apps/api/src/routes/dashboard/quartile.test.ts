@@ -110,30 +110,18 @@ const member = (userId: string, rank: number, over: Partial<ChampionCandidate> =
   userId,
   rank,
   tokens: 0,
-  hidden: false,
   days: { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: null },
   ...over,
 })
 
 describe('suggestChampions', () => {
   it('needs 3 people', () => {
-    expect(suggestChampions([member('a', 9), member('b', 1)], false)).toEqual({ reason: 'tooFew', champions: [] })
+    expect(suggestChampions([member('a', 9), member('b', 1)])).toEqual({ reason: 'tooFew', champions: [] })
   })
 
   it('takes the top 2 by rank, ties by tokens then userId', () => {
     const team = [member('c', 5, { tokens: 1 }), member('b', 5, { tokens: 1 }), member('a', 5), member('d', 9)]
-    expect(suggestChampions(team, false).champions.map((c) => c.person.userId)).toEqual(['d', 'b'])
-  })
-
-  it('skips hidden people for a manager and keeps them for an admin', () => {
-    const team = [member('a', 9, { hidden: true }), member('b', 5), member('c', 1)]
-    expect(suggestChampions(team, true).champions.map((c) => c.person.userId)).toEqual(['b', 'c'])
-    expect(suggestChampions(team, false).champions.map((c) => c.person.userId)).toEqual(['a', 'b'])
-  })
-
-  it('says none is eligible when every member is hidden from the viewer', () => {
-    const team = ['a', 'b', 'c'].map((id) => member(id, 1, { hidden: true }))
-    expect(suggestChampions(team, true)).toEqual({ reason: 'noneEligible', champions: [] })
+    expect(suggestChampions(team).champions.map((c) => c.person.userId)).toEqual(['d', 'b'])
   })
 
   it('lists what a champion uses, and can help with what under half the team uses', () => {
@@ -145,7 +133,7 @@ describe('suggestChampions', () => {
       member('c', 1, { days: days(1, 0, 0) }),
       member('d', 1, { days: days(0, 0, 0) }),
     ]
-    const [top] = suggestChampions(team, false).champions
+    const [top] = suggestChampions(team).champions
     expect(top.uses).toEqual(['mcp', 'skills', 'plan'])
     expect(top.canHelpWith).toEqual(['plan'])
   })
