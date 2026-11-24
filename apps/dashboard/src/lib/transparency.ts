@@ -53,7 +53,7 @@ export type Audience = 'scoped' | 'self' | 'admin' | 'none'
  */
 export const AUDIENCE: Record<string, Audience> = {
   // Sign-in (RegisterDeviceSchema)
-  email: 'scoped', // Adoption (who is stuck), Governance
+  email: 'scoped', // Governance (personal accounts and free tier)
   hostname: 'admin', // Admin users list, Devices
   platform: 'admin', // Devices
   agentVersion: 'none',
@@ -82,6 +82,8 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.permissionModeCounts': 'scoped', // Adoption
   'enrichment.accountHashes': 'admin', // Governance, as labels; the hash is never shown
   'enrichment.claudeOrgHashes': 'admin', // Governance, as labels; the hash is never shown
+  // Set on My usage (MY_CHOICES)
+  helpVolunteer: 'scoped', // My usage; your name on Adoption under your teams, only when on
 }
 
 export function audienceOf(path: string): Audience | undefined {
@@ -91,6 +93,16 @@ export function audienceOf(path: string): Audience | undefined {
   const parent = path.replace(/\[\]\.[^.]+$/, '')
   return parent === path ? undefined : AUDIENCE[parent]
 }
+
+/** Saved from the dashboard by the person, not sent by the agent. Keys match HelpVolunteerSchema. */
+const MY_CHOICES: SchemaField[] = [
+  {
+    path: 'helpVolunteer',
+    description: 'Whether you are happy to help with Claude Code. Off unless you turn it on.',
+    depth: 0,
+    group: false,
+  },
+]
 
 export const FIELD_GROUPS = [
   {
@@ -102,5 +114,10 @@ export const FIELD_GROUPS = [
     title: 'Every evening sync',
     description: "Sent once a day with yesterday's totals.",
     fields: schemaFields(UsagePayloadSchema),
+  },
+  {
+    title: 'What you choose on My usage',
+    description: 'Saved when you change it. Only you can change it.',
+    fields: MY_CHOICES,
   },
 ]

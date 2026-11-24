@@ -7,8 +7,7 @@ import {
   practiceTips,
   quartileSplit,
   recommendedSetup,
-  suggestChampions,
-  type ChampionCandidate,
+  teamVolunteers,
   type PracticePerson,
 } from './quartile.js'
 
@@ -106,36 +105,29 @@ describe('practiceTips', () => {
   })
 })
 
-const member = (userId: string, rank: number, over: Partial<ChampionCandidate> = {}): ChampionCandidate => ({
+const member = (userId: string, name: string, helpVolunteer: boolean, mcp = 0, skills = 0, plan = 0) => ({
   userId,
-  rank,
-  tokens: 0,
-  days: { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: null },
-  ...over,
+  name,
+  helpVolunteer,
+  days: { mcp, skills, subagents: 0, plan, sdk: 1 },
 })
 
-describe('suggestChampions', () => {
-  it('needs 3 people', () => {
-    expect(suggestChampions([member('a', 9), member('b', 1)])).toEqual({ reason: 'tooFew', champions: [] })
+describe('teamVolunteers', () => {
+  it('lists only people who volunteered, by name, never picked by usage', () => {
+    const team = [member('z', 'Zed', true), member('top', 'Top user', false, 9, 9, 9), member('a', 'Amy', true)]
+    expect(teamVolunteers(team).map((v) => v.name)).toEqual(['Amy', 'Zed'])
+    expect(teamVolunteers([member('top', 'Top user', false, 9, 9, 9)])).toEqual([])
   })
 
-  it('takes the top 2 by rank, ties by tokens then userId', () => {
-    const team = [member('c', 5, { tokens: 1 }), member('b', 5, { tokens: 1 }), member('a', 5), member('d', 9)]
-    expect(suggestChampions(team).champions.map((c) => c.person.userId)).toEqual(['d', 'b'])
-  })
-
-  it('lists what a champion uses, and can help with what under half the team uses', () => {
-    const days = (mcp: number, skills: number, plan: number) => ({ mcp, skills, subagents: 0, plan, sdk: 1 })
+  it('can help with what they used and under half the team used', () => {
     // 4 people: MCP used by 3, skills by 2 (exactly half), plan by 1.
     const team = [
-      member('a', 9, { days: days(1, 1, 1) }),
-      member('b', 1, { days: days(1, 1, 0) }),
-      member('c', 1, { days: days(1, 0, 0) }),
-      member('d', 1, { days: days(0, 0, 0) }),
+      member('a', 'Amy', true, 1, 1, 1),
+      member('b', 'Bo', false, 1, 1, 0),
+      member('c', 'Cy', false, 1, 0, 0),
+      member('d', 'Di', false),
     ]
-    const [top] = suggestChampions(team).champions
-    expect(top.uses).toEqual(['mcp', 'skills', 'plan'])
-    expect(top.canHelpWith).toEqual(['plan'])
+    expect(teamVolunteers(team)).toEqual([{ userId: 'a', name: 'Amy', canHelpWith: ['plan'] }])
   })
 })
 

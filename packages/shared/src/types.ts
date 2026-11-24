@@ -192,6 +192,10 @@ export interface MyUsageResponse {
   /** Agents with tokens in range only. */
   agents: { agent: AgentName; tokens: number; costUsd: number }[]
   features: FeaturesTried
+  /** Null before the first sync. */
+  onboarding: MyOnboarding | null
+  /** The person listed themselves as happy to help with Claude Code. */
+  helpVolunteer: boolean
 }
 
 /** Average active days per week over the range. */
@@ -642,22 +646,6 @@ export interface FunnelCounts {
   powerUser: number
 }
 
-/** The last stage a person reached, when it is not power user. */
-export type FunnelStop = 'invited' | 'registered' | 'firstSync' | 'active'
-
-export interface StuckPerson {
-  stoppedAt: FunnelStop
-  /** Null for an unused invite. */
-  userId: string | null
-  name: string | null
-  /** The invite email when there is no user. */
-  email: string | null
-  /** Names of the viewer's visible teams this person is in. */
-  teams: string[]
-  /** Invite sent, account created, or last day with tokens, by stage. */
-  lastStepDate: string
-}
-
 export interface FunnelResponse {
   from: string
   to: string
@@ -667,12 +655,10 @@ export interface FunnelResponse {
   powerDays: number
   /** Each person once, even when in two teams. */
   total: FunnelCounts
-  /** Visible teams by name. A person in two teams counts in both. */
+  /** Visible teams of MIN_GROUP_SIZE or more members. A person in two teams counts in both. */
   teams: ({ teamId: string; teamName: string } & FunnelCounts)[]
-  /** People in no visible team. Admins only, with no team filter; null otherwise. */
+  /** People in no visible team. Admins only, with no team filter, and MIN_GROUP_SIZE or more people; null otherwise. */
   noTeam: FunnelCounts | null
-  /** Everyone short of power user, same scope as the counts. */
-  stuck: StuckPerson[]
 }
 
 /**
@@ -695,31 +681,24 @@ export interface FeatureCounts {
   sdkKnown: number
 }
 
-export interface FeaturePerson {
-  userId: string
-  name: string
-  /** Visible teams only. */
-  teamIds: string[]
-  /** Days with Claude Code use in range. */
-  activeDays: number
-  /** Days each feature was used. `sdk` is null when no day in range came from agent 0.4.0+. */
-  days: Record<FeatureKey, number | null>
-}
-
 export interface FeatureMatrixResponse {
   from: string
   to: string
   /** Each person once, even when in two teams. */
   total: FeatureCounts
-  /** Visible teams by name. A person in two teams counts in both. */
+  /** Visible teams of MIN_GROUP_SIZE or more members. A person in two teams counts in both. */
   teams: ({ teamId: string; teamName: string } & FeatureCounts)[]
-  /** People in no visible team. Admins only, with no team filter; null otherwise. */
+  /** People in no visible team. Admins only, with no team filter, and MIN_GROUP_SIZE or more people; null otherwise. */
   noTeam: FeatureCounts | null
-  people: FeaturePerson[]
 }
 
 // GET /v1/dashboard/adoption/onboarding (R2 D6). New people in the range and
 // whether they got going in their first 14 days. Admins see the org, managers their teams.
+/** R2 D6 Decision 1: tokens on 2+ days in week 1 and 2+ days in week 2. */
+export const ACTIVE_DAYS_PER_WEEK = 2
+/** Decision 2: any 2 of A5's five features, each on 1+ day. */
+export const MIN_FEATURES = 2
+
 export type OnboardingState = 'onboarded' | 'missed' | 'inProgress' | 'noFeatureData'
 
 export interface OnboardingResult {
@@ -742,11 +721,8 @@ export interface OnboardingCounts {
   noFeatureData: number
 }
 
-export interface OnboardingPerson extends OnboardingResult {
-  userId: string
-  name: string
-  /** Visible teams only. */
-  teamIds: string[]
+/** v2 Phase 2: the person's own first 14 days, on My usage only. */
+export interface MyOnboarding extends OnboardingResult {
   firstSync: string
 }
 
@@ -758,12 +734,12 @@ export interface OnboardingResponse {
   minFeatures: number
   /** Below this many finished windows the page shows counts, not a percentage. */
   minForPercent: number
-  total: OnboardingCounts
+  /** v2 rule 2: null when fewer than MIN_GROUP_SIZE people first synced in range. */
+  total: OnboardingCounts | null
+  /** Visible teams whose cohort is MIN_GROUP_SIZE or more. */
   teams: ({ teamId: string; teamName: string } & OnboardingCounts)[]
-  /** Admins only, with no team filter; null otherwise. */
+  /** Admins only, with no team filter, and a cohort of MIN_GROUP_SIZE or more; null otherwise. */
   noTeam: OnboardingCounts | null
-  /** Missed and in progress only, names shown (D6 Decision 6). */
-  people: OnboardingPerson[]
 }
 
 // GET /v1/dashboard/adoption/practices (R2 A6). The top quartile of Claude Code
@@ -794,28 +770,19 @@ export interface PracticeTip {
   gap: number
 }
 
-/** Why a team has no champion: under 3 Claude Code users, or nobody eligible. */
-export type ChampionReason = 'ok' | 'tooFew' | 'noneEligible'
-
-// R2 A7. A hint only: nothing is stored and nobody is told.
-export interface ChampionSuggestion {
+// v2 Phase 2. People who set "happy to help with Claude Code" themselves. Nobody else is named.
+export interface HelpVolunteer {
   userId: string
   name: string
-  activeDays: number
-  uses: PracticeFeature[]
-  /** Features they use that fewer than half of the team uses. */
+  /** Features they used in range that fewer than half of the team used. */
   canHelpWith: PracticeFeature[]
 }
 
-export interface TeamChampions {
+export interface TeamVolunteers {
   /** Null for "No team", admins only. */
   teamId: string | null
   teamName: string
-  /** Claude Code users in the team in range. */
-  users: number
-  /** 0 to 2, ranked by `rankBy`. */
-  champions: ChampionSuggestion[]
-  reason: ChampionReason
+  volunteers: HelpVolunteer[]
 }
 
 // R2 D5. Counts only: no names or user ids.
@@ -835,7 +802,7 @@ export interface TeamSetup {
   /** Null for the card that covers the whole scope. */
   teamId: string | null
   teamName: string
-  /** Top-quartile members plus A7 champions. */
+  /** Top-quartile members plus volunteers. */
   groupSize: number
   reason: 'ok' | 'smallGroup'
   items: SetupItem[]
@@ -853,8 +820,8 @@ export interface PracticesResponse {
   rest: PracticeGroup | null
   /** At most 3, largest gap first. */
   tips: PracticeTip[]
-  /** Per visible team. */
-  champions: TeamChampions[]
+  /** Per visible team with at least one volunteer. */
+  volunteers: TeamVolunteers[]
   /** R2 D5: shared MCP setup per card. The scope card comes first. */
   setup: TeamSetup[]
 }

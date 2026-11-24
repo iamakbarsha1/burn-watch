@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { AUDIENCE, FIELD_GROUPS, audienceOf, schemaFields } from './transparency'
-import { UsagePayloadSchema } from '@burn-watch/shared'
+import { HelpVolunteerSchema, UsagePayloadSchema } from '@burn-watch/shared'
 
 const fields = FIELD_GROUPS.flatMap((g) => g.fields)
 
@@ -45,5 +45,11 @@ describe('transparency field list', () => {
 
   it('marks the fields only My usage shows as visible to you alone', () => {
     expect(audienceOf('enrichment.sessionCount')).toBe('self')
+  })
+
+  it('lists the help flag under its schema key, visible to the viewer scope', () => {
+    const mine = FIELD_GROUPS.find((g) => g.title === 'What you choose on My usage')!.fields.map((f) => f.path)
+    expect(mine).toEqual(Object.keys(HelpVolunteerSchema.shape))
+    expect(audienceOf('helpVolunteer')).toBe('scoped')
   })
 })

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Document } from 'mongodb'
-import type { IsoDate, OrgId, TeamId, UserId } from '@burn-watch/db'
-import { countFunnel, funnelThresholds, funnelUsersPipeline, stageOf, stuckList, type FunnelPerson } from './adoption.js'
+import type { IsoDate, OrgId, UserId } from '@burn-watch/db'
+import { countFunnel, funnelThresholds, funnelUsersPipeline, stageOf, type FunnelPerson } from './adoption.js'
 import { daysBefore } from './dates.js'
 
 /**
@@ -84,29 +84,6 @@ describe('countFunnel', () => {
 
   it('is all zero for nobody', () => {
     expect(countFunnel([], WEEK)).toEqual({ invited: 0, registered: 0, deviceLinked: 0, firstSync: 0, active: 0, powerUser: 0 })
-  })
-})
-
-describe('stuckList', () => {
-  it('lists everyone short of power user by stopping point, with the date of their last step', () => {
-    const teams = new Map([['t1' as TeamId, 'Web'], ['t2' as TeamId, 'Platform']])
-    const stuck = stuckList(
-      [
-        person({ name: 'Zoe', activeDays: 3, lastSync: '2026-11-21' as IsoDate }),
-        person({ name: 'Bo', firstSync: null, lastSync: null, teamIds: ['t1', 't2'] as TeamId[] }),
-        person({ userId: null, name: null, email: 'new@example.invalid', since: '2026-11-01' as IsoDate }),
-        person({ name: 'Pat', activeDays: 6 }),
-        person({ name: 'Cy', activeDays: 1, lastSync: '2026-11-19' as IsoDate }),
-      ],
-      WEEK,
-      teams,
-    )
-    expect(stuck.map((s) => [s.stoppedAt, s.name ?? s.email, s.lastStepDate, s.teams])).toEqual([
-      ['invited', 'new@example.invalid', '2026-11-01', []],
-      ['registered', 'Bo', '2026-11-05', ['Platform', 'Web']],
-      ['firstSync', 'Cy', '2026-11-19', []],
-      ['active', 'Zoe', '2026-11-21', []],
-    ])
   })
 })
 

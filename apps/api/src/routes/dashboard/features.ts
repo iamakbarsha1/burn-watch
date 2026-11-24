@@ -1,6 +1,6 @@
 import type { Document } from 'mongodb'
 import type { ClaudeEnrichmentDoc } from '@burn-watch/db'
-import { FEATURE_KEYS, type FeatureCounts, type FeatureKey, type FeaturePerson } from '@burn-watch/shared'
+import { FEATURE_KEYS, type FeatureCounts, type FeatureKey } from '@burn-watch/shared'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 
 /** The enrichment fields A5 reads. Every one may be null or absent on old days. */
@@ -45,7 +45,7 @@ export function featureDays(docs: FeatureFields[]): Record<FeatureKey, number | 
 }
 
 /** Decision 2: "used" means at least one day in range. */
-export function countFeatures(people: Pick<FeaturePerson, 'days'>[]): FeatureCounts {
+export function countFeatures(people: { days: Record<FeatureKey, number | null> }[]): FeatureCounts {
   const used = Object.fromEntries(FEATURE_KEYS.map((k) => [k, 0])) as Record<FeatureKey, number>
   let sdkKnown = 0
   for (const p of people) {
