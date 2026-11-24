@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import { fetchTickets } from '@/lib/api'
+import { GroupTooSmallError } from '@/lib/group-too-small'
 import { formatCost, formatCount, formatRange, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { getOrgId, getUserRole } from '@/lib/session'
-import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow } from '@/components/ui'
+import { GroupTooSmall, PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow } from '@/components/ui'
 import { TicketSettingsForm } from './TicketSettingsForm'
 
 const TOP = 50
@@ -18,7 +19,19 @@ export default async function TicketsPage({
   const { from, to } = resolveRange(params)
   if (!(await getOrgId())) redirect('/login')
   const isAdmin = (await getUserRole()) === 'admin'
-  const data = await fetchTickets(from, to).catch(() => null)
+  const read = await fetchTickets(from, to).then(
+    (d) => d,
+    (e: unknown) => (e instanceof GroupTooSmallError ? ('too_small' as const) : null),
+  )
+  if (read === 'too_small') {
+    return (
+      <div>
+        <PageHeader title="Tickets" subtitle={formatRange(from, to)} />
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const data = read
 
   const showAll = params.all === '1'
   const tickets = data ? (showAll ? data.tickets : data.tickets.slice(0, TOP)) : []

@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import { fetchActivity } from '@/lib/api'
+import { unlessTooSmall } from '@/lib/group-too-small'
 import { formatRange, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
-import { PageHeader, Section, EmptyState } from '@/components/ui'
+import { GroupTooSmall, PageHeader, Section, EmptyState } from '@/components/ui'
 
 /**
  * These three are categories of activity, not agents, so they take their own
@@ -59,7 +60,16 @@ export default async function ActivityPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  const items = await fetchActivity(from, to, orgId)
+  const data = await unlessTooSmall(fetchActivity(from, to, orgId))
+  if (!data) {
+    return (
+      <div>
+        <PageHeader title="Activity Breakdown" subtitle={formatRange(from, to)} />
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const items = data
 
   const total = items.reduce((s, i) => s + i.count, 0)
 

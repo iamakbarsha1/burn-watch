@@ -75,6 +75,15 @@ const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
 const USER_A = '33333333-3333-4333-8333-333333333333'
 const USER_B = '77777777-7777-4777-8777-777777777777'
+// Three more teammates, so a team of USER_A, USER_B and PEERS meets MIN_GROUP_SIZE (5).
+const PEERS = [
+  'd1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1',
+  'd2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2',
+  'd3d3d3d3-d3d3-4d3d-8d3d-d3d3d3d3d3d3',
+]
+/** teamMembers rows putting each of PEERS on a team as a plain member. */
+const peerRows = (teamId: string) =>
+  PEERS.map((userId) => ({ _id: `${teamId}:${userId}`, teamId, orgId: ORG_A, userId, role: 'member' }))
 const TEAM_A = '88888888-8888-4888-8888-888888888888'
 const TEAM_B = '99999999-9999-4999-8999-999999999999'
 const DEVICE_A = '44444444-4444-4444-8444-444444444444'
@@ -205,12 +214,13 @@ describe('dashboard routes — authentication', () => {
 describe('dashboard routes — viewer scoping', () => {
   const SCOPED_URLS = [...DASHBOARD_ROUTES.map(range), '/v1/dashboard/budget-alerts']
 
-  // A manager of TEAM_A, which also holds USER_B.
+  // A manager of TEAM_A, which also holds USER_B and PEERS.
   const managerOfTeam = () => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
     mongoState.docs.teamMembers = [
       { _id: `${TEAM_A}:${USER_A}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { _id: `${TEAM_A}:${USER_B}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
   }
 
@@ -237,7 +247,7 @@ describe('dashboard routes — viewer scoping', () => {
 
   it.each(SCOPED_URLS)('widens a manager to their team on %s', async (url) => {
     managerOfTeam()
-    await expectScope(url, 'manager', [USER_A, USER_B])
+    await expectScope(url, 'manager', [USER_A, USER_B, ...PEERS])
   })
 
   it('reads team rows only within the caller org, and only managed teams', async () => {
@@ -247,6 +257,38 @@ describe('dashboard routes — viewer scoping', () => {
     expect(first[0]).toEqual({ orgId: ORG_A, userId: USER_A, role: 'manager' })
     // The fake ignores filters, so which teams the $in names is a fake artifact; the org is not.
     expect(second[0]).toMatchObject({ orgId: ORG_A })
+  })
+
+  describe('minimum group size', () => {
+    const TOO_SMALL = { error: 'group_too_small', minGroupSize: 5 }
+    // TEAM_A with only USER_A and USER_B: below MIN_GROUP_SIZE.
+    const teamOfTwo = () => {
+      mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+      mongoState.docs.teamMembers = [
+        { _id: `${TEAM_A}:${USER_A}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+        { _id: `${TEAM_A}:${USER_B}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ]
+    }
+
+    it.each([...DASHBOARD_ROUTES, '/v1/dashboard/tickets'].map(range))(
+      'refuses a manager whose team has 2 people on %s, before reading data',
+      async (url) => {
+        teamOfTwo()
+        const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'manager' })) })
+        expect(res.statusCode, url).toBe(403)
+        expect(res.json(), url).toEqual(TOO_SMALL)
+        expect(callsTo(mongoState, 'dailySnapshots', 'aggregate'), url).toEqual([])
+        expect(callsTo(mongoState, 'claudeEnrichment', 'aggregate'), url).toEqual([])
+      },
+    )
+
+    it.each([...DASHBOARD_ROUTES, '/v1/dashboard/tickets'].map(range))(
+      'still gives a developer in a 2-person team their own data on %s',
+      async (url) => {
+        teamOfTwo()
+        await expectScope(url, 'developer', [USER_A])
+      },
+    )
   })
 
   it.each(SCOPED_URLS)('lets an admin read the whole org on %s', async (url) => {
@@ -272,12 +314,15 @@ describe('dashboard routes — team filter', () => {
 
   it.each(TEAM_ROUTES)('%s narrows an admin to the team members', async (url) => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    const USER_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_C, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     const res = await get(withTeam(url), 'admin')
     expect(res.statusCode).toBe(200)
-    expectOnly([USER_B])
+    expectOnly([USER_B, USER_C, ...PEERS])
     // The team lookup is org-scoped, so another org's team id answers 404.
     expect(callsTo(mongoState, 'teams', 'findOne')[0][0]).toEqual({ _id: TEAM_A, orgId: ORG_A })
   })
@@ -287,10 +332,11 @@ describe('dashboard routes — team filter', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     const res = await get(withTeam(url), 'manager')
     expect(res.statusCode).toBe(200)
-    expectOnly([USER_A, USER_B])
+    expectOnly([USER_A, USER_B, ...PEERS])
   })
 
   it.each(TEAM_ROUTES)('%s answers 403 to a manager filtering a team they do not manage', async (url) => {
@@ -310,6 +356,18 @@ describe('dashboard routes — team filter', () => {
     const res = await get(withTeam(url), 'developer')
     expect(res.statusCode).toBe(200)
     expectOnly([USER_A])
+  })
+
+  it.each(TEAM_ROUTES)('%s refuses an admin filtering a team of 2 as too small', async (url) => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: PEERS[0], role: 'member' },
+    ]
+    const res = await get(withTeam(url), 'admin')
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toEqual({ error: 'group_too_small', minGroupSize: 5 })
+    expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
   })
 
   it.each(TEAM_ROUTES)('%s answers 404 for a team not in the org', async (url) => {
@@ -338,15 +396,21 @@ describe('GET /v1/dashboard/teams/compare', () => {
     expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
   })
 
+  const USER_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+
   it('sums each team from its members, counting a shared member in both', async () => {
     mongoState.docs.teams = [
       { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
       { _id: TEAM_B, orgId: ORG_A, name: 'Mobile' },
     ]
+    // USER_B and PEERS sit on both teams; only USER_A and USER_B have usage.
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
       { teamId: TEAM_B, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_B),
+      { teamId: TEAM_B, orgId: ORG_A, userId: USER_C, role: 'member' },
     ]
     mongoState.aggregates.dailySnapshots = [
       {
@@ -369,15 +433,37 @@ describe('GET /v1/dashboard/teams/compare', () => {
     const res = await get('admin')
     expect(res.statusCode).toBe(200)
     const [platform, mobile] = res.json() as TeamComparison[]
-    expect(platform).toMatchObject({ teamId: TEAM_A, memberCount: 2, activeUsers: 2, totalCostUsd: 3.5, totalTokens: 30 })
+    expect(platform).toMatchObject({ teamId: TEAM_A, memberCount: 5, activeUsers: 2, totalCostUsd: 3.5, totalTokens: 30 })
     expect(platform.daily).toEqual([{ date: DATE, totalCost: 3.5 }])
     expect(platform.byAgent.find((a) => a.agent === 'claude')).toMatchObject({ tokens: 15, costUsd: 2 })
-    expect(mobile).toMatchObject({ teamId: TEAM_B, memberCount: 1, activeUsers: 1, totalCostUsd: 2, totalTokens: 20 })
+    expect(mobile).toMatchObject({ teamId: TEAM_B, memberCount: 5, activeUsers: 1, totalCostUsd: 2, totalTokens: 20 })
     expect(mobile.byAgent.find((a) => a.agent === 'claude')).toMatchObject({ tokens: 5, costUsd: 0.5 })
 
     // One read, over the union of members, inside the caller's org.
     const [[pipeline]] = callsTo(mongoState, 'dailySnapshots', 'aggregate') as Document[][][]
-    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: { $in: [USER_A, USER_B, ...PEERS, USER_C] } })
+  })
+
+  it('leaves out a team under the minimum group size', async () => {
+    mongoState.docs.teams = [
+      { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
+      { _id: TEAM_B, orgId: ORG_A, name: 'Mobile' },
+    ]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
+      { teamId: TEAM_B, orgId: ORG_A, userId: USER_C, role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: PEERS[0], role: 'member' },
+    ]
+    mongoState.aggregates.dailySnapshots = [{ users: [], agents: [], daily: [] }]
+
+    const res = await get('admin')
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as TeamComparison[]).map((t) => t.teamId)).toEqual([TEAM_A])
+    // Mobile's only-there member is not read at all.
+    const [[pipeline]] = callsTo(mongoState, 'dailySnapshots', 'aggregate') as Document[][][]
+    expect(pipeline[0].$match).toMatchObject({ userId: { $in: [USER_A, USER_B, ...PEERS] } })
   })
 
   it('limits a manager to the teams they manage', async () => {
@@ -1690,9 +1776,10 @@ describe('actual cost', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     await app.inject({ method: 'GET', url: range('/v1/dashboard/overview'), headers: auth(token({ role: 'manager' })) })
-    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B, ...PEERS] } })
   })
 
   it('gives each leaderboard row its actual cost and value multiple', async () => {
@@ -3306,9 +3393,10 @@ describe('GET /v1/dashboard/governance/free-tier', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     expect((await get('manager')).statusCode).toBe(200)
-    expect(match().userId).toEqual({ $in: [USER_A, USER_B] })
+    expect(match().userId).toEqual({ $in: [USER_A, USER_B, ...PEERS] })
   })
 
   it('answers 403 to a manager filtering a team they do not manage', async () => {
@@ -3389,9 +3477,10 @@ describe('GET /v1/dashboard/governance/mcp', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     expect((await get('manager')).statusCode).toBe(200)
-    expect(match().userId).toEqual({ $in: [USER_A, USER_B] })
+    expect(match().userId).toEqual({ $in: [USER_A, USER_B, ...PEERS] })
   })
 })
 
@@ -3642,10 +3731,11 @@ describe('GET /v1/dashboard/governance/violations', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     const body = (await get('manager')).json()
     expect(aggregates()).toHaveLength(1)
-    expect(aggregates()[0][0].$match.userId).toEqual({ $in: [USER_A, USER_B] })
+    expect(aggregates()[0][0].$match.userId).toEqual({ $in: [USER_A, USER_B, ...PEERS] })
     expect(body.seenModels).toEqual({})
   })
 })
@@ -3810,6 +3900,7 @@ describe('GET /v1/dashboard/adoption/idle-seats', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     const body = (await get('manager')).json()
     expect(body.rows.map((r: { userId: string }) => r.userId).sort()).toEqual([USER_A, USER_B].sort())
@@ -3932,6 +4023,7 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     mongoState.aggregates.users = [row(USER_A, 'Ada', { activeDays: 2 }), row(USER_B, 'Bo')]
     mongoState.docs.users = [{ email: 'ada@x.io' }]
@@ -3939,7 +4031,7 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
 
     const body = (await get('manager')).json()
     const [pipeline] = callsTo(mongoState, 'users', 'aggregate')[0] as Document[][]
-    expect(pipeline[0].$match._id.$in.sort()).toEqual([USER_A, USER_B].sort())
+    expect(pipeline[0].$match._id.$in.sort()).toEqual([USER_A, USER_B, ...PEERS].sort())
     expect(body.noTeam).toBeNull()
     expect(body.total).toEqual(counts(3, 2, 2, 2, 1, 0))
     expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(3, 2, 2, 2, 1, 0) }])
@@ -4026,6 +4118,7 @@ describe('GET /v1/dashboard/adoption/features', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     mongoState.docs.claudeEnrichment = [day(USER_A), day(USER_B)]
     mongoState.docs.users = [
@@ -4035,7 +4128,7 @@ describe('GET /v1/dashboard/adoption/features', () => {
 
     const body = (await get('manager')).json()
     const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
-    expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B].sort())
+    expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B, ...PEERS].sort())
     expect(body.noTeam).toBeNull()
     expect(body.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Hidden'])
 
@@ -4173,6 +4266,29 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     ]
     mongoState.aggregates.claudeEnrichment = [{ _id: USER_A, servers: ['github', 'linear'] }]
   }
+  // MIN_QUARTILE_PEOPLE is 17, so a comparison needs seed()'s four plus 13 more.
+  // The top quartile is then 5 people, one of each kind below plus the seed's own.
+  const TOPS = [1, 2, 3, 4].map((n) => `top${n}-practices`) // like USER_A: 3 days, MCP, 95% cache
+  const HEAVY = [1, 2, 3, 4].map((n) => `heavy${n}-practices`) // like USER_B: 1 day, 900 tokens
+  const PLANNERS = [1, 2, 3, 4].map((n) => `plan${n}-practices`) // like U4: 1 day, plan mode
+  const QUIET = 'quiet-practices' // 1 day, nothing else
+  const EVERYONE = [USER_A, USER_B, U3, U4, ...TOPS, ...HEAVY, ...PLANNERS, QUIET]
+  const crowd = () => {
+    seed()
+    mongoState.docs.claudeEnrichment.push(
+      ...TOPS.flatMap((id) => [0, 1, 2].map((n) => day(id, daysBefore(t, n), { mcpUsage: { github: 1 } }))),
+      ...HEAVY.map((id) => day(id, t)),
+      ...PLANNERS.map((id) => day(id, t, { toolUsage: { exitplanmode: 1 } })),
+      day(QUIET, t),
+    )
+    mongoState.docs.users = EVERYONE.map((_id) => ({ _id, name: `Name-${_id}` }))
+    mongoState.aggregates.usageEvents.push(
+      ...TOPS.map((_id) => ({ _id, tokens: 100, read: 95, cacheable: 100 })),
+      // Two at 50% and two at 60%, so the rest's median cache stays 55.
+      ...HEAVY.map((_id, i) => ({ _id, tokens: 900, read: i < 2 ? 50 : 60, cacheable: 100 })),
+    )
+    mongoState.aggregates.claudeEnrichment.push(...TOPS.map((_id) => ({ _id, servers: ['github', 'linear'] })))
+  }
 
   it('refuses a developer before reading anything', async () => {
     expect((await get('developer')).statusCode).toBe(403)
@@ -4183,16 +4299,22 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect((await get('admin', `/v1/dashboard/adoption/practices${q}`)).statusCode).toBe(400)
   })
 
-  it('compares nothing below 4 people but still suggests champions', async () => {
-    mongoState.docs.claudeEnrichment = [day(USER_A, t), day(USER_A, from), day(USER_B, t), day(U3, t)]
-    mongoState.docs.users = [{ _id: USER_A, name: 'Ada' }, { _id: USER_B, name: 'Bo' }, { _id: U3, name: 'Cy' }]
+  it('compares nothing below 17 people but still suggests champions', async () => {
+    const more = Array.from({ length: 13 }, (_, i) => `few${i}-practices`)
+    mongoState.docs.claudeEnrichment = [day(USER_A, t), day(USER_A, from), day(USER_B, t), day(U3, t), ...more.map((id) => day(id, t))]
+    mongoState.docs.users = [
+      { _id: USER_A, name: 'Ada' },
+      { _id: USER_B, name: 'Bo' },
+      { _id: U3, name: 'Cy' },
+      ...more.map((_id) => ({ _id, name: _id })),
+    ]
     const body = (await get('admin')).json()
-    expect(body).toMatchObject({ population: 3, minPopulation: 4, top: null, rest: null, tips: [], namesOff: false })
+    expect(body).toMatchObject({ population: 16, minPopulation: 17, top: null, rest: null, tips: [], namesOff: false })
     expect(body.champions).toEqual([
       {
         teamId: null,
         teamName: 'No team',
-        users: 3,
+        users: 16,
         reason: 'ok',
         champions: [
           { userId: USER_A, name: 'Ada', activeDays: 2, hidden: false, uses: [], canHelpWith: [] },
@@ -4209,51 +4331,53 @@ describe('GET /v1/dashboard/adoption/practices', () => {
   })
 
   it('ranks by active days, compares the groups, fires tips, and names no one', async () => {
-    seed()
+    crowd()
     const res = await get('admin')
     const body = res.json()
-    expect(body.population).toBe(4)
+    expect(body.population).toBe(17)
     expect(body.top).toEqual({
-      users: 1,
+      users: 5,
       uses: { mcp: 1, skills: 0, subagents: 0, plan: 0 },
       dayShare: { mcp: 1, skills: 0, subagents: 0, plan: 0 },
       mcpServers: 2,
       cacheHitRate: 95,
     })
-    expect(body.rest).toMatchObject({ users: 3, mcpServers: 0, cacheHitRate: 55 })
-    expect(body.rest.uses.plan).toBeCloseTo(1 / 3)
+    expect(body.rest).toMatchObject({ users: 12, mcpServers: 0, cacheHitRate: 55 })
+    expect(body.rest.uses.plan).toBeCloseTo(5 / 12)
     expect(body.tips).toEqual([{ id: 'mcp', gap: 1 }, { id: 'cache', gap: 0.4 }])
     // The comparison names no one; only A7 champions carry names.
     const groups = JSON.stringify({ top: body.top, rest: body.rest, tips: body.tips })
-    for (const id of [USER_A, USER_B, U3, U4]) expect(groups).not.toContain(id)
+    for (const id of EVERYONE) expect(groups).not.toContain(id)
     expect(groups).not.toContain('Name-')
 
     const [pipeline] = callsTo(mongoState, 'usageEvents', 'aggregate')[0] as Document[][]
     expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, agent: 'claude', date: { $gte: from, $lte: t } })
-    expect(pipeline[0].$match.userId.$in.sort()).toEqual([USER_A, USER_B, U3, U4].sort())
+    expect(pipeline[0].$match.userId.$in.sort()).toEqual([...EVERYONE].sort())
     expect(callsTo(mongoState, 'dailySnapshots', 'find')).toEqual([])
   })
 
   it('ranks by Claude tokens when asked', async () => {
-    seed()
+    crowd()
     const body = (await get('admin', `${URL}&rankBy=tokens`)).json()
     expect(body.rankBy).toBe('tokens')
-    // USER_B is on top now: no MCP, 50% cache.
-    expect(body.top).toMatchObject({ users: 1, mcpServers: 0, cacheHitRate: 50 })
+    // USER_B and HEAVY are on top now: no MCP, median 50% cache.
+    expect(body.top).toMatchObject({ users: 5, mcpServers: 0, cacheHitRate: 50 })
     expect(body.top.uses.mcp).toBe(0)
   })
 
   it('ranks by the A8 score, reading all-time snapshots for the streak', async () => {
-    seed()
+    crowd()
     mongoState.docs.dailySnapshots = [
-      ...[0, 1, 2].map((n) => ({ userId: U4, date: daysBefore(t, n), totalTokens: 500, byAgent: { claude: { tokens: 500 }, codex: { tokens: 1 } } })),
+      ...[U4, ...PLANNERS].flatMap((userId) =>
+        [0, 1, 2].map((n) => ({ userId, date: daysBefore(t, n), totalTokens: 500, byAgent: { claude: { tokens: 500 }, codex: { tokens: 1 } } })),
+      ),
       { userId: USER_A, date: t, totalTokens: 10, byAgent: { claude: { tokens: 10 } } },
     ]
     const body = (await get('admin', `${URL}&rankBy=score`)).json()
     const [filter] = callsTo(mongoState, 'dailySnapshots', 'find')[0] as [Record<string, unknown>]
     expect(filter).toMatchObject({ orgId: ORG_A, totalTokens: { $gt: 0 } })
     expect(filter).not.toHaveProperty('date')
-    // U4 leads days, streak, tokens and agents in snapshots: the top is the plan-mode user.
+    // U4 and PLANNERS lead days, streak, tokens and agents in snapshots: the top is the plan-mode users.
     expect(body.top.uses).toEqual({ mcp: 0, skills: 0, subagents: 0, plan: 1 })
   })
 
@@ -4262,15 +4386,17 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
     const res = await get('manager')
     const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
-    expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B].sort())
+    expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B, ...PEERS].sort())
     expect(res.json().population).toBe(0)
   })
 
   describe('recommended setup (R2 D5)', () => {
-    // seed(): USER_A tops the quartile; champions in No team are USER_A and USER_B (most tokens).
+    // seed() is below MIN_QUARTILE_PEOPLE, so there is no top quartile here: the
+    // reference group is the No team champions, USER_A and USER_B (most tokens).
     const servers = () => {
       mongoState.aggregates.claudeEnrichment = [
         { _id: USER_A, servers: ['github', 'linear', 'plugin_sp_x'] },
@@ -4315,7 +4441,8 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       seed()
       servers()
       mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-      mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' }))
+      // PEERS bring the team to MIN_GROUP_SIZE; they have no Claude Code days.
+      mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4, ...PEERS].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' }))
       const body = (await get('manager')).json()
       expect(callsTo(mongoState, 'mcpApprovals', 'find')).toEqual([])
       expect(body.setup.map((c: { teamName: string }) => c.teamName)).toEqual(['All your teams', 'Platform'])
@@ -4326,7 +4453,8 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       seed()
       servers()
       mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-      mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: U3, role: 'member' }]
+      // Five members, but only U3 and U4 have Claude Code days: too few for champions.
+      mongoState.docs.teamMembers = [U3, U4, ...PEERS].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' }))
       const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
       expect(body.setup).toEqual([{ teamId: TEAM_A, teamName: 'Platform', groupSize: 0, reason: 'smallGroup', items: [] }])
     })
@@ -4336,7 +4464,8 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     const teamOfFour = () => {
       seed()
       mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-      mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4].map((userId) => ({
+      // PEERS bring the team to MIN_GROUP_SIZE; they have no Claude Code days.
+      mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4, ...PEERS].map((userId) => ({
         teamId: TEAM_A, orgId: ORG_A, userId, role: userId === USER_A ? 'manager' : 'member',
       }))
     }
@@ -4408,6 +4537,7 @@ describe('audit log (R1 B8)', () => {
     mongoState.docs.teamMembers = [
       { _id: `${TEAM_A}:${USER_A}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: managerRole },
       { _id: `${TEAM_A}:${USER_B}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
     ]
   }
 
@@ -4762,7 +4892,7 @@ describe('audit log (R1 B8)', () => {
           _id: `view:${ORG_A}:${USER_A}:overview:${TEAM_A}:${today()}`,
           action: 'view.overview',
           target: { type: 'team', id: TEAM_A, label: 'Platform' },
-          detail: { people: 2 },
+          detail: { people: 5 },
         }),
       ])
     })

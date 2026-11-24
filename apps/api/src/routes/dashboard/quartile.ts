@@ -1,4 +1,5 @@
 import {
+  MIN_GROUP_SIZE,
   PRACTICE_FEATURES,
   type ChampionReason,
   type FeatureKey,
@@ -11,10 +12,11 @@ import {
 import { mcpSource } from './governance.js'
 
 /**
- * R2 A6 Decision 2: below this many people there is no comparison. At 4 to 7
- * the top group is one person; the owner chose that knowingly.
+ * Below this many people there is no comparison. v2 rule 2 replaces R2 A6
+ * Decision 2 (a floor of 4, where the top group could be one person): the top
+ * group, ceil(n / 4) people, must itself reach MIN_GROUP_SIZE, so n >= 17.
  */
-export const MIN_QUARTILE_PEOPLE = 4
+export const MIN_QUARTILE_PEOPLE = 4 * (MIN_GROUP_SIZE - 1) + 1
 
 /** What the split needs from a person. `rank` is the measure picked by `rankBy`. */
 export interface Ranked {

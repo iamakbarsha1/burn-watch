@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 // Aliased so the namespace augmentation below can name the type. A bare `JWT`
 // there is the interface being merged, which declaration emit rejects (TS4033).
 import type { JWT as JwtInstance } from '@fastify/jwt'
+import { MIN_GROUP_SIZE } from '@burn-watch/shared'
 import { getStore, type DeviceId, type OrgId, type TeamDoc, type TeamId, type UserId } from '@burn-watch/db'
 
 export interface JwtPayload {
@@ -137,12 +138,20 @@ export async function teamScope(user: JwtPayload, teamId: TeamId): Promise<UserI
   return user.role === 'manager' && mine.role === 'manager' ? ids : [mine.userId]
 }
 
+/** Why a scoped read was refused. 403 and 404 are teamScope's; see `refuse`. */
+export type ScopeRefusal = 403 | 404 | 'too_small'
+
 /**
- * viewerScope, narrowed to one team when the request names one. The two
- * numbers are the status to answer with; see teamScope.
+ * viewerScope, narrowed to one team when the request names one, and refused
+ * as `too_small` when it covers other people but fewer than MIN_GROUP_SIZE of
+ * them. A scope of just the caller is their own data and always allowed.
+ * Undefined (an admin's whole org) is not counted here.
  */
-export async function readScope(user: JwtPayload, teamId?: string): Promise<UserId[] | undefined | 403 | 404> {
-  return teamId ? teamScope(user, teamId as TeamId) : viewerScope(user)
+export async function readScope(user: JwtPayload, teamId?: string): Promise<UserId[] | undefined | ScopeRefusal> {
+  const scope = teamId ? await teamScope(user, teamId as TeamId) : await viewerScope(user)
+  if (!Array.isArray(scope)) return scope
+  const self = scope.length === 1 && scope[0] === user.userId
+  return !self && new Set(scope).size < MIN_GROUP_SIZE ? 'too_small' : scope
 }
 
 /** Teams the viewer may compare: every team for an admin, managed teams for a manager. */

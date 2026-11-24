@@ -9,7 +9,8 @@
     "start": "node dist/src/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "dashboard-pipelines": "tsx src/scripts/dashboard-pipelines.ts"
+    "dashboard-pipelines": "tsx src/scripts/dashboard-pipelines.ts",
+    "no-individuals": "tsx src/scripts/no-individuals.ts"
   },
   "dependencies": {
     "@burn-watch/db": "*",

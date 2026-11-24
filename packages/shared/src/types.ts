@@ -699,6 +699,13 @@ export interface FunnelResponse {
   stuck: StuckPerson[]
 }
 
+/**
+ * v2 rule 2: a dashboard read over fewer than this many people answers 403
+ * `group_too_small` instead of numbers, so no total can point at one person.
+ * A person reading only their own data is never refused.
+ */
+export const MIN_GROUP_SIZE = 5
+
 // R2 A5 feature matrix. Claude Code only.
 export const FEATURE_KEYS = ['mcp', 'skills', 'subagents', 'plan', 'sdk'] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]

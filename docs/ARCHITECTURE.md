@@ -6,6 +6,19 @@ BurnWatch is an AI token usage dashboard for engineering organizations. It track
 
 Target: companies with 50+ developers using AI coding assistants.
 
+## Privacy rules (v2)
+
+BurnWatch v2 is built so it cannot be used to watch individual people. Every route follows these rules. The plan and status live in `tasks/V2-NO-MICROMANAGEMENT-PLAN.md`.
+
+1. **Groups for managers, self for people.** Admins and managers see team and org totals. Each person sees their own numbers in full. Nobody sees another person's usage numbers.
+2. **Minimum group size of 5.** `MIN_GROUP_SIZE` in `packages/shared`. `readScope` (`apps/api/src/plugins/jwt.ts`) refuses a read that covers other people but fewer than 5 of them, and the route answers 403 `group_too_small`. Team compare leaves such teams out. The top-vs-rest split needs 17 people so the top quarter is itself 5.
+3. **No ranking, scoring or streaks** shown to anyone but the person.
+4. **Named lists only for admin operations, with symmetry.** Unused seats and setup checks may name a person to an admin. The person sees the same fact about themselves.
+5. **People can see who looked** at data that covered them.
+6. **Plain, neutral words.** No "score", "streak", "stuck", "missed", "violations", "leaderboard".
+
+`npm run no-individuals -w @burn-watch/api` checks rules 1, 2 and 4 against a real MongoDB in CI. It calls every dashboard GET as admin, manager and developer and fails on any other person's id, name or email outside its allowlist. Its `KNOWN_LEAKS` list holds the routes that still break rule 1, and each phase removes its entries.
+
 ## System Overview
 
 ```

@@ -1,4 +1,5 @@
 import { cache } from 'react'
+import { GroupTooSmallError } from './group-too-small'
 import { cookies } from 'next/headers'
 import type {
   OverviewResponse,
@@ -72,7 +73,11 @@ async function errorMessage(res: Response, path: string): Promise<string> {
 async function apiFetch<T>(path: string): Promise<T> {
   const headers = await authHeaders()
   const res = await fetch(`${API_URL}${path}`, { cache: 'no-store', headers })
-  if (!res.ok) throw new Error(await errorMessage(res, path))
+  if (!res.ok) {
+    const message = await errorMessage(res, path)
+    if (res.status === 403 && message === 'group_too_small') throw new GroupTooSmallError(message)
+    throw new Error(message)
+  }
   return res.json() as Promise<T>
 }
 

@@ -1,13 +1,14 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { fetchClaudeAccounts, fetchFreeTier, fetchMcpInventory, fetchTeams, fetchViolationCount, fetchViolations } from '@/lib/api'
+import { nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
 import { agentById } from '@/lib/agents'
 import { formatRange, formatTokens, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
 import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
-import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
+import { GroupTooSmall, PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
 import type { AgentPolicyRule, ClaudeAccountFlag, ClaudeAccountPerson, McpServerSource, ViolationReason } from '@burn-watch/shared'
 import { McpApprovalButton } from './McpApprovalButton'
 import { AgentPolicyForm } from './AgentPolicyForm'
@@ -60,13 +61,29 @@ export default async function GovernancePage({
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
   const isAdmin = role === 'admin'
-  const [data, mcp, violations, violationCount, accounts] = await Promise.all([
-    fetchFreeTier(from, to, team?.id).catch(() => null),
-    fetchMcpInventory(from, to, team?.id).catch(() => null),
-    fetchViolations(from, to, team?.id).catch(() => null),
-    isAdmin ? fetchViolationCount().catch(() => 0) : 0,
-    isAdmin ? fetchClaudeAccounts(from, to, team?.id).catch(() => null) : undefined,
-  ])
+  const loaded = await unlessTooSmall(
+    Promise.all([
+      fetchFreeTier(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchMcpInventory(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchViolations(from, to, team?.id).catch(nullUnlessTooSmall),
+      isAdmin ? fetchViolationCount().catch(() => 0) : 0,
+      isAdmin ? fetchClaudeAccounts(from, to, team?.id).catch(nullUnlessTooSmall) : undefined,
+    ]),
+  )
+  if (!loaded) {
+    return (
+      <div>
+        <PageHeader title="Governance" subtitle={formatRange(from, to)} />
+        {teams.length > 0 && (
+          <Suspense fallback={null}>
+            <TeamFilter teams={teams} value={team?.id} />
+          </Suspense>
+        )}
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const [data, mcp, violations, violationCount, accounts] = loaded
   const mcpCols = isAdmin ? 8 : 7
   const mcpPeople = mcp ? new Set(mcp.servers.flatMap((s) => s.users.map((u) => u.userId))).size : 0
   const mcpUnapproved = mcp ? mcp.servers.filter((s) => !s.approved).length : 0

@@ -35,7 +35,7 @@ import {
 } from '@burn-watch/shared'
 import { comparableTeams, readScope } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
-import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
+import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
 import { countFeatures, featureDays, type FeatureFields } from './features.js'
 import type { EnrichmentRange } from './enrichment.js'
@@ -244,7 +244,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     }
     const { idleDays, teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()
@@ -342,7 +342,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
     const { teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()
@@ -441,7 +441,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
     const { teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()
@@ -505,7 +505,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
     const { teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()
@@ -586,7 +586,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
     const { teamId, rankBy } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'adoption', scope, teamId)
 
     const store = getStore()

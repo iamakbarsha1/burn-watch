@@ -16,26 +16,27 @@ const people = (n: number) => Array.from({ length: n }, (_, i) => ({ userId: `u$
 const ids = (xs: { userId: string }[]) => xs.map((x) => x.userId)
 
 describe('quartileSplit', () => {
-  it('refuses below the minimum and splits from it', () => {
-    expect(MIN_QUARTILE_PEOPLE).toBe(4)
-    expect(quartileSplit(people(3))).toBeNull()
-    expect(ids(quartileSplit(people(4))!.top)).toEqual(['u0'])
-    expect(quartileSplit(people(4))!.rest).toHaveLength(3)
-    expect(ids(quartileSplit(people(8))!.top)).toEqual(['u0', 'u1'])
-    expect(quartileSplit(people(8))!.rest).toHaveLength(6)
-    expect(ids(quartileSplit(people(9))!.top)).toEqual(['u0', 'u1', 'u2'])
+  it('refuses until the top group itself reaches MIN_GROUP_SIZE, and splits from there', () => {
+    expect(MIN_QUARTILE_PEOPLE).toBe(17)
+    expect(quartileSplit(people(16))).toBeNull()
+    expect(ids(quartileSplit(people(17))!.top)).toEqual(['u0', 'u1', 'u2', 'u3', 'u4'])
+    expect(quartileSplit(people(17))!.rest).toHaveLength(12)
+    expect(quartileSplit(people(21))!.top).toHaveLength(6)
   })
 
   it('breaks a tie at the cut by tokens, then userId, whatever the input order', () => {
+    const lead = ['p0', 'p1', 'p2', 'p3'].map((userId) => ({ userId, rank: 10, tokens: 0 }))
+    const tail = Array.from({ length: 10 }, (_, i) => ({ userId: `z${i}`, rank: 1, tokens: 0 }))
     const tied = [
+      ...lead,
       { userId: 'c', rank: 5, tokens: 10 },
       { userId: 'b', rank: 5, tokens: 10 },
       { userId: 'a', rank: 5, tokens: 1 },
-      { userId: 'd', rank: 1, tokens: 99 },
+      ...tail,
     ]
-    expect(ids(quartileSplit(tied)!.top)).toEqual(['b'])
-    expect(ids(quartileSplit([...tied].reverse())!.top)).toEqual(['b'])
-    expect(ids(quartileSplit(tied)!.rest)).toEqual(['c', 'a', 'd'])
+    expect(ids(quartileSplit(tied)!.top)).toEqual(['p0', 'p1', 'p2', 'p3', 'b'])
+    expect(ids(quartileSplit([...tied].reverse())!.top)).toEqual(['p0', 'p1', 'p2', 'p3', 'b'])
+    expect(ids(quartileSplit(tied)!.rest).slice(0, 2)).toEqual(['c', 'a'])
   })
 })
 

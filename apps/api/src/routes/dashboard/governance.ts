@@ -35,7 +35,7 @@ import { comparableTeams, readScope, requireAdmin, type JwtPayload } from '../..
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { groupAccounts } from './accounts.js'
 import { audit, auditView } from '../../audit.js'
-import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
+import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { daysBefore, today } from './dates.js'
 
 const QuerySchema = z
@@ -244,7 +244,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
 
     const scope = await readScope(request.user, parsed.data.teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const orgId = request.user.orgId as OrgId
@@ -265,7 +265,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
     const scope = await readScope(request.user, parsed.data.teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const store = getStore()
@@ -319,7 +319,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
     const scope = await readScope(request.user, parsed.data.teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const store = getStore()
@@ -366,7 +366,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
     const { teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, teamId)
 
     const store = getStore()

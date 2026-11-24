@@ -21,7 +21,7 @@ import {
   type LeaderboardSort,
   type Streak,
 } from '@burn-watch/shared'
-import { dateQueryShape, scopeError, teamIdField } from './query-schema.js'
+import { dateQueryShape, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { readScope, requireAdmin } from '../../plugins/jwt.js'
 import { audit, auditView } from '../../audit.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
@@ -205,7 +205,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance) {
       // team filter still goes through readScope, which keeps them to themselves.
       const widened = isDeveloper && settings.developerView !== 'own' && !teamId
       const scope = widened ? undefined : await readScope(viewer, teamId)
-      if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+      if (isRefusal(scope)) return refuse(reply, scope)
       // A widened developer has scope undefined, so the whole-org rule covers them.
       await auditView(request, 'leaderboard', scope, teamId)
       // Server side, so a developer cannot read anyone's spend by sorting on it.
