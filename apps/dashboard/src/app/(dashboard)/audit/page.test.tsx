@@ -72,7 +72,7 @@ describe('AuditPage', () => {
   })
 
   it('shows an org target by its name, or "Organization" for an old row with only the id', async () => {
-    const org: AuditRow = { ...view, kind: 'action', action: 'org.leaderboard_settings', detail: { developerView: 'full', showNames: true, showOthersCost: false } }
+    const org: AuditRow = { ...view, kind: 'action', action: 'org.min_claude_version', detail: { minClaudeVersion: '2.0.0' } }
     state.rows = [
       { ...org, id: 'e1', target: { type: 'org', id: '11111111-1111-4111-8111-111111111111', label: 'Acme' } },
       { ...org, id: 'e2', target: { type: 'org', id: '11111111-1111-4111-8111-111111111111', label: null } },

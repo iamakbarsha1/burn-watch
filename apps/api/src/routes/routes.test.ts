@@ -92,7 +92,6 @@ const DATE = '2026-11-05'
 
 const DASHBOARD_ROUTES = [
   '/v1/dashboard/overview',
-  '/v1/dashboard/leaderboard',
   '/v1/dashboard/trends',
   '/v1/dashboard/activity',
   '/v1/dashboard/projects',
@@ -101,7 +100,7 @@ const DASHBOARD_ROUTES = [
 let app: FastifyInstance
 
 // `/trends` takes `days` or `from`+`to` and does not accept `date`, which the
-// other four do. A single-day range is the one query every dashboard route
+// other three do. A single-day range is the one query every dashboard route
 // accepts, so the shared cases use it rather than special-casing trends.
 const range = (url: string) => `${url}?from=${DATE}&to=${DATE}`
 
@@ -301,7 +300,7 @@ describe('dashboard routes — viewer scoping', () => {
 })
 
 describe('dashboard routes — team filter', () => {
-  const TEAM_ROUTES = ['/v1/dashboard/overview', '/v1/dashboard/trends', '/v1/dashboard/leaderboard']
+  const TEAM_ROUTES = ['/v1/dashboard/overview', '/v1/dashboard/trends']
   const withTeam = (url: string, team = TEAM_A) => `${range(url)}&teamId=${team}`
   const get = (url: string, role: JwtPayload['role']) =>
     app.inject({ method: 'GET', url, headers: auth(token({ role })) })
@@ -601,15 +600,6 @@ describe('dashboard routes — query validation', () => {
     const res = await app.inject({ method: 'GET', url, headers: auth(token()) })
     expect(res.statusCode).toBe(400)
   })
-
-  it('rejects a leaderboard limit above the cap', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: `/v1/dashboard/leaderboard?date=${DATE}&limit=5000`,
-      headers: auth(token()),
-    })
-    expect(res.statusCode).toBe(400)
-  })
 })
 
 /**
@@ -719,369 +709,6 @@ describe('GET /v1/dashboard/overview', () => {
   it('labels a single-day view with the bare date', async () => {
     facet()
     expect((await get(`/v1/dashboard/overview?date=${DATE}`)).json().date).toBe(DATE)
-  })
-})
-
-describe('GET /v1/dashboard/leaderboard', () => {
-  const url = range('/v1/dashboard/leaderboard')
-  const get = () => app.inject({ method: 'GET', url, headers: auth(token()) })
-
-  const seed = (over: Record<string, unknown> = {}) => {
-    dashboardAggregate('dailySnapshots', [
-      {
-        users: [{ _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 7, activeDays: 1 }],
-        agents: [],
-        everyone: [{ ids: [USER_A] }],
-        ...over,
-      },
-    ])
-    mongoState.docs.users = [{ _id: USER_A, name: 'Ada', email: 'ada@example.com' }]
-  }
-
-  it('renders a person with their totals in dollars', async () => {
-    seed()
-    expect((await get()).json()).toEqual([
-      expect.objectContaining({
-        userId: USER_A,
-        name: 'Ada',
-        email: 'ada@example.com',
-        totalCostUsd: 20,
-        totalTokens: 900,
-        sessions: 7,
-        cacheHitRate: null,
-      }),
-    ])
-  })
-
-  it('maps each agent onto its own field, zero-filling the ones with no row', async () => {
-    seed({
-      agents: [
-        { _id: { userId: USER_A, agent: 'claude' }, tokens: 800, costMicros: 19 * USD },
-        { _id: { userId: USER_A, agent: 'codex' }, tokens: 100, costMicros: USD },
-      ],
-    })
-    expect((await get()).json()[0]).toMatchObject({
-      claude: { tokens: 800, costUsd: 19 },
-      codex: { tokens: 100, costUsd: 1 },
-      qwen: { tokens: 0, costUsd: 0 },
-      gemini: { tokens: 0, costUsd: 0 },
-      copilot: { tokens: 0, costUsd: 0 },
-    })
-  })
-
-  it('never credits one person with another person agent totals', async () => {
-    seed({
-      agents: [
-        { _id: { userId: 'someone-else', agent: 'claude' }, tokens: 999, costMicros: 99 * USD },
-      ],
-    })
-    expect((await get()).json()[0].claude).toEqual({ tokens: 0, costUsd: 0 })
-  })
-
-  it('returns an empty array, and reads no users, when nobody spent anything', async () => {
-    dashboardAggregate('dailySnapshots', [])
-    const res = await get()
-    expect(res.json()).toEqual([])
-    expect(mongoCalls('users', 'find')).toEqual([])
-  })
-
-  it('fails loudly when a snapshot has no user document, naming the id it could not resolve', async () => {
-    // Postgres declared `daily_snapshots.user_id` NOT NULL with a cascading
-    // foreign key, so the inner join never dropped a row. MongoDB enforces
-    // nothing of the kind, and a leaderboard quietly missing people reads
-    // exactly like an org where nobody spent anything.
-    //
-    // Asserted on the thrown error, not on the 500 alone. Deleting the guard
-    // also produces a 500 — a TypeError off the undefined user, a line later —
-    // so a test that stopped at the status code would pass with the guard gone
-    // and keep passing the day someone "fixes" that crash with a `?? null`,
-    // which is the blank-name row the guard exists to refuse.
-    seed()
-    mongoState.docs.users = []
-    const logged = vi.spyOn(app.log, 'error')
-    const res = await get()
-    expect(res.statusCode).toBe(500)
-    const thrown = logged.mock.calls.at(-1)?.[0] as Error
-    expect(thrown?.message).toContain('no user document')
-    expect(thrown?.message).toContain(USER_A)
-  })
-
-  it('refuses the request for an unresolvable person who is not even on this page', async () => {
-    // The check runs over everyone in range, not the page, so the failure does
-    // not move depending on which page was asked for. Looking it up per page
-    // made an orphan that sorted onto page 0 fail page 0 and leave page 1
-    // answering 200 — an integrity failure you could page past.
-    seed({ everyone: [{ ids: [USER_A, '99999999-9999-4999-8999-999999999999'] }] })
-    const logged = vi.spyOn(app.log, 'error')
-    const res = await get()
-    expect(res.statusCode).toBe(500)
-    expect((logged.mock.calls.at(-1)?.[0] as Error)?.message).toContain('99999999')
-  })
-
-  it('scopes the user lookup to the caller org', async () => {
-    seed()
-    await get()
-    expect(mongoCalls('users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
-  })
-
-  it('looks up everyone in range, not just the page it is about to render', async () => {
-    seed({ everyone: [{ ids: [USER_A, 'someone-on-page-two'] }] })
-    mongoState.docs.users = [
-      { _id: USER_A, name: 'Ada', email: 'ada@example.com' },
-      { _id: 'someone-on-page-two', name: 'Bo', email: 'bo@example.com' },
-    ]
-    await get()
-    expect(mongoCalls('users', 'find')[0][0]).toMatchObject({
-      _id: { $in: [USER_A, 'someone-on-page-two'] },
-    })
-  })
-
-  it('ranks every row in scope and pages in node, with rank and outOf over the whole list', async () => {
-    seed({
-      users: [
-        { _id: USER_A, totalCostMicros: 0, totalTokens: 900, sessions: 1, activeDays: 2 },
-        { _id: USER_B, totalCostMicros: 0, totalTokens: 100, sessions: 1, activeDays: 1 },
-      ],
-      everyone: [{ ids: [USER_A, USER_B] }],
-    })
-    mongoState.docs.users.push({ _id: USER_B, name: 'Bo', email: 'bo@example.com' })
-    const res = await app.inject({
-      method: 'GET',
-      url: `/v1/dashboard/leaderboard?date=${DATE}&limit=1&offset=1`,
-      headers: auth(token({ role: 'admin' })),
-    })
-    expect(res.json().map((r: { name: string; rank: number; outOf: number }) => [r.name, r.rank, r.outOf])).toEqual([['Bo', 2, 2]])
-    const rendered = JSON.stringify(mongoCalls('dailySnapshots', 'aggregate')[0])
-    expect(rendered).not.toContain('$limit')
-    expect(rendered).not.toContain('$skip')
-  })
-})
-
-describe('GET /v1/dashboard/leaderboard — ranking and visibility (R1 A8)', () => {
-  const USER_C = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-  type Row = Record<string, unknown> & { userId: string; name: string; email: string; rank: number }
-  const get = async (role: JwtPayload['role'], query = '', userId = USER_A) => {
-    const res = await app.inject({
-      method: 'GET',
-      url: `${range('/v1/dashboard/leaderboard')}${query}`,
-      headers: auth(token({ role, userId })),
-    })
-    expect(res.statusCode).toBe(200)
-    return res.json() as Row[]
-  }
-  const names = (rows: Row[]) => rows.map((r) => r.name)
-
-  // B leads on days. A and C tie on days and tokens; `_id` puts A first. C has
-  // the live streak, the most features and the most spend.
-  const seed = (rows: string[] = [USER_A, USER_B, USER_C]) => {
-    const all: Record<string, Record<string, unknown>> = {
-      [USER_A]: { _id: USER_A, totalCostMicros: 20 * USD, totalTokens: 900, sessions: 1, activeDays: 2 },
-      [USER_B]: { _id: USER_B, totalCostMicros: 50 * USD, totalTokens: 500, sessions: 1, activeDays: 3 },
-      [USER_C]: { _id: USER_C, totalCostMicros: 60 * USD, totalTokens: 900, sessions: 1, activeDays: 2 },
-    }
-    dashboardAggregate('dailySnapshots', [
-      {
-        users: rows.map((id) => all[id]),
-        agents: [
-          { _id: { userId: USER_A, agent: 'claude' }, tokens: 900, costMicros: 20 * USD },
-          { _id: { userId: USER_B, agent: 'codex' }, tokens: 500, costMicros: 50 * USD },
-          { _id: { userId: USER_C, agent: 'claude' }, tokens: 900, costMicros: 60 * USD },
-        ],
-        everyone: [{ ids: rows }],
-      },
-    ])
-    dashboardAggregate('claudeEnrichment', [{ _id: USER_C, servers: ['neon', 'github'] }])
-    const now = today()
-    mongoState.docs.dailySnapshots = [
-      { userId: USER_A, date: now },
-      ...[0, 1, 2].map((n) => ({ userId: USER_C, date: daysBefore(now, n) })),
-    ]
-    mongoState.docs.users = [
-      { _id: USER_A, name: 'Ada', email: 'ada@example.com' },
-      { _id: USER_B, name: 'Bo', email: 'bo@example.com' },
-      { _id: USER_C, name: 'Cy', email: 'cy@example.com' },
-    ]
-  }
-  const settings = (over: Record<string, unknown>) => {
-    mongoState.docs.organizations = [
-      { _id: ORG_A, leaderboard: { developerView: 'own', showNames: true, showOthersCost: false, ...over } },
-    ]
-  }
-  const pipelineMatch = () =>
-    (mongoCalls('dailySnapshots', 'aggregate')[0][0] as Record<string, Record<string, unknown>>[])[0].$match
-
-  it('ranks by active days by default, sharing a rank on ties', async () => {
-    seed()
-    const rows = await get('admin')
-    expect(rows.map((r) => [r.name, r.rank, r.outOf, r.activeDays])).toEqual([
-      ['Bo', 1, 3, 3],
-      ['Ada', 2, 3, 2],
-      ['Cy', 2, 3, 2],
-    ])
-  })
-
-  it('counts range days from the first usage day, so All time does not read "of ~2,500"', async () => {
-    seed()
-    const now = today()
-    const at = async (from: string) =>
-      (
-        await app.inject({
-          method: 'GET',
-          url: `/v1/dashboard/leaderboard?from=${from}&to=${now}`,
-          headers: auth(token({ role: 'admin', userId: USER_A })),
-        })
-      ).json() as Row[]
-    // First usage is daysBefore(now, 2), so All time spans 3 days.
-    expect((await at('2020-01-01')).map((r) => r.rangeDays)).toEqual([3, 3, 3])
-    // A picked start after the first usage day is left alone.
-    expect((await at(daysBefore(now, 1))).map((r) => r.rangeDays)).toEqual([2, 2, 2])
-  })
-
-  it('scores 40/30/20/10 against the top person, and fills streak and features', async () => {
-    seed()
-    const cy = (await get('admin')).find((r) => r.name === 'Cy')!
-    // days 2/3, streak 3/3, tokens 900/900, features 3/3.
-    expect(cy.score).toBe(87)
-    expect(cy.streak).toEqual({ current: 3, longest: 3, lastActive: today() })
-    expect(cy.features).toEqual({ agents: ['claude'], mcpServers: ['github', 'neon'] })
-  })
-
-  it.each([
-    ['score', ['Cy', 'Ada', 'Bo']],
-    ['streak', ['Cy', 'Ada', 'Bo']],
-    ['tokens', ['Ada', 'Cy', 'Bo']],
-    ['cost', ['Cy', 'Bo', 'Ada']],
-  ])('sorts by %s for an admin', async (sort, order) => {
-    seed()
-    expect(names(await get('admin', `&sort=${sort}`))).toEqual(order)
-  })
-
-  it('shares rank 1 on a tokens tie', async () => {
-    seed()
-    expect((await get('admin', '&sort=tokens')).map((r) => r.rank)).toEqual([1, 1, 3])
-  })
-
-  it('rejects an unknown sort', async () => {
-    const res = await app.inject({ method: 'GET', url: `${range('/v1/dashboard/leaderboard')}&sort=spend`, headers: auth(token()) })
-    expect(res.statusCode).toBe(400)
-  })
-
-  it('keeps a developer to their own row in own mode, the default', async () => {
-    seed([USER_A])
-    const rows = await get('developer')
-    expect(pipelineMatch().userId).toEqual({ $in: [USER_A] })
-    expect(rows.map((r) => [r.name, r.rank, r.outOf])).toEqual([['Ada', 1, 1]])
-    expect(rows[0].totalCostUsd).toBe(20)
-  })
-
-  it('gives a developer only their own row and its place in rank mode', async () => {
-    settings({ developerView: 'rank' })
-    seed()
-    const rows = await get('developer')
-    expect(pipelineMatch().userId).toBeUndefined()
-    expect(rows.map((r) => [r.name, r.rank, r.outOf])).toEqual([['Ada', 2, 3]])
-    expect(JSON.stringify(rows)).not.toContain('Bo')
-  })
-
-  it('shows a developer the whole list in full mode, with cost on their own row only', async () => {
-    settings({ developerView: 'full' })
-    seed()
-    const rows = await get('developer')
-    expect(names(rows)).toEqual(['Bo', 'Ada', 'Cy'])
-    const [bo, ada] = rows
-    expect(ada).toMatchObject({ totalCostUsd: 20, claude: { tokens: 900, costUsd: 20 } })
-    expect(bo).toMatchObject({
-      totalCostUsd: null,
-      actualCostUsd: null,
-      apiSpendUsd: null,
-      valueMultiple: null,
-      totalTokens: 500,
-      codex: { tokens: 500, costUsd: null },
-      claude: { tokens: 0, costUsd: null },
-    })
-  })
-
-  it('ignores sort=cost for a developer who may not see others cost', async () => {
-    settings({ developerView: 'full' })
-    seed()
-    expect(names(await get('developer', '&sort=cost'))).toEqual(['Bo', 'Ada', 'Cy'])
-  })
-
-  it('shows a developer cost on every row, and sorts by it, once showOthersCost is on', async () => {
-    settings({ developerView: 'full', showOthersCost: true })
-    seed()
-    const rows = await get('developer', '&sort=cost')
-    expect(names(rows)).toEqual(['Cy', 'Bo', 'Ada'])
-    expect(rows[1]).toMatchObject({ totalCostUsd: 50, codex: { costUsd: 50 } })
-  })
-
-  it('keeps cost on every row for a manager', async () => {
-    seed()
-    const rows = await get('manager')
-    expect(rows.every((r) => typeof r.totalCostUsd === 'number')).toBe(true)
-  })
-
-  it('masks names as Person N, stable by rank, when showNames is off, except to admins and the viewer', async () => {
-    settings({ showNames: false })
-    seed()
-    const rows = await get('manager')
-    expect(rows.map((r) => [r.name, r.email, r.userId])).toEqual([
-      ['Person 1', '', 'person-1'],
-      ['Ada', 'ada@example.com', USER_A],
-      ['Person 3', '', 'person-3'],
-    ])
-    const sent = JSON.stringify(rows)
-    for (const leak of ['Bo', 'Cy', 'bo@example.com', USER_B, USER_C]) expect(sent).not.toContain(leak)
-    expect(names(await get('admin'))).toEqual(['Bo', 'Ada', 'Cy'])
-  })
-
-  it('shows a person who hides their name as Anonymous, without moving their row', async () => {
-    settings({ developerView: 'full' })
-    seed()
-    mongoState.docs.users[1].hideOnLeaderboard = true
-    const rows = await get('manager')
-    expect(rows.map((r) => [r.name, r.rank])).toEqual([['Anonymous', 1], ['Ada', 2], ['Cy', 2]])
-    expect(rows[0].email).toBe('')
-    expect(JSON.stringify(rows)).not.toContain(USER_B)
-    expect(names(await get('admin'))[0]).toBe('Bo')
-    expect(names(await get('developer', '', USER_B))[0]).toBe('Bo')
-  })
-})
-
-describe('leaderboard settings routes', () => {
-  const send = (method: 'GET' | 'PUT', url: string, payload?: object, role: JwtPayload['role'] = 'admin') =>
-    app.inject({ method, url, payload, headers: auth(token({ role })) })
-  const body = { developerView: 'full', showNames: false, showOthersCost: true }
-
-  it('reads the defaults and the caller hide flag', async () => {
-    mongoState.docs.users = [{ _id: USER_A, hideOnLeaderboard: true }]
-    const res = await send('GET', '/v1/dashboard/leaderboard/settings', undefined, 'developer')
-    expect(res.json()).toEqual({ developerView: 'own', showNames: true, showOthersCost: false, hideOnLeaderboard: true })
-    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_A, orgId: ORG_A })
-  })
-
-  it('lets an admin save the org settings, on their own org only', async () => {
-    const res = await send('PUT', '/v1/dashboard/leaderboard/settings', body)
-    expect(res.statusCode).toBe(200)
-    expect(mongoCalls('organizations', 'updateOne')[0]).toEqual([{ _id: ORG_A }, { $set: { leaderboard: body } }])
-  })
-
-  it.each(['manager', 'developer'] as const)('refuses a %s saving org settings', async (role) => {
-    expect((await send('PUT', '/v1/dashboard/leaderboard/settings', body, role)).statusCode).toBe(403)
-    expect(mongoCalls('organizations', 'updateOne')).toEqual([])
-  })
-
-  it('rejects an unknown developerView', async () => {
-    expect((await send('PUT', '/v1/dashboard/leaderboard/settings', { ...body, developerView: 'all' })).statusCode).toBe(400)
-  })
-
-  it('lets anyone hide their own name, and only their own', async () => {
-    const res = await send('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard: true }, 'developer')
-    expect(res.json()).toEqual({ hideOnLeaderboard: true })
-    expect(mongoCalls('users', 'updateOne')[0]).toEqual([
-      { _id: USER_A, orgId: ORG_A },
-      { $set: { hideOnLeaderboard: true } },
-    ])
   })
 })
 
@@ -1781,31 +1408,163 @@ describe('actual cost', () => {
     await app.inject({ method: 'GET', url: range('/v1/dashboard/overview'), headers: auth(token({ role: 'manager' })) })
     expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B, ...PEERS] } })
   })
+})
 
-  it('gives each leaderboard row its actual cost and value multiple', async () => {
-    dashboardAggregate('dailySnapshots', [
-      {
-        users: [
-          { _id: USER_A, totalCostMicros: 12 * USD, totalTokens: 1, sessions: 1 },
-          { _id: USER_B, totalCostMicros: 0, totalTokens: 1, sessions: 1 },
-        ],
-        agents: [
-          { _id: { userId: USER_A, agent: 'claude' }, tokens: 1, costMicros: 10 * USD },
-          { _id: { userId: USER_A, agent: 'codex' }, tokens: 1, costMicros: 2 * USD },
-        ],
-        everyone: [{ ids: [USER_A, USER_B] }],
-      },
-    ])
-    mongoState.docs.users = [
-      { _id: USER_A, name: 'Ada', email: 'a@example.com' },
-      { _id: USER_B, name: 'Bo', email: 'b@example.com' },
-    ]
-    mongoState.docs.seats = [seat(USER_A, 'claude')]
-    const [ada, bo] = (await app.inject({ method: 'GET', url: range('/v1/dashboard/leaderboard'), headers: auth(token({ role: 'admin' })) })).json()
-    expect(ada).toMatchObject({ totalCostUsd: 12, apiSpendUsd: 2, actualCostUsd: 3.2, valueMultiple: 3.75 })
-    expect(bo).toMatchObject({ apiSpendUsd: 0, actualCostUsd: 0, valueMultiple: null })
-    expect(mongoCalls('seats', 'find')[0][0]).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
+describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
+  const t = today()
+  const from = daysBefore(t, 6)
+  const URL = `/v1/dashboard/me/usage?from=${from}&to=${t}`
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const OTHER = { _id: USER_B, orgId: ORG_A, name: 'Bo Otherperson', email: 'bo.other@example.com', isActive: true }
+  const snap = (date: string, tokens: number, usd: number) => ({
+    _id: `${USER_A}:${date}`,
+    orgId: ORG_A,
+    userId: USER_A,
+    date,
+    totalTokens: tokens,
+    sessionCount: 2,
+    totalCostMicros: usd * USD,
+    byAgent: { claude: { tokens, costMicros: usd * USD } },
   })
+  // The fake ignores filters and answers with every seeded row, so only the
+  // caller's rows are seeded and the filters are read off the calls instead.
+  // src/scripts/no-individuals.ts checks the filtering on a real server.
+  const seed = () => {
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A, name: 'Ada', email: 'ada@example.com' }, OTHER]
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
+    ]
+    mongoState.docs.dailySnapshots = [snap(daysBefore(t, 1), 300, 2), snap(t, 700, 3)]
+    mongoState.aggregates.claudeEnrichment = [{ _id: USER_A, servers: ['linear', 'github'] }]
+  }
+
+  it.each(['admin', 'manager', 'developer'] as const)('gives a %s only their own numbers', async (role) => {
+    seed()
+    const res = await get(role)
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body).toEqual({
+      from,
+      to: t,
+      rangeDays: 2, // counted from the first day ever used, not from `from`
+      activeDays: 2,
+      streak: { current: 2, longest: 2, lastActive: t },
+      totalTokens: 1000,
+      sessions: 4,
+      totalCostUsd: 5,
+      agents: [{ agent: 'claude', tokens: 1000, costUsd: 5 }],
+      features: { agents: ['claude'], mcpServers: ['github', 'linear'] },
+    })
+    // Every data read is pinned to the caller, whatever the role.
+    const finds = callsTo(mongoState, 'dailySnapshots', 'find').map(([f]) => f)
+    expect(finds).toHaveLength(2)
+    for (const f of finds) expect(f).toMatchObject({ orgId: ORG_A, userId: USER_A })
+    const [pipeline] = callsTo(mongoState, 'claudeEnrichment', 'aggregate')[0] as Document[][]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: { $in: [USER_A] } })
+    // No scope lookup, no roster read: nothing that could widen it to a team or the org.
+    for (const c of ['users', 'teams', 'teamMembers', 'usageEvents']) {
+      expect(mongoState.calls.filter((call) => call.collection === c), c).toEqual([])
+    }
+    const text = res.body
+    for (const leak of [USER_B, ...PEERS, OTHER.name, OTHER.email, 'Ada', 'ada@example.com']) expect(text).not.toContain(leak)
+  })
+
+  it('reads the streak from all-time snapshots', async () => {
+    seed()
+    await get('developer')
+    const [, streakFilter] = callsTo(mongoState, 'dailySnapshots', 'find').map(([f]) => f as Record<string, unknown>)
+    expect(streakFilter).toEqual({ orgId: ORG_A, userId: USER_A, totalTokens: { $gt: 0 } })
+  })
+
+  it('answers zeros and an empty streak with no usage', async () => {
+    const body = (await get('developer')).json()
+    expect(body).toMatchObject({ activeDays: 0, totalTokens: 0, totalCostUsd: 0, agents: [], streak: { current: 0, longest: 0, lastActive: null } })
+  })
+
+  it.each(['', `?from=${t}`, '?from=20261101&to=20261102', '?date=not-a-date'])('rejects query %s', async (q) => {
+    expect((await get('developer', `/v1/dashboard/me/usage${q}`)).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'dailySnapshots', 'find')).toEqual([])
+  })
+})
+
+describe('GET /v1/dashboard/usage-distribution (v2 P1)', () => {
+  const t = today()
+  const from = daysBefore(t, 6) // 7 days
+  const URL = `/v1/dashboard/usage-distribution?from=${from}&to=${t}`
+  const get = (role: JwtPayload['role'], url = URL) =>
+    app.inject({ method: 'GET', url, headers: auth(token({ role })) })
+  const TOO_SMALL = { error: 'group_too_small', minGroupSize: 5 }
+  const TEAM = [USER_A, USER_B, ...PEERS]
+  const managerOfFive = () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
+    ]
+    // The fake ignores the users filter, so seed exactly the active people in scope.
+    mongoState.docs.users = TEAM.map((_id) => ({ _id }))
+  }
+
+  it('refuses a developer before reading anything', async () => {
+    expect((await get('developer')).statusCode).toBe(403)
+    expect(mongoState.calls).toEqual([])
+  })
+
+  it('counts a manager of a 5-person team into bands that sum to people, with no ids', async () => {
+    managerOfFive()
+    mongoState.aggregates.dailySnapshots = [
+      { _id: USER_A, days: 7 },
+      { _id: USER_B, days: 1 },
+      { _id: PEERS[0], days: 3 },
+    ]
+    const res = await get('manager')
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body).toEqual({ from, to: t, people: 5, bands: { none: 2, '1-2': 1, '3-4': 1, '5+': 1 } })
+    expect(Object.values(body.bands as Record<string, number>).reduce((a, b) => a + b, 0)).toBe(body.people)
+    for (const id of TEAM) expect(res.body).not.toContain(id)
+
+    const [usersFilter] = callsTo(mongoState, 'users', 'find')[0] as [{ _id: { $in: string[] } }]
+    expect(usersFilter).toMatchObject({ orgId: ORG_A, isActive: true })
+    expect([...usersFilter._id.$in].sort()).toEqual([...TEAM].sort())
+    const [pipeline] = callsTo(mongoState, 'dailySnapshots', 'aggregate')[0] as Document[][]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, date: { $gte: from, $lte: t }, totalTokens: { $gt: 0 } })
+    expect([...pipeline[0].$match.userId.$in].sort()).toEqual([...TEAM].sort())
+  })
+
+  it('refuses a manager whose team has fewer than 5 people', async () => {
+    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+    ]
+    const res = await get('manager')
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toEqual(TOO_SMALL)
+    expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
+  })
+
+  it('refuses an admin whose org has fewer than 5 active people, and audits nothing', async () => {
+    mongoState.docs.users = [USER_A, USER_B, PEERS[0], PEERS[1]].map((_id) => ({ _id }))
+    const res = await get('admin')
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toEqual(TOO_SMALL)
+    expect(callsTo(mongoState, 'users', 'find')[0][0]).toEqual({ orgId: ORG_A, isActive: true })
+    expect(callsTo(mongoState, 'dailySnapshots', 'aggregate')).toEqual([])
+    expect(mongoState.calls.filter((c) => c.collection === 'auditEvents')).toEqual([])
+  })
+
+  it.each([`?from=${from}`, `?from=${t}&to=${from}`, `?from=${from}&to=${t}&teamId=not-a-team`])(
+    'rejects query %s',
+    async (q) => {
+      expect((await get('admin', `/v1/dashboard/usage-distribution${q}`)).statusCode).toBe(400)
+    },
+  )
 })
 
 describe('budget alert types', () => {
@@ -4113,7 +3872,7 @@ describe('GET /v1/dashboard/adoption/features', () => {
     expect(body.noTeam).toEqual({ users: 1, used: none, sdkKnown: 0 })
   })
 
-  it('limits a manager to their teams and hides names the person hid, but not their own', async () => {
+  it('limits a manager to their teams and shows names as stored', async () => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
@@ -4122,19 +3881,16 @@ describe('GET /v1/dashboard/adoption/features', () => {
     ]
     mongoState.docs.claudeEnrichment = [day(USER_A), day(USER_B)]
     mongoState.docs.users = [
-      { _id: USER_A, name: 'Ada', hideOnLeaderboard: true },
-      { _id: USER_B, name: 'Bo', hideOnLeaderboard: true },
+      { _id: USER_A, name: 'Ada' },
+      { _id: USER_B, name: 'Bo' },
     ]
 
     const body = (await get('manager')).json()
     const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
     expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B, ...PEERS].sort())
     expect(body.noTeam).toBeNull()
-    expect(body.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Hidden'])
-
-    // An admin sees every name.
-    const admin = (await get('admin')).json()
-    expect(admin.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Bo'])
+    // The leaderboard's hide flag is gone, so nothing is masked as 'Hidden'.
+    expect(body.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Bo'])
   })
 
   it('narrows an admin to one team with no No-team row', async () => {
@@ -4295,7 +4051,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
   })
 
-  it.each([`?from=${from}`, `?from=${from}&to=${t}&rankBy=cost`])('rejects query %s', async (q) => {
+  it.each([`?from=${from}`, `?from=${from}&to=${t}&rankBy=cost`, `?from=${from}&to=${t}&rankBy=score`])('rejects query %s', async (q) => {
     expect((await get('admin', `/v1/dashboard/adoption/practices${q}`)).statusCode).toBe(400)
   })
 
@@ -4309,7 +4065,8 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       ...more.map((_id) => ({ _id, name: _id })),
     ]
     const body = (await get('admin')).json()
-    expect(body).toMatchObject({ population: 16, minPopulation: 17, top: null, rest: null, tips: [], namesOff: false })
+    expect(body).toMatchObject({ population: 16, minPopulation: 17, top: null, rest: null, tips: [] })
+    expect(body).not.toHaveProperty('namesOff')
     expect(body.champions).toEqual([
       {
         teamId: null,
@@ -4317,7 +4074,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
         users: 16,
         reason: 'ok',
         champions: [
-          { userId: USER_A, name: 'Ada', activeDays: 2, hidden: false, uses: [], canHelpWith: [] },
+          { userId: USER_A, name: 'Ada', activeDays: 2, uses: [], canHelpWith: [] },
           expect.objectContaining({ activeDays: 1 }),
         ],
       },
@@ -4363,22 +4120,6 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     // USER_B and HEAVY are on top now: no MCP, median 50% cache.
     expect(body.top).toMatchObject({ users: 5, mcpServers: 0, cacheHitRate: 50 })
     expect(body.top.uses.mcp).toBe(0)
-  })
-
-  it('ranks by the A8 score, reading all-time snapshots for the streak', async () => {
-    crowd()
-    mongoState.docs.dailySnapshots = [
-      ...[U4, ...PLANNERS].flatMap((userId) =>
-        [0, 1, 2].map((n) => ({ userId, date: daysBefore(t, n), totalTokens: 500, byAgent: { claude: { tokens: 500 }, codex: { tokens: 1 } } })),
-      ),
-      { userId: USER_A, date: t, totalTokens: 10, byAgent: { claude: { tokens: 10 } } },
-    ]
-    const body = (await get('admin', `${URL}&rankBy=score`)).json()
-    const [filter] = callsTo(mongoState, 'dailySnapshots', 'find')[0] as [Record<string, unknown>]
-    expect(filter).toMatchObject({ orgId: ORG_A, totalTokens: { $gt: 0 } })
-    expect(filter).not.toHaveProperty('date')
-    // U4 and PLANNERS lead days, streak, tokens and agents in snapshots: the top is the plan-mode users.
-    expect(body.top.uses).toEqual({ mcp: 0, skills: 0, subagents: 0, plan: 1 })
   })
 
   it('limits a manager to their teams', async () => {
@@ -4485,25 +4226,11 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       expect(names(byTokens).Platform[0]).toBe(`Name-${USER_B}`)
     })
 
-    it('skips people who hid their name for a manager, but not the manager themself', async () => {
+    it('names the same champions to a manager as to an admin', async () => {
       teamOfFour()
-      mongoState.docs.users = [USER_A, USER_B, U3, U4].map((_id) => ({ _id, name: `Name-${_id}`, hideOnLeaderboard: true }))
       const manager = (await get('manager')).json()
-      // token() signs as USER_A by default.
-      expect(names(manager)).toEqual({ Platform: [`Name-${USER_A}`] })
-      expect(JSON.stringify(manager)).not.toContain(`Name-${USER_B}`)
-
-      const admin = (await get('admin')).json()
-      expect(admin.champions[0].champions.map((c: { hidden: boolean }) => c.hidden)).toEqual([false, true])
-    })
-
-    it('returns no champions to a manager when the org turned names off', async () => {
-      teamOfFour()
-      mongoState.docs.organizations = [{ _id: ORG_A, leaderboard: { showNames: false } }]
-      const manager = (await get('manager')).json()
-      expect(manager).toMatchObject({ namesOff: true, champions: [] })
-      expect(JSON.stringify(manager)).not.toContain('Name-')
-      expect((await get('admin')).json().namesOff).toBe(false)
+      expect(names(manager)).toEqual({ Platform: [`Name-${USER_A}`, `Name-${USER_B}`] })
+      expect(manager.champions[0].champions[0]).not.toHaveProperty('hidden')
     })
 
     it('narrows to the filtered team with no No-team row', async () => {
@@ -4809,19 +4536,6 @@ describe('audit log (R1 B8)', () => {
     })
   })
 
-  describe('leaderboard settings', () => {
-    it('records org.leaderboard_settings with the three settings', async () => {
-      const body = { developerView: 'full', showNames: false, showOthersCost: true }
-      expect((await call('PUT', '/v1/dashboard/leaderboard/settings', body)).statusCode).toBe(200)
-      expect(actions()).toEqual([expect.objectContaining({ action: 'org.leaderboard_settings', detail: body })])
-    })
-
-    it('never records a person hiding their own name', async () => {
-      expect((await call('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard: true }, 'developer')).statusCode).toBe(200)
-      expect(mongoState.calls.filter((c) => c.collection === 'auditEvents')).toEqual([])
-    })
-  })
-
   describe('the write procedure', () => {
     it('answers normally and logs audit_write_failed with the event when the insert fails', async () => {
       mongoState.failOn = 'auditEvents.insertOne'
@@ -4858,29 +4572,22 @@ describe('audit log (R1 B8)', () => {
   })
 
   describe('views', () => {
-    const lb = `/v1/dashboard/leaderboard?from=${DATE}&to=${DATE}`
-
-    it('records view.leaderboard for an admin, scope org', async () => {
-      await call('GET', lb)
+    it('records view.usage_distribution for an admin, scope org', async () => {
+      mongoState.docs.users = [USER_A, USER_B, ...PEERS].map((_id) => ({ _id }))
+      expect((await call('GET', `/v1/dashboard/usage-distribution?from=${DATE}&to=${DATE}`)).statusCode).toBe(200)
       expect(views()).toEqual([
         expect.objectContaining({
-          _id: `view:${ORG_A}:${USER_A}:leaderboard:all:${today()}`,
-          action: 'view.leaderboard',
+          _id: `view:${ORG_A}:${USER_A}:usage_distribution:all:${today()}`,
+          action: 'view.usage_distribution',
           target: { type: 'scope', id: null, label: 'org' },
           detail: null,
         }),
       ])
     })
 
-    it('records nothing for a developer in own mode', async () => {
-      expect((await call('GET', lb, undefined, 'developer')).statusCode).toBe(200)
+    it('records nothing for a person reading their own usage', async () => {
+      expect((await call('GET', `/v1/dashboard/me/usage?from=${DATE}&to=${DATE}`, undefined, 'admin')).statusCode).toBe(200)
       expect(views()).toEqual([])
-    })
-
-    it('records a developer in full mode as an org view (Decision 2)', async () => {
-      mongoState.docs.organizations = [{ _id: ORG_A, leaderboard: { developerView: 'full', showNames: true, showOthersCost: false } }]
-      await call('GET', lb, undefined, 'developer')
-      expect(views()).toEqual([expect.objectContaining({ action: 'view.leaderboard', actorRole: 'developer' })])
     })
 
     it('records the team for a manager reading with teamId', async () => {

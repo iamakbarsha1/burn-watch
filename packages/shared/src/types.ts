@@ -176,62 +176,38 @@ export interface FeaturesTried {
   mcpServers: string[]
 }
 
-export type LeaderboardSort = 'activeDays' | 'score' | 'streak' | 'tokens' | 'cost'
-
-/** Org leaderboard settings. Absent on the org = own, true, false. */
-export interface LeaderboardSettings {
-  /** What a developer sees: own row, own row with rank, or the whole list. */
-  developerView: 'own' | 'rank' | 'full'
-  /** Off shows people as "Person N" to managers and developers. */
-  showNames: boolean
-  /** On lets developers see cost on other people's rows. */
-  showOthersCost: boolean
-}
-
-/** GET /leaderboard/settings: the org settings plus the caller's own choice. */
-export interface LeaderboardSettingsResponse extends LeaderboardSettings {
-  hideOnLeaderboard: boolean
-}
-
-/**
- * One leaderboard row. Every cost field is null on a row the viewer may not
- * see cost on, and a masked row carries no real name, email or user id.
- */
-export interface LeaderboardEntry {
-  userId: string
-  name: string
-  email: string
-  claude: { tokens: number; costUsd: number | null }
-  qwen: { tokens: number; costUsd: number | null }
-  gemini: { tokens: number; costUsd: number | null }
-  codex: { tokens: number; costUsd: number | null }
-  copilot: { tokens: number; costUsd: number | null }
-  totalCostUsd: number | null
-  totalTokens: number
-  sessions: number
-  cacheHitRate: number | null
-  /** Prorated seat cost over the range plus apiSpendUsd. */
-  actualCostUsd: number | null
-  /** Value of usage on agents this person has no seat for. */
-  apiSpendUsd: number | null
-  /** totalCostUsd ÷ actualCostUsd; null when actual cost is 0. */
-  valueMultiple: number | null
-  /** Position under the chosen sort, shared on ties (1, 2, 2, 4). */
-  rank: number
-  /** People ranked, so a lone row can read "#3 of 12". */
-  outOf: number
-  /** Days in range, starting at the first usage day of the ranked people, for "12 of 30". */
+// GET /v1/dashboard/me/usage (v2 Phase 1). The caller's own numbers, never anyone else's.
+export interface MyUsageResponse {
+  from: string
+  to: string
+  /** Days in range, for "12 of 30". */
   rangeDays: number
-  /** 0-100: active days, current streak, tokens, features tried vs the top person, 40/30/20/10. */
-  score: number
   /** Days with any tokens, in range. */
   activeDays: number
+  /** All time. Shown only to the person. */
   streak: Streak
+  totalTokens: number
+  sessions: number
+  totalCostUsd: number
+  /** Agents with tokens in range only. */
+  agents: { agent: AgentName; tokens: number; costUsd: number }[]
   features: FeaturesTried
 }
 
-// One row of the admin team view. Unlike LeaderboardEntry this covers every
-// user in the org, so the fields that depend on usage are all nullable or zero
+/** Average active days per week over the range. */
+export const USAGE_BANDS = ['none', '1-2', '3-4', '5+'] as const
+export type UsageBand = (typeof USAGE_BANDS)[number]
+
+// GET /v1/dashboard/usage-distribution (v2 Phase 1). Counts per band, no names.
+export interface UsageDistributionResponse {
+  from: string
+  to: string
+  /** Active people in scope, MIN_GROUP_SIZE or more. */
+  people: number
+  bands: Record<UsageBand, number>
+}
+
+// One row of the admin team view. It covers every user in the org, so the fields that depend on usage are all nullable or zero
 // for someone who has been invited but never run the agent.
 export interface AdminUserRow {
   id: string
@@ -721,7 +697,6 @@ export interface FeatureCounts {
 
 export interface FeaturePerson {
   userId: string
-  /** "Hidden" for a manager when the person hides their name on the leaderboard. */
   name: string
   /** Visible teams only. */
   teamIds: string[]
@@ -793,8 +768,8 @@ export interface OnboardingResponse {
 
 // GET /v1/dashboard/adoption/practices (R2 A6). The top quartile of Claude Code
 // users against everyone else. Aggregates only: no names or user ids.
-/** What ranks people into the top quartile: active days, Claude tokens, or the A8 leaderboard score. */
-export const PRACTICE_RANKS = ['days', 'tokens', 'score'] as const
+/** What ranks people into the top quartile: active days or Claude tokens. */
+export const PRACTICE_RANKS = ['days', 'tokens'] as const
 export type PracticeRank = (typeof PRACTICE_RANKS)[number]
 /** The A5 features A6 compares. SDK is left out: few days report it. */
 export const PRACTICE_FEATURES = ['mcp', 'skills', 'subagents', 'plan'] as const
@@ -819,7 +794,7 @@ export interface PracticeTip {
   gap: number
 }
 
-/** Why a team has no champion: under 3 Claude Code users, or everyone left out (hidden from a manager). */
+/** Why a team has no champion: under 3 Claude Code users, or nobody eligible. */
 export type ChampionReason = 'ok' | 'tooFew' | 'noneEligible'
 
 // R2 A7. A hint only: nothing is stored and nobody is told.
@@ -827,8 +802,6 @@ export interface ChampionSuggestion {
   userId: string
   name: string
   activeDays: number
-  /** The person hid their name on the leaderboard. Admins only ever see this true. */
-  hidden: boolean
   uses: PracticeFeature[]
   /** Features they use that fewer than half of the team uses. */
   canHelpWith: PracticeFeature[]
@@ -880,10 +853,8 @@ export interface PracticesResponse {
   rest: PracticeGroup | null
   /** At most 3, largest gap first. */
   tips: PracticeTip[]
-  /** Per visible team. Empty when names are off for a manager. */
+  /** Per visible team. */
   champions: TeamChampions[]
-  /** The org turned leaderboard names off and the viewer is a manager. */
-  namesOff: boolean
   /** R2 D5: shared MCP setup per card. The scope card comes first. */
   setup: TeamSetup[]
 }
@@ -913,6 +884,7 @@ export type AuditAction =
   | 'policy.unset'
   | 'mcp.approve'
   | 'mcp.unapprove'
+  /** Removed in v2. Kept so audit rows written before then still read. */
   | 'org.leaderboard_settings'
   | 'org.min_claude_version'
   | 'org.claude_orgs'
@@ -924,7 +896,9 @@ export type AuditAction =
 
 /** Reads that show other people's data, logged once per viewer, surface, scope and UTC day. */
 export type AuditSurface =
+  /** Removed in v2. Kept so audit rows written before then still read. */
   | 'leaderboard'
+  | 'usage_distribution'
   | 'governance'
   | 'adoption'
   | 'people'

@@ -127,4 +127,13 @@ export const MIGRATIONS: readonly Migration[] = [
       if (ops.length > 0) await coll.bulkWrite(ops)
     },
   },
+  {
+    id: '0005_drop_leaderboard_settings',
+    description: 'v2: unset leaderboard on organizations and hideOnLeaderboard on users',
+    // The leaderboard is gone; nothing reads either field. Matching on $exists makes a re-run a no-op.
+    async run(db) {
+      await db.collection('organizations').updateMany({ leaderboard: { $exists: true } }, { $unset: { leaderboard: '' } })
+      await db.collection('users').updateMany({ hideOnLeaderboard: { $exists: true } }, { $unset: { hideOnLeaderboard: '' } })
+    },
+  },
 ]

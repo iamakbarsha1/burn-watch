@@ -61,9 +61,6 @@ const ALLOWED: Record<string, { roles: Role[]; why: string }> = {
  * `route role`. Emptied by Phases 1 to 3.
  */
 const KNOWN_LEAKS: Record<string, string> = {
-  // Phase 1: the leaderboard goes.
-  '/v1/dashboard/leaderboard admin': 'P1',
-  '/v1/dashboard/leaderboard manager of 6': 'P1',
   // Phase 2: adoption without names.
   '/v1/dashboard/adoption/funnel admin': 'P2',
   '/v1/dashboard/adoption/funnel manager of 6': 'P2',
@@ -89,7 +86,7 @@ const KNOWN_LEAKS: Record<string, string> = {
 const TEAM_FILTERED = [
   '/v1/dashboard/overview',
   '/v1/dashboard/trends',
-  '/v1/dashboard/leaderboard',
+  '/v1/dashboard/usage-distribution',
   '/v1/dashboard/adoption/funnel',
   '/v1/dashboard/adoption/features',
   '/v1/dashboard/adoption/onboarding',
@@ -470,6 +467,8 @@ async function main() {
     expect(route, 'developer', 'org', 200)
   }
   for (const route of ['/v1/dashboard/overview', '/v1/dashboard/trends']) expect(route, 'developer', 'org', 200)
+  // Your own usage is never refused, whatever your role or team size.
+  for (const caller of ['admin', 'manager of 6', 'manager of 2', 'developer']) expect('/v1/dashboard/me/usage', caller, 'org', 200)
   for (const caller of ['admin', 'manager of 2']) {
     const r = at('/v1/dashboard/teams/compare', caller, 'org')
     if (r?.status === 200 && r.body.includes(SMALL)) failures.push(`SMALL GROUP /v1/dashboard/teams/compare ${caller} shows the 2-person team`)

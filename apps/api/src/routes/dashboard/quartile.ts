@@ -92,24 +92,20 @@ export const MIN_CHAMPION_TEAM = 3
 
 export interface ChampionCandidate extends Ranked {
   days: Record<FeatureKey, number | null>
-  hidden: boolean
 }
 
 /**
  * R2 A7 Decision 1: the top 2 of a team by the picked ranking, no feature
- * floor. Decision 3: `skipHidden` (a manager viewing) leaves out people who
- * hid their name, and the next one takes the slot.
+ * floor. v2 Phase 2 replaces this with opt-in volunteers.
  */
 export function suggestChampions<T extends ChampionCandidate>(
   members: T[],
-  skipHidden: boolean,
 ): { reason: ChampionReason; champions: { person: T; uses: PracticeFeature[]; canHelpWith: PracticeFeature[] }[] } {
   if (members.length < MIN_CHAMPION_TEAM) return { reason: 'tooFew', champions: [] }
   const used = (p: T) => PRACTICE_FEATURES.filter((k) => (p.days[k] ?? 0) > 0)
   // Features fewer than half the team uses.
   const rare = PRACTICE_FEATURES.filter((k) => members.filter((p) => (p.days[k] ?? 0) > 0).length * 2 < members.length)
   const champions = members
-    .filter((p) => !(skipHidden && p.hidden))
     .sort(byRank)
     .slice(0, 2)
     .map((person) => ({ person, uses: used(person), canHelpWith: used(person).filter((k) => rare.includes(k)) }))

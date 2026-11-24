@@ -3,7 +3,9 @@ import { agentById } from './agents'
 import { formatCost } from './format'
 
 const SURFACES: Record<AuditSurface, string> = {
+  // Removed in v2; kept so audit rows written before then still read.
   leaderboard: 'Leaderboard',
+  usage_distribution: 'Usage distribution',
   governance: 'Governance',
   adoption: 'Adoption',
   people: 'the people list',
@@ -90,6 +92,7 @@ export function auditSentence(row: AuditRow, names: ReadonlyMap<string, string> 
       return `Approved MCP server ${d.server}`
     case 'mcp.unapprove':
       return `Removed the approval for MCP server ${d.server}`
+    // Removed in v2; kept so audit rows written before then still read.
     case 'org.leaderboard_settings': {
       const view = { own: 'their own row', rank: 'their own row and rank', full: 'the whole list' }[String(d.developerView)]
       return `Changed leaderboard settings: developers see ${view ?? d.developerView}, names ${d.showNames ? 'on' : 'off'}, others' cost ${d.showOthersCost ? 'on' : 'off'}`

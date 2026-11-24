@@ -41,9 +41,10 @@ export function schemaFields(schema: ZodTypeAny, prefix = '', depth = 0): Schema
 /**
  * Who can read a field in the dashboard or through its API.
  * scoped: you, a manager of a team you are in, and admins (viewerScope).
+ * self: only you, on My usage.
  * admin: admins only. none: stored, but no page or route shows it yet.
  */
-export type Audience = 'scoped' | 'admin' | 'none'
+export type Audience = 'scoped' | 'self' | 'admin' | 'none'
 
 /**
  * Exact path, or the array's entry for a field inside an array element. The test fails on a
@@ -52,18 +53,18 @@ export type Audience = 'scoped' | 'admin' | 'none'
  */
 export const AUDIENCE: Record<string, Audience> = {
   // Sign-in (RegisterDeviceSchema)
-  email: 'scoped', // Leaderboard
+  email: 'scoped', // Adoption (who is stuck), Governance
   hostname: 'admin', // Admin users list, Devices
   platform: 'admin', // Devices
   agentVersion: 'none',
   // Nightly sync (UsagePayloadSchema)
   deviceId: 'none',
   date: 'scoped',
-  events: 'scoped', // Overview, Leaderboard, Trends
+  events: 'scoped', // Overview, Trends, My usage
   'enrichment.date': 'scoped',
-  'enrichment.sessionCount': 'scoped', // Leaderboard
+  'enrichment.sessionCount': 'self', // My usage
   'enrichment.callCount': 'none',
-  'enrichment.cacheHitRate': 'scoped', // Leaderboard
+  'enrichment.cacheHitRate': 'none', // Adoption works its cache rate out from token counts, not this
   'enrichment.writtenTokens': 'none',
   'enrichment.activityBreakdown': 'none',
   'enrichment.projectBreakdown': 'scoped', // Projects
@@ -72,7 +73,7 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.topSessions': 'none',
   'enrichment.toolUsage': 'scoped', // Activity, Adoption
   'enrichment.shellUsage': 'scoped', // Activity
-  'enrichment.mcpUsage': 'scoped', // Activity, Leaderboard, Adoption
+  'enrichment.mcpUsage': 'scoped', // Activity, Adoption, My usage
   'enrichment.limitHitCount': 'admin', // limit-hit alerts
   'enrichment.claudeVersions': 'none',
   'enrichment.entrypointCounts': 'scoped', // Adoption

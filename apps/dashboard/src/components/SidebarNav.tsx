@@ -5,7 +5,7 @@ import { usePathname, useSearchParams } from 'next/navigation'
 
 const NAV = [
   { href: '/', label: 'Overview' },
-  { href: '/users', label: 'Leaderboard' },
+  { href: '/me', label: 'My usage' },
   { href: '/trends', label: 'Trends' },
   { href: '/activity', label: 'Activity' },
   { href: '/projects', label: 'Projects' },
@@ -22,7 +22,7 @@ const NAV = [
 /**
  * The sidebar carries the selected date range from page to page.
  *
- * These used to be bare `<Link href="/users">`, so the query string died on
+ * These used to be bare `<Link href="/trends">`, so the query string died on
  * every click: you picked "All time" on Overview, clicked Trends, and landed
  * back on that page's own default. Forwarding the params is what makes the
  * range stick, and keeping it in the URL is what makes it survive a refresh —

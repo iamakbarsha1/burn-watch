@@ -20,9 +20,12 @@ import {
   type PracticeRank,
   type PracticesResponse,
   type TipId,
+  type UsageBand,
+  type UsageDistributionResponse,
+  USAGE_BANDS,
 } from '@burn-watch/shared'
-import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchOnboarding, fetchPractices, fetchTeams } from '@/lib/api'
-import { nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
+import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchOnboarding, fetchPractices, fetchTeams, fetchUsageDistribution } from '@/lib/api'
+import { GroupTooSmallError, nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
 import { agentById } from '@/lib/agents'
 import { formatCost, formatRange, resolveRange } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
@@ -59,6 +62,8 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
       fetchOnboarding(from, to, team?.id).catch(nullUnlessTooSmall),
       fetchFeatures(from, to, team?.id).catch(nullUnlessTooSmall),
       fetchPractices(from, to, rankBy, team?.id).catch(nullUnlessTooSmall),
+      // Refused under MIN_GROUP_SIZE active people even when the rest of the page is not, so the card says so itself.
+      fetchUsageDistribution(from, to, team?.id).catch((e: unknown) => (e instanceof GroupTooSmallError ? 'tooSmall' as const : null)),
     ]),
   )
   if (!loaded) {
@@ -74,7 +79,7 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
       </div>
     )
   }
-  const [data, funnel, onboarding, features, practices] = loaded
+  const [data, funnel, onboarding, features, practices, distribution] = loaded
   // Keep the range and team in the URL when the form changes idleDays.
   const carried = Object.entries(params).filter(([k, v]) => k !== 'idleDays' && v !== undefined)
 
@@ -174,6 +179,8 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
           </TableFrame>
         </Section>
 
+        <DistributionSection data={distribution} />
+
         <FunnelSection data={funnel} />
 
         <OnboardingSection data={onboarding} />
@@ -183,6 +190,41 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
         <PracticesSection data={practices} rankBy={rankBy} params={params} />
       </div>
     </div>
+  )
+}
+
+const BANDS: Record<UsageBand, string> = {
+  none: 'Not used',
+  '1-2': '1 to 2 days a week',
+  '3-4': '3 to 4 days a week',
+  '5+': '5 or more days a week',
+}
+
+/** v2 Phase 1: how many people fall in each band. Counts only, no names. */
+function DistributionSection({ data }: { data: UsageDistributionResponse | 'tooSmall' | null }) {
+  return (
+    <Section
+      title="How often people use an agent"
+      description="Average days a week with any tokens, over this date range. Counts only, no names."
+    >
+      {data === 'tooSmall' ? (
+        <GroupTooSmall />
+      ) : data === null ? (
+        <p className="text-sm text-ink-2">Could not read usage. Try again in a moment.</p>
+      ) : (
+        <>
+          <dl className="grid gap-3 sm:grid-cols-4">
+            {USAGE_BANDS.map((b) => (
+              <div key={b} className="rounded-lg border border-line p-4">
+                <dt className="text-xs text-ink-2">{BANDS[b]}</dt>
+                <dd className="mt-1 text-2xl font-semibold text-ink">{data.bands[b]}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-3 text-xs text-ink-2">{data.people} {data.people === 1 ? 'person' : 'people'} in total.</p>
+        </>
+      )}
+    </Section>
   )
 }
 
@@ -521,7 +563,7 @@ function FeaturesSection({ data }: { data: FeatureMatrixResponse | null }) {
   )
 }
 
-const RANK_LABELS: Record<PracticeRank, string> = { days: 'Active days', tokens: 'Claude tokens', score: 'Leaderboard score' }
+const RANK_LABELS: Record<PracticeRank, string> = { days: 'Active days', tokens: 'Claude tokens' }
 
 /** A6 Decision 4: fixed text per rule. */
 const TIPS: Record<TipId, string> = {
@@ -570,11 +612,6 @@ function PracticesSection({ data, rankBy, params }: { data: PracticesResponse | 
           </Link>
         ))}
       </p>
-      {rankBy === 'score' && (
-        <p className="mb-3 text-xs text-ink-2">
-          The leaderboard score counts MCP servers tried, so the MCP rows partly compare the score with itself.
-        </p>
-      )}
       {data === null ? (
         <p className="text-sm text-ink-2">Could not read the comparison. Try again in a moment.</p>
       ) : !data.top || !data.rest ? (
@@ -627,7 +664,7 @@ const featureList = (keys: PracticeFeature[]) => (keys.length ? keys.map((k) => 
 
 /** R2 A7. A hint only: nothing is stored and nobody is told. */
 function Champions({ data }: { data: PracticesResponse }) {
-  if (!data.namesOff && data.champions.length === 0) return null
+  if (data.champions.length === 0) return null
   return (
     <div className="mt-6">
       <h3 className="text-sm font-medium text-ink">Suggested champions</h3>
@@ -635,51 +672,44 @@ function Champions({ data }: { data: PracticesResponse }) {
         The top 2 per team by {RANK_LABELS[data.rankBy].toLowerCase()}. Teams need 3 or more Claude Code users. A
         suggestion only; nobody is told.
       </p>
-      {data.namesOff ? (
-        <p className="text-sm text-ink-2">Names are off for this org.</p>
-      ) : (
-        <TableFrame>
-          <table className="w-full">
-            <thead>
-              <tr>
-                <Th>Team</Th>
-                <Th>Champion</Th>
-                <Th numeric>Active days</Th>
-                <Th>Uses</Th>
-                <Th>Can help with</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.champions.flatMap((team) =>
-                team.reason !== 'ok'
-                  ? [
-                      <Tr key={team.teamId ?? 'none'}>
-                        <Td className="font-medium text-ink">{team.teamName}</Td>
-                        <Td className="text-ink-3">
-                          {REASONS[team.reason]} ({plural(team.users, 'user')})
-                        </Td>
-                        <Td numeric>{''}</Td>
-                        <Td>{''}</Td>
-                        <Td>{''}</Td>
-                      </Tr>,
-                    ]
-                  : team.champions.map((c, i) => (
-                      <Tr key={`${team.teamId ?? 'none'}:${c.userId}`}>
-                        <Td className="font-medium text-ink">{i === 0 ? team.teamName : ''}</Td>
-                        <Td className="text-ink">
-                          {c.name}
-                          {c.hidden && <span className="ml-2 text-xs text-ink-3">Hidden from leaderboard</span>}
-                        </Td>
-                        <Td numeric>{c.activeDays}</Td>
-                        <Td className="text-ink-2">{featureList(c.uses)}</Td>
-                        <Td className="text-ink-2">{featureList(c.canHelpWith)}</Td>
-                      </Tr>
-                    )),
-              )}
-            </tbody>
-          </table>
-        </TableFrame>
-      )}
+      <TableFrame>
+        <table className="w-full">
+          <thead>
+            <tr>
+              <Th>Team</Th>
+              <Th>Champion</Th>
+              <Th numeric>Active days</Th>
+              <Th>Uses</Th>
+              <Th>Can help with</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.champions.flatMap((team) =>
+              team.reason !== 'ok'
+                ? [
+                    <Tr key={team.teamId ?? 'none'}>
+                      <Td className="font-medium text-ink">{team.teamName}</Td>
+                      <Td className="text-ink-3">
+                        {REASONS[team.reason]} ({plural(team.users, 'user')})
+                      </Td>
+                      <Td numeric>{''}</Td>
+                      <Td>{''}</Td>
+                      <Td>{''}</Td>
+                    </Tr>,
+                  ]
+                : team.champions.map((c, i) => (
+                    <Tr key={`${team.teamId ?? 'none'}:${c.userId}`}>
+                      <Td className="font-medium text-ink">{i === 0 ? team.teamName : ''}</Td>
+                      <Td className="text-ink">{c.name}</Td>
+                      <Td numeric>{c.activeDays}</Td>
+                      <Td className="text-ink-2">{featureList(c.uses)}</Td>
+                      <Td className="text-ink-2">{featureList(c.canHelpWith)}</Td>
+                    </Tr>
+                  )),
+            )}
+          </tbody>
+        </table>
+      </TableFrame>
     </div>
   )
 }

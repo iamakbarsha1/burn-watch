@@ -430,8 +430,8 @@ export async function authRoutes(fastify: FastifyInstance) {
   })
 
   // GET /v1/auth/admin/users — every user in the caller's org, including the
-  // ones who have never synced. The leaderboard cannot answer this: it reads
-  // from daily_snapshots, so a developer with no data simply is not in it, and
+  // ones who have never synced. The usage reads cannot answer this: they read
+  // from daily_snapshots, so a developer with no data simply is not in them, and
   // "who has not onboarded yet" is exactly what an admin needs to see.
   fastify.get('/admin/users', { preHandler: requireAdmin(fastify) }, async (request) => {
     const jwt = request.user as JwtPayload

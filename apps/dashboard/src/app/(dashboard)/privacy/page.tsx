@@ -12,6 +12,7 @@ const NEVER = [
 
 const SEES: Record<Audience, [boolean, boolean, boolean]> = {
   scoped: [true, true, true],
+  self: [true, false, false],
   admin: [false, false, true],
   none: [false, false, false],
 }

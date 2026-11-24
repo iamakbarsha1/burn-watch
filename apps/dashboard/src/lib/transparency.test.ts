@@ -42,4 +42,8 @@ describe('transparency field list', () => {
       expect(audienceOf(`enrichment.${f}`), f).toBe('scoped')
     }
   })
+
+  it('marks the fields only My usage shows as visible to you alone', () => {
+    expect(audienceOf('enrichment.sessionCount')).toBe('self')
+  })
 })

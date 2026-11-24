@@ -201,12 +201,6 @@ export const IdleSeatsQuerySchema = z.object({
   idleDays: z.coerce.number().int().min(1).max(365).default(14),
 })
 
-// R1 A8. Admin writes all three at once; a person sets only their own flag.
-export const LeaderboardSettingsSchema = z.object({
-  developerView: z.enum(['own', 'rank', 'full']),
-  showNames: z.boolean(),
-  showOthersCost: z.boolean(),
-})
 // R2 B5. Plain X.Y.Z only; null clears the minimum.
 export const DeviceSettingsSchema = z.object({
   minClaudeVersion: z.string().max(20).regex(/^\d+\.\d+\.\d+$/).nullable(),
@@ -219,7 +213,6 @@ export const ClaudeOrgsInputSchema = z.object({
 export const TicketPrefixesSchema = z.object({
   prefixes: z.array(z.string().regex(/^[A-Z][A-Z0-9]{1,9}$/)).max(50),
 })
-export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
 
 // R1 B8. The audit log's `action` filter is a prefix from this closed list.
 export const AUDIT_ACTION_PREFIXES = [
