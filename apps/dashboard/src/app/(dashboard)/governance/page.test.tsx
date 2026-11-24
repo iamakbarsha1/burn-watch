@@ -5,6 +5,7 @@ import type { ClaudeAccountsResponse, FreeTierResponse, McpInventoryResponse, Vi
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
   data: null as FreeTierResponse | null,
+  tooSmall: false,
   mcp: null as McpInventoryResponse | null,
   violations: null as ViolationsResponse | null,
   count: 0,
@@ -18,9 +19,12 @@ vi.mock('next/navigation', () => ({
   },
 }))
 vi.mock('@/lib/session', () => ({ getUserRole: async () => state.role }))
+const { GroupTooSmallError } = await import('@/lib/group-too-small')
+
 vi.mock('@/lib/api', () => ({
   fetchTeams: async () => [],
   fetchFreeTier: async () => {
+    if (state.tooSmall) throw new GroupTooSmallError('group_too_small')
     if (!state.data) throw new Error('down')
     return state.data
   },
@@ -61,6 +65,7 @@ const render = async () =>
 beforeEach(() => {
   state.role = 'admin'
   state.data = { rows: [], byTeam: [] }
+  state.tooSmall = false
   state.mcp = { servers: [], unusedApprovals: [] }
   state.violations = {
     policies: (['claude', 'qwen', 'gemini', 'codex', 'copilot'] as const).map((agent) => ({
@@ -76,6 +81,16 @@ beforeEach(() => {
   state.count = 0
   state.accounts = null
   state.accountsRead = 0
+})
+
+describe('a group too small', () => {
+  it('replaces every section with the group-too-small notice when one read is refused', async () => {
+    state.tooSmall = true
+    state.mcp = { servers: [{ server: 'github', calls: 1, users: [], approved: false }] } as never
+    const html = await render()
+    expect(html).toContain('This group has fewer than 5 people')
+    expect(html).not.toContain('github')
+  })
 })
 
 const ACCOUNTS: ClaudeAccountsResponse = {

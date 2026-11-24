@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { fetchTrends, fetchTeams, fetchTeamCompare } from '@/lib/api'
+import { unlessTooSmall } from '@/lib/group-too-small'
 import { BurnAreaChart, AgentSparklines } from '@/components/charts/BurnAreaChart'
 import { TeamLinesChart } from '@/components/charts/TeamCharts'
 import { TeamFilter } from '@/components/TeamFilter'
@@ -8,7 +9,7 @@ import { formatRange, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
 import { getOrgId } from '@/lib/session'
-import { PageHeader, Card, EmptyState } from '@/components/ui'
+import { GroupTooSmall, PageHeader, Card, EmptyState } from '@/components/ui'
 
 export default async function TrendsPage({
   searchParams,
@@ -26,10 +27,23 @@ export default async function TrendsPage({
   const team = pickTeam(teams, params.teamId)
   const showCompare = !team && teams.length >= 2
 
-  const [trends, comparison] = await Promise.all([
-    fetchTrends(from, to, orgId, team?.id),
-    showCompare ? fetchTeamCompare(from, to).catch(() => []) : [],
-  ])
+  const loaded = await unlessTooSmall(
+    Promise.all([fetchTrends(from, to, orgId, team?.id), showCompare ? fetchTeamCompare(from, to).catch(() => []) : []]),
+  )
+  if (!loaded) {
+    return (
+      <div>
+        <PageHeader title="Burn Trends" subtitle={formatRange(from, to)} />
+        {teams.length > 0 && (
+          <Suspense fallback={null}>
+            <TeamFilter teams={teams} value={team?.id} />
+          </Suspense>
+        )}
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const [trends, comparison] = loaded
 
   return (
     <div>

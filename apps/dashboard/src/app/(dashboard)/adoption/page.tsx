@@ -22,6 +22,7 @@ import {
   type TipId,
 } from '@burn-watch/shared'
 import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchOnboarding, fetchPractices, fetchTeams } from '@/lib/api'
+import { nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
 import { agentById } from '@/lib/agents'
 import { formatCost, formatRange, resolveRange } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
@@ -29,7 +30,7 @@ import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
 import { CopyButton } from '@/components/CopyButton'
 import { SETUP_SOURCES as SOURCES, setupChecklist } from '@/lib/setup'
-import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge, inputClass, secondaryButtonClass } from '@/components/ui'
+import { GroupTooSmall, PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge, inputClass, secondaryButtonClass } from '@/components/ui'
 
 const DEFAULT_IDLE_DAYS = 14
 
@@ -51,13 +52,29 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
   const rankBy = PRACTICE_RANKS.find((r) => r === params.rankBy) ?? 'days'
-  const [data, funnel, onboarding, features, practices] = await Promise.all([
-    fetchIdleSeats(idleDays, team?.id).catch(() => null),
-    fetchFunnel(from, to, team?.id).catch(() => null),
-    fetchOnboarding(from, to, team?.id).catch(() => null),
-    fetchFeatures(from, to, team?.id).catch(() => null),
-    fetchPractices(from, to, rankBy, team?.id).catch(() => null),
-  ])
+  const loaded = await unlessTooSmall(
+    Promise.all([
+      fetchIdleSeats(idleDays, team?.id).catch(nullUnlessTooSmall),
+      fetchFunnel(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchOnboarding(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchFeatures(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchPractices(from, to, rankBy, team?.id).catch(nullUnlessTooSmall),
+    ]),
+  )
+  if (!loaded) {
+    return (
+      <div>
+        <PageHeader title="Adoption" subtitle={formatRange(from, to)} />
+        {teams.length > 0 && (
+          <Suspense fallback={null}>
+            <TeamFilter teams={teams} value={team?.id} />
+          </Suspense>
+        )}
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const [data, funnel, onboarding, features, practices] = loaded
   // Keep the range and team in the URL when the form changes idleDays.
   const carried = Object.entries(params).filter(([k, v]) => k !== 'idleDays' && v !== undefined)
 

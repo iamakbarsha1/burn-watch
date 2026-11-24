@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
 import type { AgentName, TrendPoint } from '@burn-watch/shared'
 import { daysBefore, today } from './dates.js'
-import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
+import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { readScope } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
 
@@ -108,7 +108,7 @@ export async function trendsRoutes(fastify: FastifyInstance) {
       }
 
       const scope = await readScope(request.user, parsed.data.teamId)
-      if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+      if (isRefusal(scope)) return refuse(reply, scope)
       // Team aggregate, so logged only with a team filter.
       if (parsed.data.teamId) await auditView(request, 'trends', scope, parsed.data.teamId)
 

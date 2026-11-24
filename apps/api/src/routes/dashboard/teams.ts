@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Document } from 'mongodb'
 import { z } from 'zod'
-import type { AgentSummary, Team, TeamComparison } from '@burn-watch/shared'
+import { MIN_GROUP_SIZE, type AgentSummary, type Team, type TeamComparison } from '@burn-watch/shared'
 import {
   getStore,
   newId,
@@ -126,9 +126,13 @@ export async function teamsRoutes(fastify: FastifyInstance) {
     const store = getStore()
     const orgId = request.user.orgId as OrgId
 
-    const teams = await comparableTeams(request.user)
+    const all = await comparableTeams(request.user)
+    if (all.length === 0) return [] as TeamComparison[]
+    const allMembers = await store.teamMembers.find({ orgId, teamId: { $in: all.map((t) => t._id) } })
+    // v2 rule 2: a team under MIN_GROUP_SIZE is left out, not shown with its totals.
+    const teams = all.filter((t) => allMembers.filter((m) => m.teamId === t._id).length >= MIN_GROUP_SIZE)
     if (teams.length === 0) return [] as TeamComparison[]
-    const members = await store.teamMembers.find({ orgId, teamId: { $in: teams.map((t) => t._id) } })
+    const members = allMembers.filter((m) => teams.some((t) => t._id === m.teamId))
     const ids = [...new Set(members.map((m) => m.userId))]
     await auditView(request, 'team_compare', request.user.role === 'admin' ? undefined : ids)
 

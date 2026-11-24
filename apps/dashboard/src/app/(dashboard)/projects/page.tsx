@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import { fetchProjects } from '@/lib/api'
+import { unlessTooSmall } from '@/lib/group-too-small'
 import { formatCost, formatRange, resolveRange, formatCount } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { getOrgId } from '@/lib/session'
-import { PageHeader, TableFrame, Th, Td, Tr, EmptyRow } from '@/components/ui'
+import { GroupTooSmall, PageHeader, TableFrame, Th, Td, Tr, EmptyRow } from '@/components/ui'
 
 export default async function ProjectsPage({
   searchParams,
@@ -15,7 +16,16 @@ export default async function ProjectsPage({
   const orgId = await getOrgId()
   if (!orgId) redirect('/login')
 
-  const projects = await fetchProjects(from, to, orgId)
+  const data = await unlessTooSmall(fetchProjects(from, to, orgId))
+  if (!data) {
+    return (
+      <div>
+        <PageHeader title="Project Breakdown" subtitle={formatRange(from, to)} />
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const projects = data
 
   projects.sort((a, b) => b.totalCost - a.totalCost)
   const top = projects[0]?.totalCost ?? 0

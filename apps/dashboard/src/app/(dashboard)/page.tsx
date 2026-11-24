@@ -2,13 +2,14 @@ import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { fetchOverview, fetchTeams, fetchTeamCompare, fetchViolationCount } from '@/lib/api'
+import { unlessTooSmall } from '@/lib/group-too-small'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
 import { TeamFilter } from '@/components/TeamFilter'
 import { formatCost, formatTokens, formatRange, resolveRange, formatActualCostHint } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
 import { getOrgId, getUserRole } from '@/lib/session'
-import { PageHeader, StatTile, Section, EmptyState, TableFrame, Th, Td, Tr } from '@/components/ui'
+import { GroupTooSmall, PageHeader, StatTile, Section, EmptyState, TableFrame, Th, Td, Tr } from '@/components/ui'
 
 export default async function OverviewPage({
   searchParams,
@@ -28,12 +29,28 @@ export default async function OverviewPage({
   const showCompare = !team && teams.length >= 2
 
   const isAdmin = (await getUserRole()) === 'admin'
-  const [overview, comparison, violationCount] = await Promise.all([
-    fetchOverview(from, to, orgId, team?.id),
-    showCompare ? fetchTeamCompare(from, to).catch(() => []) : [],
-    // Shares the layout's call through cache(): same request, one fetch.
-    isAdmin ? fetchViolationCount().catch(() => 0) : 0,
-  ])
+  const loaded = await unlessTooSmall(
+    Promise.all([
+      fetchOverview(from, to, orgId, team?.id),
+      showCompare ? fetchTeamCompare(from, to).catch(() => []) : [],
+      // Shares the layout's call through cache(): same request, one fetch.
+      isAdmin ? fetchViolationCount().catch(() => 0) : 0,
+    ]),
+  )
+  if (!loaded) {
+    return (
+      <div>
+        <PageHeader title="Overview" subtitle={formatRange(from, to)} />
+        {teams.length > 0 && (
+          <Suspense fallback={null}>
+            <TeamFilter teams={teams} value={team?.id} />
+          </Suspense>
+        )}
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const [overview, comparison, violationCount] = loaded
 
   return (
     <div>
