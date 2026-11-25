@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify'
-import { getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
-import type { AgentName, MyUsageResponse } from '@burn-watch/shared'
+import { addDays, getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
+import { HelpVolunteerSchema, type AgentName, type MyUsageResponse } from '@burn-watch/shared'
 import { dateQuerySchema } from './query-schema.js'
 import { today } from './dates.js'
 import { mcpServersPipeline } from './features.js'
 import { streaks } from './streaks.js'
+import { WINDOW_DAYS, onboardingOf } from './onboarding.js'
 
 const DAY_MS = 86_400_000
 
@@ -26,13 +27,14 @@ export async function meRoutes(fastify: FastifyInstance) {
     const userId = request.user.userId as UserId
     const store = getStore()
 
-    const [inRange, activeDates, mcpRows] = await Promise.all([
+    const [inRange, activeDates, mcpRows, me] = await Promise.all([
       store.dailySnapshots.find({ orgId, userId, date: { $gte: from, $lte: to } }),
       // Streaks are all time. At most one row per day.
       store.dailySnapshots.find({ orgId, userId, totalTokens: { $gt: 0 } }, { projection: { date: 1 } }),
       store.claudeEnrichment.aggregate<{ _id: UserId; servers: string[] }>(
         mcpServersPipeline({ orgId, userIds: [userId], from, to }),
       ),
+      store.users.findOne({ _id: userId, orgId }, { projection: { helpVolunteer: 1 } }),
     ])
 
     const byAgent = new Map<AgentName, { tokens: number; costMicros: number }>()
@@ -59,6 +61,22 @@ export async function meRoutes(fastify: FastifyInstance) {
       .map(([agent, v]) => ({ agent, tokens: v.tokens, costUsd: usdFromMicros(v.costMicros as Micros) }))
 
     const dates = activeDates.map((d) => d.date)
+    // Same first-sync rule as the onboarding counts: the first day with tokens.
+    const firstSync = dates.length ? (dates.reduce((min, d) => (d < min ? d : min)) as IsoDate) : null
+    let onboarding: MyUsageResponse['onboarding'] = null
+    if (firstSync) {
+      const docs = await store.claudeEnrichment.find(
+        { orgId, userId, date: { $gte: firstSync, $lte: addDays(firstSync, WINDOW_DAYS - 1) } },
+        {
+          projection: {
+            date: 1, toolUsage: 1, mcpUsage: 1, skillCounts: 1,
+            sidechainMessages: 1, permissionModeCounts: 1, entrypointCounts: 1,
+          },
+        },
+      )
+      // Today's data is not synced yet, as in the streak rule.
+      onboarding = { firstSync, ...onboardingOf(firstSync, dates, docs, addDays(today(), -1)) }
+    }
     // "12 of 30": count from the first day ever used, so "All time" does not read "of ~2,500".
     const first = dates.reduce<string>((min, d) => (d < min ? d : min), to)
     const start = first > from ? first : from
@@ -73,6 +91,21 @@ export async function meRoutes(fastify: FastifyInstance) {
       totalCostUsd: usdFromMicros(costMicros as Micros),
       agents,
       features: { agents: agents.map((a) => a.agent), mcpServers: [...(mcpRows[0]?.servers ?? [])].sort() },
+      onboarding,
+      helpVolunteer: !!me?.helpVolunteer,
     } satisfies MyUsageResponse
+  })
+
+  // PUT /me/help-volunteer: the caller's own "happy to help with Claude Code".
+  // Writes only the caller's flag. Not audited, like any choice a person makes about themselves.
+  fastify.put('/me/help-volunteer', async (request, reply) => {
+    const parsed = HelpVolunteerSchema.safeParse(request.body)
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid body', details: parsed.error.flatten() })
+    const { helpVolunteer } = parsed.data
+    await getStore().users.updateOne(
+      { _id: request.user.userId as UserId, orgId: request.user.orgId as OrgId },
+      { $set: { helpVolunteer } },
+    )
+    return { helpVolunteer }
   })
 }

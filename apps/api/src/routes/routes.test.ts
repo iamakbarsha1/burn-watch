@@ -1440,6 +1440,7 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
     ]
     mongoState.docs.dailySnapshots = [snap(daysBefore(t, 1), 300, 2), snap(t, 700, 3)]
     mongoState.aggregates.claudeEnrichment = [{ _id: USER_A, servers: ['linear', 'github'] }]
+    mongoState.docs.claudeEnrichment = [{ orgId: ORG_A, userId: USER_A, date: daysBefore(t, 1), mcpUsage: { github: 1 } }]
   }
 
   it.each(['admin', 'manager', 'developer'] as const)('gives a %s only their own numbers', async (role) => {
@@ -1458,6 +1459,16 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
       totalCostUsd: 5,
       agents: [{ agent: 'claude', tokens: 1000, costUsd: 5 }],
       features: { agents: ['claude'], mcpServers: ['github', 'linear'] },
+      // The caller's own first 14 days, from their first day with tokens.
+      onboarding: {
+        firstSync: daysBefore(t, 1),
+        state: 'inProgress',
+        activeWeek1: 2,
+        activeWeek2: 0,
+        features: ['mcp'],
+        dayOfWindow: 1,
+      },
+      helpVolunteer: false,
     })
     // Every data read is pinned to the caller, whatever the role.
     const finds = callsTo(mongoState, 'dailySnapshots', 'find').map(([f]) => f)
@@ -1465,8 +1476,14 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
     for (const f of finds) expect(f).toMatchObject({ orgId: ORG_A, userId: USER_A })
     const [pipeline] = callsTo(mongoState, 'claudeEnrichment', 'aggregate')[0] as Document[][]
     expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: { $in: [USER_A] } })
+    const [enrichment] = callsTo(mongoState, 'claudeEnrichment', 'find')
+    expect(enrichment[0]).toMatchObject({ orgId: ORG_A, userId: USER_A })
+    // The one users read is the caller's own document, for the help flag.
+    expect(mongoState.calls.filter((call) => call.collection === 'users').map((call) => [call.op, call.args[0]])).toEqual([
+      ['findOne', { _id: USER_A, orgId: ORG_A }],
+    ])
     // No scope lookup, no roster read: nothing that could widen it to a team or the org.
-    for (const c of ['users', 'teams', 'teamMembers', 'usageEvents']) {
+    for (const c of ['teams', 'teamMembers', 'usageEvents']) {
       expect(mongoState.calls.filter((call) => call.collection === c), c).toEqual([])
     }
     const text = res.body
@@ -1483,11 +1500,53 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
   it('answers zeros and an empty streak with no usage', async () => {
     const body = (await get('developer')).json()
     expect(body).toMatchObject({ activeDays: 0, totalTokens: 0, totalCostUsd: 0, agents: [], streak: { current: 0, longest: 0, lastActive: null } })
+    expect(body.onboarding).toBeNull()
+    expect(body.helpVolunteer).toBe(false)
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
+  })
+
+  it('returns the caller\'s own help flag', async () => {
+    seed()
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A, name: 'Ada', helpVolunteer: true }]
+    expect((await get('developer')).json().helpVolunteer).toBe(true)
   })
 
   it.each(['', `?from=${t}`, '?from=20261101&to=20261102', '?date=not-a-date'])('rejects query %s', async (q) => {
     expect((await get('developer', `/v1/dashboard/me/usage${q}`)).statusCode).toBe(400)
     expect(callsTo(mongoState, 'dailySnapshots', 'find')).toEqual([])
+  })
+})
+
+describe('PUT /v1/dashboard/me/help-volunteer (v2 P2)', () => {
+  const put = (payload: unknown, role: JwtPayload['role'] = 'developer') =>
+    app.inject({ method: 'PUT', url: '/v1/dashboard/me/help-volunteer', headers: auth(token({ role })), payload: payload as object })
+
+  it.each(['admin', 'manager', 'developer'] as const)('lets a %s set only their own flag', async (role) => {
+    mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A }]
+    // Extra fields naming someone else are ignored: the filter comes from the token.
+    const res = await put({ helpVolunteer: true, userId: USER_B, _id: USER_B, orgId: ORG_B }, role)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ helpVolunteer: true })
+    expect(callsTo(mongoState, 'users', 'updateOne')).toEqual([[{ _id: USER_A, orgId: ORG_A }, { $set: { helpVolunteer: true } }]])
+    expect(mongoState.calls.filter((c) => c.op !== 'updateOne' && c.collection === 'users')).toEqual([])
+    expect(callsTo(mongoState, 'auditEvents', 'insertOne')).toEqual([])
+  })
+
+  it('turns the flag off', async () => {
+    expect((await put({ helpVolunteer: false })).json()).toEqual({ helpVolunteer: false })
+    expect(callsTo(mongoState, 'users', 'updateOne')[0][1]).toEqual({ $set: { helpVolunteer: false } })
+  })
+
+  it.each([{}, { helpVolunteer: 'yes' }, { helpVolunteer: 1 }, { helpVolunteer: null }])('rejects body %j', async (body) => {
+    expect((await put(body)).statusCode).toBe(400)
+    expect(callsTo(mongoState, 'users', 'updateOne')).toEqual([])
+    expect(callsTo(mongoState, 'auditEvents', 'insertOne')).toEqual([])
+  })
+
+  it('refuses without a token', async () => {
+    const res = await app.inject({ method: 'PUT', url: '/v1/dashboard/me/help-volunteer', payload: { helpVolunteer: true } })
+    expect(res.statusCode).toBe(401)
+    expect(callsTo(mongoState, 'users', 'updateOne')).toEqual([])
   })
 })
 
@@ -3729,15 +3788,19 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
     expect((await get('admin')).json()).toMatchObject({ from, rangeDays: 7, powerDays: 5 })
   })
 
-  it('counts the org per team, invites once per email, and lists who is stuck', async () => {
+  it('counts the org per team of 5 or more, invites once per email, and names no one', async () => {
     mongoState.docs.teams = [
       { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
       { _id: TEAM_B, orgId: ORG_A, name: 'Web' },
     ]
+    // Platform has 5 members (Ada, Bo and PEERS), Web only 3: Web gets no row.
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
       { teamId: TEAM_B, orgId: ORG_A, userId: USER_A, role: 'member' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
+      { teamId: TEAM_B, orgId: ORG_A, userId: 'web-2', role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: 'web-3', role: 'member' },
     ]
     mongoState.aggregates.users = [
       row(USER_A, 'Ada', { activeDays: 5 }),
@@ -3764,17 +3827,22 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
     expect(body).toMatchObject({ from, to: t, rangeDays: 7, activeDays: 2, powerDays: 5 })
     // Ada is in two teams and counts once here.
     expect(body.total).toEqual(counts(5, 3, 2, 2, 1, 1))
-    expect(body.teams).toEqual([
-      { teamId: TEAM_A, teamName: 'Platform', ...counts(3, 2, 2, 1, 1, 1) },
-      { teamId: TEAM_B, teamName: 'Web', ...counts(1, 1, 1, 1, 1, 1) },
-    ])
-    expect(body.noTeam).toEqual(counts(2, 1, 0, 1, 0, 0))
-    expect(body.stuck).toEqual([
-      { stoppedAt: 'invited', userId: null, name: null, email: 'new@x.io', teams: ['Platform'], lastStepDate: daysBefore(t, 2) },
-      { stoppedAt: 'invited', userId: null, name: null, email: 'old@x.io', teams: [], lastStepDate: daysBefore(t, 50) },
-      { stoppedAt: 'registered', userId: USER_B, name: 'Bo', email: null, teams: ['Platform'], lastStepDate: daysBefore(t, 20) },
-      { stoppedAt: 'firstSync', userId: USER_C, name: 'Cy', email: null, teams: [], lastStepDate: daysBefore(t, 1) },
-    ])
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(3, 2, 2, 1, 1, 1) }])
+    // Cy and old@x.io are the only people in no team: under 5, so no row.
+    expect(body.noTeam).toBeNull()
+    expect(Object.keys(body).sort()).toEqual(['activeDays', 'from', 'noTeam', 'powerDays', 'rangeDays', 'teams', 'to', 'total'])
+    for (const leak of [USER_A, USER_B, USER_C, 'Ada', 'Bo', 'Cy', 'x.io']) expect(res.body).not.toContain(leak)
+  })
+
+  it('shows No team only for 5 or more people', async () => {
+    const loners = (n: number) => Array.from({ length: n }, (_, i) => row(`loner-${i}`, `Loner ${i}`, { activeDays: 5 }))
+    mongoState.aggregates.users = loners(4)
+    expect((await get('admin')).json().noTeam).toBeNull()
+    mongoState.aggregates.users = loners(5)
+    const res = await get('admin')
+    expect(res.json().noTeam).toEqual(counts(5, 5, 5, 5, 5, 5))
+    expect(res.body).not.toContain('loner')
+    expect(res.body).not.toContain('Loner')
   })
 
   it('limits a manager to their teams: no No-team row, no other teams or invites', async () => {
@@ -3794,16 +3862,16 @@ describe('GET /v1/dashboard/adoption/funnel', () => {
     expect(body.noTeam).toBeNull()
     expect(body.total).toEqual(counts(3, 2, 2, 2, 1, 0))
     expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(3, 2, 2, 2, 1, 0) }])
-    expect(body.stuck.map((s: { name: string | null; email: string | null }) => s.name ?? s.email)).toEqual([
-      'x@x.io',
-      'Bo',
-      'Ada',
-    ])
+    for (const leak of [USER_A, USER_B, ...PEERS, 'Ada', 'Bo', 'x.io']) expect(JSON.stringify(body)).not.toContain(leak)
   })
 
   it('narrows an admin to one team, with that team only and no No-team row', async () => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
+    ]
     mongoState.aggregates.users = [row(USER_A, 'Ada')]
     mongoState.docs.invites = [invite('x@x.io', TEAM_A, 1), invite('z@x.io', undefined, 1)]
     const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
@@ -3836,14 +3904,19 @@ describe('GET /v1/dashboard/adoption/features', () => {
     expect((await get('admin', `/v1/dashboard/adoption/features${q}`)).statusCode).toBe(400)
   })
 
-  it('reads the range, counts people per team and once in total, and sorts by features used', async () => {
+  it('reads the range, counts people per team of 5 or more and once in total, and names no one', async () => {
     mongoState.docs.teams = [
       { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
       { _id: TEAM_B, orgId: ORG_A, name: 'Web' },
     ]
+    // Platform has 5 members (Ada, PEERS and one more), Web only 3: Web gets no row.
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
       { teamId: TEAM_B, orgId: ORG_A, userId: USER_A, role: 'member' },
+      ...peerRows(TEAM_A),
+      { teamId: TEAM_A, orgId: ORG_A, userId: 'platform-5', role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: 'web-2', role: 'member' },
+      { teamId: TEAM_B, orgId: ORG_A, userId: 'web-3', role: 'member' },
     ]
     mongoState.docs.claudeEnrichment = [
       day(USER_B, { toolUsage: { read: 3 } }),
@@ -3855,24 +3928,37 @@ describe('GET /v1/dashboard/adoption/features', () => {
       { _id: USER_B, name: 'Bo' },
     ]
 
-    const body = (await get('admin')).json()
+    const res = await get('admin')
+    const body = res.json()
     const [filter, opts] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [object, { projection: object }]
     expect(filter).toEqual({ orgId: ORG_A, date: { $gte: from, $lte: t } })
     expect(Object.keys(opts.projection)).not.toContain('accountHashes')
-    expect(body.people).toEqual([
-      { userId: USER_A, name: 'Ada', teamIds: [TEAM_A, TEAM_B], activeDays: 2, days: { mcp: 1, skills: 1, subagents: 1, plan: 0, sdk: 0 } },
-      { userId: USER_B, name: 'Bo', teamIds: [], activeDays: 1, days: { mcp: 0, skills: 0, subagents: 0, plan: 0, sdk: null } },
-    ])
+    // Names are not even read.
+    expect(callsTo(mongoState, 'users', 'find')[0][1]).toEqual({ projection: { _id: 1 } })
     const ada = { users: 1, used: { ...none, mcp: 1, skills: 1, subagents: 1 }, sdkKnown: 1 }
     expect(body.total).toEqual({ users: 2, used: { ...none, mcp: 1, skills: 1, subagents: 1 }, sdkKnown: 1 })
-    expect(body.teams).toEqual([
-      { teamId: TEAM_A, teamName: 'Platform', ...ada },
-      { teamId: TEAM_B, teamName: 'Web', ...ada },
-    ])
-    expect(body.noTeam).toEqual({ users: 1, used: none, sdkKnown: 0 })
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...ada }])
+    // Bo alone in no team: under 5, so no row.
+    expect(body.noTeam).toBeNull()
+    expect(Object.keys(body).sort()).toEqual(['from', 'noTeam', 'teams', 'to', 'total'])
+    for (const leak of [USER_A, USER_B, 'Ada', 'Bo']) expect(res.body).not.toContain(leak)
   })
 
-  it('limits a manager to their teams and shows names as stored', async () => {
+  it('shows No team only for 5 or more people', async () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `loner-${i}`)
+    const seedLoners = (n: number) => {
+      mongoState.docs.claudeEnrichment = ids(n).map((id) => day(id))
+      mongoState.docs.users = ids(n).map((_id) => ({ _id, name: `Loner ${_id}` }))
+    }
+    seedLoners(4)
+    expect((await get('admin')).json().noTeam).toBeNull()
+    seedLoners(5)
+    const res = await get('admin')
+    expect(res.json().noTeam).toEqual({ users: 5, used: none, sdkKnown: 0 })
+    expect(res.body).not.toContain('loner')
+  })
+
+  it('limits a manager to their teams and names no one', async () => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
     mongoState.docs.teamMembers = [
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
@@ -3885,17 +3971,22 @@ describe('GET /v1/dashboard/adoption/features', () => {
       { _id: USER_B, name: 'Bo' },
     ]
 
-    const body = (await get('manager')).json()
+    const res = await get('manager')
+    const body = res.json()
     const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
     expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B, ...PEERS].sort())
     expect(body.noTeam).toBeNull()
-    // The leaderboard's hide flag is gone, so nothing is masked as 'Hidden'.
-    expect(body.people.map((p: { name: string }) => p.name)).toEqual(['Ada', 'Bo'])
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', users: 2, used: none, sdkKnown: 0 }])
+    for (const leak of [USER_A, USER_B, ...PEERS, 'Ada', 'Bo']) expect(res.body).not.toContain(leak)
   })
 
   it('narrows an admin to one team with no No-team row', async () => {
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    mongoState.docs.teamMembers = [
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
+      ...peerRows(TEAM_A),
+    ]
     mongoState.docs.claudeEnrichment = [day(USER_A)]
     mongoState.docs.users = [{ _id: USER_A, name: 'Ada' }]
     const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
@@ -3905,7 +3996,7 @@ describe('GET /v1/dashboard/adoption/features', () => {
 
   it('answers an empty matrix without reading users when no one used Claude Code', async () => {
     const body = (await get('admin')).json()
-    expect(body).toMatchObject({ from, to: t, people: [], total: { users: 0, sdkKnown: 0 } })
+    expect(body).toMatchObject({ from, to: t, teams: [], noTeam: null, total: { users: 0, sdkKnown: 0 } })
     expect(callsTo(mongoState, 'users', 'find')).toEqual([])
   })
 
@@ -3938,7 +4029,7 @@ describe('GET /v1/dashboard/adoption/onboarding', () => {
       row(U3, 'Cy', daysBefore(t, 3)), // in progress
       row(U4, 'Dee', daysBefore(t, 40)), // started before the range
       row(U5, 'Eve', daysBefore(t, 22)), // tokens, no Claude Code day
-      row('u6-onboarding', 'Fay', null), // never synced: A3's stuck list
+      row('u6-onboarding', 'Fay', null), // never synced: not in the cohort
     ]
     mongoState.docs.dailySnapshots = [
       ...[1, 2, 8, 9].map((n) => ({ userId: USER_A, date: on(25, n) })),
@@ -3958,36 +4049,73 @@ describe('GET /v1/dashboard/adoption/onboarding', () => {
     expect(callsTo(mongoState, 'users', 'aggregate')).toEqual([])
   })
 
-  it('scores people whose first sync is in range, and lists only those to help', async () => {
+  // A fifth person in range, so the cohort reaches MIN_GROUP_SIZE.
+  const U7 = 'u7-onboarding'
+  const seedFive = () => {
     seed()
-    const body = (await get('admin')).json()
+    mongoState.aggregates.users.push(row(U7, 'Gus', daysBefore(t, 10))) // tokens, no Claude Code day
+    mongoState.docs.dailySnapshots.push({ userId: U7, date: on(10, 1) })
+  }
+  const NAMES = ['Ada', 'Bo', 'Cy', 'Dee', 'Eve', 'Fay', 'Gus']
+  const IDS = [USER_A, USER_B, U3, U4, U5, 'u6-onboarding', U7]
+
+  it('hides every count for a cohort of 4', async () => {
+    seed()
+    const res = await get('admin')
+    const body = res.json()
     expect(body).toMatchObject({ from, to: t, activeDaysPerWeek: 2, minFeatures: 2, minForPercent: 5 })
-    expect(body.total).toEqual(counts(4, 1, 1, 1, 1))
-    expect(body.noTeam).toEqual(counts(4, 1, 1, 1, 1))
-    expect(body.people.map((p: { name: string; state: string }) => [p.name, p.state])).toEqual([
-      ['Cy', 'inProgress'],
-      ['Bo', 'missed'],
-    ])
-    expect(body.people[0]).toMatchObject({ firstSync: daysBefore(t, 3), dayOfWindow: 3, features: ['skills'] })
+    expect(body.total).toBeNull()
+    expect(body.noTeam).toBeNull()
+    expect(body.teams).toEqual([])
+  })
+
+  it('scores a cohort of 5 whose first sync is in range, counts only', async () => {
+    seedFive()
+    const res = await get('admin')
+    const body = res.json()
+    expect(body.total).toEqual(counts(5, 1, 1, 1, 2))
+    expect(body.noTeam).toEqual(counts(5, 1, 1, 1, 2))
+    expect(Object.keys(body).sort()).toEqual(
+      ['activeDaysPerWeek', 'from', 'minFeatures', 'minForPercent', 'noTeam', 'teams', 'to', 'total'],
+    )
+    for (const leak of [...NAMES, ...IDS]) expect(res.body).not.toContain(leak)
 
     const [filter] = callsTo(mongoState, 'dailySnapshots', 'find')[0] as [Record<string, unknown>]
     expect(filter).toMatchObject({ orgId: ORG_A, date: { $gte: daysBefore(t, 25), $lte: daysBefore(t, -13) }, totalTokens: { $gt: 0 } })
-    expect((filter.userId as { $in: string[] }).$in.sort()).toEqual([USER_A, USER_B, U3, U5].sort())
+    expect((filter.userId as { $in: string[] }).$in.sort()).toEqual([USER_A, USER_B, U3, U5, U7].sort())
   })
 
-  it('counts per team and leaves No team out for a team filter', async () => {
-    seed()
+  it('counts a team only when its cohort is 5 or more', async () => {
+    seedFive()
+    mongoState.docs.teams = [
+      { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
+      { _id: TEAM_B, orgId: ORG_A, name: 'Web' },
+    ]
+    // Platform: the whole cohort. Web: 3 of them, plus 2 who started before the range.
+    mongoState.docs.teamMembers = [
+      ...[USER_A, USER_B, U3, U5, U7].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' })),
+      ...[USER_A, USER_B, U3, U4, 'u6-onboarding'].map((userId) => ({ teamId: TEAM_B, orgId: ORG_A, userId, role: 'member' })),
+    ]
+    const res = await get('manager')
+    const body = res.json()
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(5, 1, 1, 1, 2) }])
+    expect(body.noTeam).toBeNull()
+    for (const leak of [...NAMES, ...IDS]) expect(res.body).not.toContain(leak)
+  })
+
+  it('leaves No team out for a team filter', async () => {
+    seedFive()
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
+    mongoState.docs.teamMembers = [USER_A, USER_B, U3, U5, U7].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' }))
     const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
-    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(1, 1, 0, 0, 0) }])
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...counts(5, 1, 1, 1, 2) }])
     expect(body.noTeam).toBeNull()
   })
 
   it('reads no usage when nobody started in range', async () => {
     mongoState.aggregates.users = [row(USER_A, 'Ada', daysBefore(t, 40))]
     const body = (await get('admin')).json()
-    expect(body.total).toEqual(counts(0, 0, 0, 0, 0))
+    expect(body.total).toBeNull()
     expect(callsTo(mongoState, 'dailySnapshots', 'find')).toEqual([])
   })
 
@@ -4007,6 +4135,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
   const U4 = 'u4-practices'
   const day = (userId: string, date: string, over: Record<string, unknown> = {}) => ({ userId, orgId: ORG_A, date, ...over })
   // USER_A: 3 days, MCP every day. The others: 1 day each, no MCP. USER_B has the most tokens.
+  // USER_A and USER_B set "happy to help"; U3 and U4 did not.
   const seed = () => {
     mongoState.docs.claudeEnrichment = [
       ...[0, 1, 2].map((n) => day(USER_A, daysBefore(t, n), { mcpUsage: { github: 1 } })),
@@ -4014,7 +4143,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       day(U3, t),
       day(U4, t, { toolUsage: { exitplanmode: 1 } }),
     ]
-    mongoState.docs.users = [USER_A, USER_B, U3, U4].map((_id) => ({ _id, name: `Name-${_id}` }))
+    mongoState.docs.users = [USER_A, USER_B, U3, U4].map((_id) => ({ _id, name: `Name-${_id}`, helpVolunteer: _id === USER_A || _id === USER_B }))
     mongoState.aggregates.usageEvents = [
       { _id: USER_A, tokens: 100, read: 95, cacheable: 100 },
       { _id: USER_B, tokens: 900, read: 50, cacheable: 100 },
@@ -4055,35 +4184,29 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect((await get('admin', `/v1/dashboard/adoption/practices${q}`)).statusCode).toBe(400)
   })
 
-  it('compares nothing below 17 people but still suggests champions', async () => {
+  it('compares nothing below 17 people and lists only volunteers', async () => {
     const more = Array.from({ length: 13 }, (_, i) => `few${i}-practices`)
     mongoState.docs.claudeEnrichment = [day(USER_A, t), day(USER_A, from), day(USER_B, t), day(U3, t), ...more.map((id) => day(id, t))]
+    // Bo has the most days after Ada, but did not volunteer.
     mongoState.docs.users = [
-      { _id: USER_A, name: 'Ada' },
-      { _id: USER_B, name: 'Bo' },
-      { _id: U3, name: 'Cy' },
+      { _id: USER_A, name: 'Ada', helpVolunteer: true },
+      { _id: USER_B, name: 'Bo Nonvolunteer', helpVolunteer: false },
+      { _id: U3, name: 'Cy Nonvolunteer' },
       ...more.map((_id) => ({ _id, name: _id })),
     ]
-    const body = (await get('admin')).json()
+    const res = await get('admin')
+    const body = res.json()
     expect(body).toMatchObject({ population: 16, minPopulation: 17, top: null, rest: null, tips: [] })
-    expect(body).not.toHaveProperty('namesOff')
-    expect(body.champions).toEqual([
-      {
-        teamId: null,
-        teamName: 'No team',
-        users: 16,
-        reason: 'ok',
-        champions: [
-          { userId: USER_A, name: 'Ada', activeDays: 2, uses: [], canHelpWith: [] },
-          expect.objectContaining({ activeDays: 1 }),
-        ],
-      },
+    expect(body).not.toHaveProperty('champions')
+    expect(body.volunteers).toEqual([
+      { teamId: null, teamName: 'No team', volunteers: [{ userId: USER_A, name: 'Ada', canHelpWith: [] }] },
     ])
+    for (const leak of ['Nonvolunteer', USER_B, U3, ...more]) expect(res.body).not.toContain(leak)
   })
 
   it('answers empty with no Claude Code users and reads no tokens', async () => {
     const body = (await get('admin')).json()
-    expect(body).toMatchObject({ population: 0, top: null, champions: [] })
+    expect(body).toMatchObject({ population: 0, top: null, volunteers: [] })
     expect(callsTo(mongoState, 'usageEvents', 'aggregate')).toEqual([])
   })
 
@@ -4102,7 +4225,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
     expect(body.rest).toMatchObject({ users: 12, mcpServers: 0, cacheHitRate: 55 })
     expect(body.rest.uses.plan).toBeCloseTo(5 / 12)
     expect(body.tips).toEqual([{ id: 'mcp', gap: 1 }, { id: 'cache', gap: 0.4 }])
-    // The comparison names no one; only A7 champions carry names.
+    // The comparison names no one; only volunteers carry names.
     const groups = JSON.stringify({ top: body.top, rest: body.rest, tips: body.tips })
     for (const id of EVERYONE) expect(groups).not.toContain(id)
     expect(groups).not.toContain('Name-')
@@ -4137,7 +4260,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
 
   describe('recommended setup (R2 D5)', () => {
     // seed() is below MIN_QUARTILE_PEOPLE, so there is no top quartile here: the
-    // reference group is the No team champions, USER_A and USER_B (most tokens).
+    // reference group is the volunteers, USER_A and USER_B.
     const servers = () => {
       mongoState.aggregates.claudeEnrichment = [
         { _id: USER_A, servers: ['github', 'linear', 'plugin_sp_x'] },
@@ -4146,7 +4269,7 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       ]
     }
 
-    it('lists servers shared by the top quartile plus champions, counts only', async () => {
+    it('lists servers shared by the top quartile plus volunteers, counts only', async () => {
       seed()
       servers()
       const res = await get('admin')
@@ -4194,49 +4317,64 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       seed()
       servers()
       mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-      // Five members, but only U3 and U4 have Claude Code days: too few for champions.
+      // Five members, none of them volunteers, and no top quartile: an empty reference group.
       mongoState.docs.teamMembers = [U3, U4, ...PEERS].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' }))
       const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
       expect(body.setup).toEqual([{ teamId: TEAM_A, teamName: 'Platform', groupSize: 0, reason: 'smallGroup', items: [] }])
     })
   })
 
-  describe('champions (R2 A7)', () => {
+  describe('volunteers (v2 Phase 2)', () => {
+    // Only USER_A volunteers. USER_B has the most tokens and is not named.
     const teamOfFour = () => {
       seed()
+      for (const u of mongoState.docs.users) u.helpVolunteer = u._id === USER_A
       mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
       // PEERS bring the team to MIN_GROUP_SIZE; they have no Claude Code days.
       mongoState.docs.teamMembers = [USER_A, USER_B, U3, U4, ...PEERS].map((userId) => ({
         teamId: TEAM_A, orgId: ORG_A, userId, role: userId === USER_A ? 'manager' : 'member',
       }))
     }
-    const names = (body: { champions: { teamName: string; champions: { name: string }[] }[] }) =>
-      Object.fromEntries(body.champions.map((t) => [t.teamName, t.champions.map((c) => c.name)]))
+    const names = (body: { volunteers: { teamName: string; volunteers: { name: string }[] }[] }) =>
+      Object.fromEntries(body.volunteers.map((t) => [t.teamName, t.volunteers.map((v) => v.name)]))
+    const others = [USER_B, U3, U4, `Name-${USER_B}`, `Name-${U3}`, `Name-${U4}`]
 
-    it('suggests the top 2 per team by the picked ranking, plus No team for an admin', async () => {
+    it('names only the volunteers per team, whatever the ranking, and skips groups with none', async () => {
       teamOfFour()
-      const body = (await get('admin')).json()
-      // USER_A has 3 days; the others tie on 1 day, so tokens decide: USER_B (900) next.
-      expect(names(body)).toEqual({ Platform: [`Name-${USER_A}`, `Name-${USER_B}`], 'No team': [] })
-      expect(body.champions[0]).toMatchObject({ teamId: TEAM_A, users: 4, reason: 'ok' })
-      expect(body.champions[0].champions[0]).toMatchObject({ uses: ['mcp'], canHelpWith: ['mcp'] })
-      expect(body.champions[1]).toMatchObject({ teamId: null, users: 0, reason: 'tooFew' })
-
-      const byTokens = (await get('admin', `${URL}&rankBy=tokens`)).json()
-      expect(names(byTokens).Platform[0]).toBe(`Name-${USER_B}`)
+      for (const url of [URL, `${URL}&rankBy=tokens`]) {
+        const res = await get('admin', url)
+        const body = res.json()
+        // No team has nobody, so it has no group.
+        expect(names(body)).toEqual({ Platform: [`Name-${USER_A}`] })
+        expect(body.volunteers[0]).toEqual({
+          teamId: TEAM_A,
+          teamName: 'Platform',
+          volunteers: [{ userId: USER_A, name: `Name-${USER_A}`, canHelpWith: ['mcp'] }],
+        })
+        for (const leak of others) expect(res.body).not.toContain(leak)
+      }
+      expect(callsTo(mongoState, 'users', 'find')[0][1]).toEqual({ projection: { name: 1, helpVolunteer: 1 } })
     })
 
-    it('names the same champions to a manager as to an admin', async () => {
+    it('names the same volunteers to a manager as to an admin', async () => {
       teamOfFour()
-      const manager = (await get('manager')).json()
-      expect(names(manager)).toEqual({ Platform: [`Name-${USER_A}`, `Name-${USER_B}`] })
-      expect(manager.champions[0].champions[0]).not.toHaveProperty('hidden')
+      const res = await get('manager')
+      expect(names(res.json())).toEqual({ Platform: [`Name-${USER_A}`] })
+      for (const leak of others) expect(res.body).not.toContain(leak)
     })
 
-    it('narrows to the filtered team with no No-team row', async () => {
+    it('lists nobody when nobody volunteered', async () => {
+      teamOfFour()
+      for (const u of mongoState.docs.users) u.helpVolunteer = false
+      const res = await get('admin')
+      expect(res.json().volunteers).toEqual([])
+      expect(res.body).not.toContain('Name-')
+    })
+
+    it('narrows to the filtered team with no No-team group', async () => {
       teamOfFour()
       const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
-      expect(body.champions.map((t: { teamId: string }) => t.teamId)).toEqual([TEAM_A])
+      expect(body.volunteers.map((t: { teamId: string }) => t.teamId)).toEqual([TEAM_A])
     })
   })
 

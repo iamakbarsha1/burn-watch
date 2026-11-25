@@ -61,15 +61,6 @@ const ALLOWED: Record<string, { roles: Role[]; why: string }> = {
  * `route role`. Emptied by Phases 1 to 3.
  */
 const KNOWN_LEAKS: Record<string, string> = {
-  // Phase 2: adoption without names.
-  '/v1/dashboard/adoption/funnel admin': 'P2',
-  '/v1/dashboard/adoption/funnel manager of 6': 'P2',
-  '/v1/dashboard/adoption/features admin': 'P2',
-  '/v1/dashboard/adoption/features manager of 6': 'P2',
-  '/v1/dashboard/adoption/onboarding admin': 'P2',
-  '/v1/dashboard/adoption/onboarding manager of 6': 'P2',
-  '/v1/dashboard/adoption/practices admin': 'P2',
-  '/v1/dashboard/adoption/practices manager of 6': 'P2',
   // Phase 3: governance and alerts.
   '/v1/dashboard/adoption/idle-seats manager of 6': 'P3',
   '/v1/dashboard/budget-alerts admin': 'P3',

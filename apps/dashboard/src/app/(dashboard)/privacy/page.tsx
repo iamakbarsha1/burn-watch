@@ -26,7 +26,7 @@ export default function PrivacyPage() {
     <div className="max-w-5xl space-y-6">
       <PageHeader
         title="What BurnWatch knows about me"
-        subtitle="Every field the agent on your laptop can send, and who can see it. This list is built from the schema the server checks every upload against."
+        subtitle="Every field the agent on your laptop can send, the choices you make here, and who can see each one. This list is built from the schemas the server checks every upload and change against."
       />
 
       <Section title="Never collected">

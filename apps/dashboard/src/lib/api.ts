@@ -129,6 +129,11 @@ export async function fetchMyUsage(from: string, to: string): Promise<MyUsageRes
   return apiFetch(`/v1/dashboard/me/usage?from=${from}&to=${to}`)
 }
 
+// Any role. Sets only the caller's own "happy to help with Claude Code".
+export async function setHelpVolunteer(helpVolunteer: boolean): Promise<{ helpVolunteer: boolean }> {
+  return apiMutate('PUT', '/v1/dashboard/me/help-volunteer', { helpVolunteer })
+}
+
 // Admin or manager. Counts per band, no names; 403 group_too_small under MIN_GROUP_SIZE people.
 export async function fetchUsageDistribution(from: string, to: string, teamId?: string): Promise<UsageDistributionResponse> {
   return apiFetch(`/v1/dashboard/usage-distribution?from=${from}&to=${to}${teamQuery(teamId)}`)

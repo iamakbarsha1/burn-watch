@@ -17,21 +17,18 @@ import {
 } from '@burn-watch/db'
 import {
   IdleSeatsQuerySchema,
+  MIN_GROUP_SIZE,
   PRACTICE_RANKS,
   type AgentName,
   type FeatureMatrixResponse,
-  type FeaturePerson,
   type FunnelCounts,
   type FunnelResponse,
-  type FunnelStop,
   type IdleSeatRow,
   type IdleSeatsResponse,
-  type OnboardingPerson,
   type OnboardingResponse,
   type PracticesResponse,
-  type TeamChampions,
+  type TeamVolunteers,
   type TeamSetup,
-  type StuckPerson,
 } from '@burn-watch/shared'
 import { comparableTeams, readScope } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
@@ -39,7 +36,7 @@ import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.
 import { today } from './dates.js'
 import { countFeatures, featureDays, mcpServersPipeline, type FeatureFields } from './features.js'
 import type { EnrichmentRange } from './enrichment.js'
-import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, recommendedSetup, suggestChampions } from './quartile.js'
+import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, recommendedSetup, teamVolunteers } from './quartile.js'
 import { streaks } from './streaks.js'
 import {
   ACTIVE_DAYS_PER_WEEK,
@@ -76,6 +73,18 @@ async function readFeatureDays(orgId: OrgId, from: IsoDate, to: IsoDate, scope: 
   for (const d of docs) daysOf.set(d.userId, [...(daysOf.get(d.userId) ?? []), d])
   return daysOf
 }
+
+/** v2 rule 2: the teams with MIN_GROUP_SIZE or more members, so a team row never covers fewer people. */
+async function bigTeams<T extends { _id: TeamId }>(orgId: OrgId, teams: T[]): Promise<T[]> {
+  if (teams.length === 0) return []
+  const members = await getStore().teamMembers.find({ orgId, teamId: { $in: teams.map((t) => t._id) } }, { projection: { teamId: 1 } })
+  const size = new Map<string, number>()
+  for (const m of members) size.set(m.teamId, (size.get(m.teamId) ?? 0) + 1)
+  return teams.filter((t) => (size.get(t._id) ?? 0) >= MIN_GROUP_SIZE)
+}
+
+/** The group when it has MIN_GROUP_SIZE or more people, null otherwise. */
+const bigEnough = <T>(group: T[]): T[] | null => (group.length >= MIN_GROUP_SIZE ? group : null)
 
 /**
  * R2 A6 Decision 3: Claude tokens and cache tokens per person from usageEvents,
@@ -139,30 +148,6 @@ export function countFunnel(people: FunnelPerson[], t: Thresholds): FunnelCounts
     if (p.userId && p.hasDevice) c.deviceLinked++
   }
   return c
-}
-
-/** Everyone short of power user, by stopping point, then by name. */
-export function stuckList(people: FunnelPerson[], t: Thresholds, teamName: Map<TeamId, string>): StuckPerson[] {
-  return people
-    .flatMap<StuckPerson>((p) => {
-      const stage = stageOf(p, t)
-      if (stage === 'powerUser') return []
-      return [
-        {
-          stoppedAt: stage as FunnelStop,
-          userId: p.userId,
-          name: p.name,
-          email: p.email,
-          teams: p.teamIds.map((id) => teamName.get(id)!).sort(),
-          lastStepDate: stage === 'invited' || stage === 'registered' ? p.since : p.lastSync!,
-        },
-      ]
-    })
-    .sort(
-      (a, b) =>
-        STAGES.indexOf(a.stoppedAt) - STAGES.indexOf(b.stoppedAt) ||
-        (a.name ?? a.email ?? '').localeCompare(b.name ?? b.email ?? ''),
-    )
 }
 
 interface FunnelUserRow {
@@ -409,26 +394,26 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     }
 
     const t = funnelThresholds(start, to)
+    const teamRows = await bigTeams(orgId, teams.filter((team) => !teamId || team._id === teamId))
+    const noTeam = role === 'admin' && !teamId ? bigEnough(people.filter((p) => p.teamIds.length === 0)) : null
     return {
       from: start,
       to,
       ...t,
       total: countFunnel(people, t),
-      teams: teams
-        .filter((team) => !teamId || team._id === teamId)
+      teams: teamRows
         .map((team) => ({
           teamId: team._id,
           teamName: team.name,
           ...countFunnel(people.filter((p) => p.teamIds.includes(team._id)), t),
         })),
-      noTeam: role === 'admin' && !teamId ? countFunnel(people.filter((p) => p.teamIds.length === 0), t) : null,
-      stuck: stuckList(people, t, teamName),
+      noTeam: noTeam && countFunnel(noTeam, t),
     } satisfies FunnelResponse
   })
 
   // R2 A5. Who used MCP, skills, subagents, plan mode and the SDK in range.
   fastify.get('/adoption/features', async (request, reply) => {
-    const { role, userId: viewerId } = request.user
+    const { role } = request.user
     if (role !== 'admin' && role !== 'manager') {
       return reply.status(403).send({ error: 'Adoption requires admin or manager role' })
     }
@@ -451,7 +436,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const teamName = new Map(teams.map((t) => [t._id, t.name]))
     const [users, members] = ids.length
       ? await Promise.all([
-          store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1 } }),
+          store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { _id: 1 } }),
           teams.length
             ? store.teamMembers.find({ orgId, teamId: { $in: [...teamName.keys()] }, userId: { $in: ids } })
             : Promise.resolve([]),
@@ -463,29 +448,21 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
     }
 
-    const people: FeaturePerson[] = users.map((u) => ({
-      userId: u._id,
-      name: u.name,
-      teamIds: teamsOf.get(u._id) ?? [],
-      activeDays: daysOf.get(u._id)!.length,
-      days: featureDays(daysOf.get(u._id)!),
-    }))
-    const usedCount = (p: FeaturePerson) => Object.values(p.days).filter((n) => (n ?? 0) > 0).length
-    people.sort((a, b) => usedCount(b) - usedCount(a) || a.name.localeCompare(b.name))
+    // Active users only, as before: the counts never include a deactivated person.
+    const people = users.map((u) => ({ teamIds: teamsOf.get(u._id) ?? [], days: featureDays(daysOf.get(u._id)!) }))
+    const teamRows = await bigTeams(orgId, teams.filter((team) => !teamId || team._id === teamId))
+    const noTeam = role === 'admin' && !teamId ? bigEnough(people.filter((p) => p.teamIds.length === 0)) : null
 
     return {
       from,
       to,
       total: countFeatures(people),
-      teams: teams
-        .filter((team) => !teamId || team._id === teamId)
-        .map((team) => ({
-          teamId: team._id,
-          teamName: team.name,
-          ...countFeatures(people.filter((p) => p.teamIds.includes(team._id))),
-        })),
-      noTeam: role === 'admin' && !teamId ? countFeatures(people.filter((p) => p.teamIds.length === 0)) : null,
-      people,
+      teams: teamRows.map((team) => ({
+        teamId: team._id,
+        teamName: team.name,
+        ...countFeatures(people.filter((p) => p.teamIds.includes(team._id))),
+      })),
+      noTeam: noTeam && countFeatures(noTeam),
     } satisfies FeatureMatrixResponse
   })
 
@@ -540,13 +517,22 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
 
     // Today's data is not synced yet, as in the streak rule.
     const lastSynced = addDays(today(), -1)
-    const people: OnboardingPerson[] = cohort.map((r) => ({
-      userId: r.userId,
-      name: r.name,
+    const people = cohort.map((r) => ({
       teamIds: teamsOf.get(r.userId) ?? [],
-      firstSync: r.firstSync,
       ...onboardingOf(r.firstSync, datesOf.get(r.userId) ?? [], daysOf.get(r.userId) ?? [], lastSynced),
     }))
+    // v2 rule 2: counts only, and only for a cohort of MIN_GROUP_SIZE or more.
+    const counts = (group: typeof people) => {
+      const big = bigEnough(group)
+      return big && countOnboarding(big)
+    }
+    const total = counts(people)
+    const teamRows = teams
+      .filter((team) => !teamId || team._id === teamId)
+      .flatMap((team) => {
+        const c = counts(people.filter((p) => p.teamIds.includes(team._id)))
+        return c ? [{ teamId: team._id, teamName: team.name, ...c }] : []
+      })
 
     return {
       from,
@@ -554,19 +540,9 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       activeDaysPerWeek: ACTIVE_DAYS_PER_WEEK,
       minFeatures: MIN_FEATURES,
       minForPercent: MIN_FOR_PERCENT,
-      total: countOnboarding(people),
-      teams: teams
-        .filter((team) => !teamId || team._id === teamId)
-        .map((team) => ({
-          teamId: team._id,
-          teamName: team.name,
-          ...countOnboarding(people.filter((p) => p.teamIds.includes(team._id))),
-        })),
-      noTeam: role === 'admin' && !teamId ? countOnboarding(people.filter((p) => p.teamIds.length === 0)) : null,
-      // Decision 6: the people to help, with names, like A3's stuck list. Newest first.
-      people: people
-        .filter((p) => p.state === 'missed' || p.state === 'inProgress')
-        .sort((a, b) => (a.firstSync < b.firstSync ? 1 : a.firstSync > b.firstSync ? -1 : a.name.localeCompare(b.name))),
+      total,
+      teams: teamRows,
+      noTeam: role === 'admin' && !teamId ? counts(people.filter((p) => p.teamIds.length === 0)) : null,
     } satisfies OnboardingResponse
   })
 
@@ -594,13 +570,13 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const ids = [...daysOf.keys()]
     const [active, teams] = await Promise.all([
       ids.length
-        ? store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1 } })
+        ? store.users.find({ orgId, isActive: true, _id: { $in: ids } }, { projection: { name: 1, helpVolunteer: 1 } })
         : Promise.resolve([]),
       comparableTeams(request.user),
     ])
     const userIds = active.map((u) => u._id)
     const base = { from, to, rankBy, population: userIds.length, minPopulation: MIN_QUARTILE_PEOPLE }
-    if (userIds.length === 0) return { ...base, top: null, rest: null, tips: [], champions: [], setup: [] } satisfies PracticesResponse
+    if (userIds.length === 0) return { ...base, top: null, rest: null, tips: [], volunteers: [], setup: [] } satisfies PracticesResponse
 
     const range = { orgId, userIds, from, to }
     const [tokenRows, mcpRows, approvals] = await Promise.all([
@@ -620,6 +596,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       return {
         userId,
         name: u.name,
+        helpVolunteer: !!u.helpVolunteer,
         tokens,
         rank: rankBy === 'days' ? docs.length : tokens,
         activeDays: docs.length,
@@ -640,36 +617,23 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       ids: new Set(members.filter((m) => m.teamId === team._id).map((m) => m.userId)),
     }))
 
-    // R2 A7: champions per visible team, shown even below the A6 minimum.
-    const champions: TeamChampions[] = []
-    const champGroups = [...groups]
+    // v2 Phase 2: only people who set "happy to help" themselves are named, per visible team.
+    const volunteers: TeamVolunteers[] = []
+    const volunteerGroups = [...groups]
     if (role === 'admin' && !teamId) {
       const inTeam = new Set(members.map((m) => m.userId))
-      champGroups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
+      volunteerGroups.push({ teamId: null, teamName: 'No team', ids: new Set(userIds.filter((id) => !inTeam.has(id))) })
     }
-    for (const g of champGroups) {
-      const team = people.filter((p) => g.ids.has(p.userId))
-      const { reason, champions: picked } = suggestChampions(team)
-      champions.push({
-        teamId: g.teamId,
-        teamName: g.teamName,
-        users: team.length,
-        reason,
-        champions: picked.map(({ person, uses, canHelpWith }) => ({
-          userId: person.userId,
-          name: person.name,
-          activeDays: person.activeDays,
-          uses,
-          canHelpWith,
-        })),
-      })
+    for (const g of volunteerGroups) {
+      const listed = teamVolunteers(people.filter((p) => g.ids.has(p.userId)))
+      if (listed.length) volunteers.push({ teamId: g.teamId, teamName: g.teamName, volunteers: listed })
     }
 
     // R2 D5 Decision 1: the reference group is the org top quartile plus the
-    // A7 champions, cut to each card. Counts only, no ids in the response.
+    // volunteers, cut to each card. Counts only, no ids in the response.
     const reference = new Set([
       ...(split?.top.map((p) => p.userId) ?? []),
-      ...champions.flatMap((t) => t.champions.map((c) => c.userId)),
+      ...volunteers.flatMap((t) => t.volunteers.map((v) => v.userId)),
     ])
     const approved = approvals.length ? new Set(approvals.map((a) => a.server)) : null
     const card = (teamId: TeamId | null, teamName: string, ids: Set<string> | null): TeamSetup => {
@@ -683,9 +647,9 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       ...groups.map((g) => card(g.teamId, g.teamName, g.ids)),
     ]
 
-    if (!split) return { ...base, top: null, rest: null, tips: [], champions, setup } satisfies PracticesResponse
+    if (!split) return { ...base, top: null, rest: null, tips: [], volunteers, setup } satisfies PracticesResponse
     const top = practiceGroup(split.top)
     const rest = practiceGroup(split.rest)
-    return { ...base, top, rest, tips: practiceTips(top, rest), champions, setup } satisfies PracticesResponse
+    return { ...base, top, rest, tips: practiceTips(top, rest), volunteers, setup } satisfies PracticesResponse
   })
 }

@@ -195,7 +195,6 @@ const funnel = (over: Partial<FunnelResponse> = {}): FunnelResponse => ({
   total: counts(6, 6, 4, 2, 2, 1),
   teams: [],
   noTeam: counts(6, 6, 4, 2, 2, 1),
-  stuck: [],
   ...over,
 })
 
@@ -236,21 +235,11 @@ describe('AdoptionPage funnel', () => {
     expect(html).not.toContain('>No team<')
   })
 
-  it('groups who is stuck by stopping point in a collapsed list', async () => {
-    state.funnel = funnel({
-      stuck: [
-        { stoppedAt: 'invited', userId: null, name: null, email: 'new@x.io', teams: [], lastStepDate: '2026-11-01' },
-        { stoppedAt: 'firstSync', userId: 'u3', name: 'Cy', email: null, teams: ['Platform'], lastStepDate: '2026-11-19' },
-      ],
-    })
+  it('lists no people, only counts, and says teams show from 5 members', async () => {
+    state.funnel = funnel()
     const html = await render()
-    expect(html).toContain('<details')
-    expect(html).not.toContain('<details open')
-    expect(html).toContain('Who is stuck (2)')
-    expect(html).toContain('Invited, not registered (1)')
-    expect(html).toContain('Synced, not active in range (1)')
-    expect(html).not.toContain('Registered, no first sync')
-    expect(html.indexOf('new@x.io')).toBeLessThan(html.indexOf('Cy'))
+    expect(html).not.toContain('<details')
+    expect(html).toContain('Teams show from 5 members.')
   })
 
   it('says so when the funnel cannot be read', async () => {
@@ -303,36 +292,30 @@ describe('AdoptionPage funnel', () => {
       total: { users: 2, used: { ...none, mcp: 2, skills: 1 }, sdkKnown: 0 },
       teams: [{ teamId: 't1', teamName: 'Platform', users: 1, used: { ...none, mcp: 1 }, sdkKnown: 1 }],
       noTeam: null,
-      people: [
-        { userId: 'u1', name: 'Ada', teamIds: ['t1'], activeDays: 3, days: { mcp: 3, skills: 1, subagents: 0, plan: 0, sdk: 0 } },
-        { userId: 'u2', name: 'Bo', teamIds: [], activeDays: 1, days: { mcp: 1, skills: 0, subagents: 0, plan: 0, sdk: null } },
-      ],
       ...over,
     })
 
-    it('shows n of m per feature, and a dash for SDK when no agent reports it', async () => {
+    it('shows the share of each group per feature, and a dash for SDK when no agent reports it', async () => {
       state.features = matrix()
       const html = await render()
       expect(html).toContain('Features')
-      expect(html).toContain('2 of 2')
-      expect(html).toContain('1 of 2')
+      // Total: MCP 2 of 2, skills 1 of 2. Platform: MCP 1 of 1.
+      expect(html).toMatch(/Total<\/td>(?:(?!<\/tr>).)*100%(?:(?!<\/tr>).)*50%/)
       // Total SDK: nobody known, so a dash. Platform SDK: 0 of 1.
       expect(html).toMatch(/Total<\/td>(?:(?!<\/tr>).)*—/)
-      expect(html).toContain('0 of 1')
+      expect(html).toMatch(/Platform<\/td>(?:(?!<\/tr>).)*0%<\/td><\/tr>/)
+      expect(html).not.toContain(' of 2')
     })
 
-    it('lists people with day counts and team names', async () => {
+    it('has no per-person grid', async () => {
       state.features = matrix()
       const html = await render()
-      expect(html).toContain('Per person (2)')
-      expect(html).toContain('3 days')
-      expect(html).toContain('Platform')
-      expect(html).toContain('Bo')
-      expect(html).toContain('No team')
+      expect(html).not.toContain('Per person')
+      expect(html).not.toContain('<details')
     })
 
     it('says so when no one used Claude Code, and when it cannot be read', async () => {
-      state.features = matrix({ total: { users: 0, used: none, sdkKnown: 0 }, teams: [], people: [] })
+      state.features = matrix({ total: { users: 0, used: none, sdkKnown: 0 }, teams: [] })
       expect(await render()).toContain('No Claude Code use in this range.')
       state.features = null
       expect(await render()).toContain('Could not read feature use.')
@@ -357,7 +340,7 @@ describe('AdoptionPage funnel', () => {
       top: group(),
       rest: group({ users: 3, uses: { mcp: 0, skills: 0, subagents: 0, plan: 0 }, mcpServers: 0, cacheHitRate: null }),
       tips: [{ id: 'mcp', gap: 1 }],
-      champions: [],
+      volunteers: [],
       setup: [],
       ...over,
     })
@@ -399,47 +382,45 @@ describe('AdoptionPage funnel', () => {
       expect(await render()).toContain('Could not read the comparison.')
     })
 
-    it('lists champions per team, and reasons for teams without one', async () => {
+    it('lists volunteers per team with what they can help with, even below the comparison minimum', async () => {
       state.practices = practices({
         top: null,
         rest: null,
         population: 3,
-        champions: [
+        volunteers: [
           {
             teamId: 't1',
             teamName: 'Platform',
-            users: 3,
-            reason: 'ok',
-            champions: [
-              { userId: 'u1', name: 'Ada', activeDays: 18, uses: ['mcp', 'skills'], canHelpWith: ['skills'] },
-              { userId: 'u2', name: 'Bo', activeDays: 9, uses: [], canHelpWith: [] },
+            volunteers: [
+              { userId: 'u1', name: 'Ada', canHelpWith: ['mcp', 'skills'] },
+              { userId: 'u2', name: 'Bo', canHelpWith: [] },
             ],
           },
-          { teamId: null, teamName: 'No team', users: 2, reason: 'tooFew', champions: [] },
+          { teamId: null, teamName: 'No team', volunteers: [{ userId: 'u3', name: 'Cy', canHelpWith: ['plan'] }] },
         ],
       })
       const html = await render()
-      // Shown even below the A6 minimum.
       expect(html).toContain('Needs 4 or more')
-      expect(html).toContain('Suggested champions')
-      expect(html).toContain('The top 2 per team by active days.')
+      expect(html).toContain('Happy to help')
+      expect(html).toContain('People who said they are happy to help with Claude Code. Anyone can add themselves on <a')
+      expect(html).toContain('href="/me">My usage</a>')
       expect(html).toContain('Ada')
       expect(html).toContain('MCP, Skills')
       expect(html).toContain('Bo')
-      expect(html).not.toContain('Hidden')
-      expect(html).toContain('Too few users to suggest (2 users)')
+      expect(html).toContain('Plan mode')
+      expect(html).not.toContain('Active days</th>')
     })
 
-    it('shows no champions block when there are no teams to show', async () => {
+    it('says so when nobody has added themselves', async () => {
       state.practices = practices()
-      expect(await render()).not.toContain('Suggested champions')
+      expect(await render()).toContain('Nobody has added themselves yet.')
     })
   })
 
   describe('Recommended setup', () => {
     const base: PracticesResponse = {
       from: '2026-11-01', to: '2026-11-07', rankBy: 'days', population: 2, minPopulation: 4,
-      top: null, rest: null, tips: [], champions: [], setup: [],
+      top: null, rest: null, tips: [], volunteers: [], setup: [],
     }
     const card = {
       teamId: null,
@@ -485,7 +466,6 @@ describe('AdoptionPage funnel', () => {
       total: c(4, 3, 1),
       teams: [],
       noTeam: c(4, 3, 1),
-      people: [],
       ...over,
     })
 
@@ -502,20 +482,19 @@ describe('AdoptionPage funnel', () => {
       expect(await render()).toContain('4 of 5 (80%)')
     })
 
-    it('lists people in progress and missed with what they lack', async () => {
-      const person = { userId: 'u1', name: 'Cy', teamIds: [], firstSync: '2026-11-20', activeWeek1: 1, activeWeek2: 0, features: ['skills' as const] }
-      state.onboarding = onboarding({
-        people: [
-          { ...person, state: 'inProgress', dayOfWindow: 3 },
-          { ...person, userId: 'u2', name: 'Bo', state: 'missed', dayOfWindow: 14, activeWeek1: 2 },
-        ],
-      })
+    it('shows counts only, with neutral labels', async () => {
+      state.onboarding = onboarding()
       const html = await render()
-      expect(html).toContain('In progress (1)')
-      expect(html).toContain('day 3 of 14')
-      expect(html).toContain('week 1: 1 of 2 days · week 2: 0 of 2 days · features: 1 of 2')
-      expect(html).toContain('Missed (1)')
-      expect(html).toContain('first sync 2026-11-20')
+      expect(html).toContain('Window ended')
+      expect(html).not.toContain('<details')
+      expect(html).not.toMatch(/missed|scored/i)
+    })
+
+    it('says no counts are shown when fewer than 5 people started', async () => {
+      state.onboarding = onboarding({ total: null, noTeam: null })
+      const html = await render()
+      expect(html).toContain('Fewer than 5 people started in this range, so no counts are shown.')
+      expect(html).not.toContain('>Total<')
     })
 
     it('says when nobody started in range', async () => {

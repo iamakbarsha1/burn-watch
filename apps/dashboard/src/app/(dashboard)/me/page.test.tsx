@@ -15,6 +15,8 @@ vi.mock('@/lib/api', () => ({
   },
 }))
 
+vi.mock('./actions', () => ({ helpVolunteerAction: vi.fn() }))
+
 const { default: MyUsagePage } = await import('./page')
 
 const render = async (params: Record<string, string> = {}) =>
@@ -34,6 +36,8 @@ const usage = (over: Partial<MyUsageResponse> = {}): MyUsageResponse => ({
     { agent: 'codex', tokens: 100_000, costUsd: 1.5 },
   ],
   features: { agents: ['claude', 'codex'], mcpServers: ['github', 'neon'] },
+  onboarding: null,
+  helpVolunteer: false,
   ...over,
 })
 
@@ -83,5 +87,58 @@ describe('MyUsagePage', () => {
     expect(await render(NOV)).toContain('No usage in this range.')
     state.usage = null
     expect(await render(NOV)).toContain('Could not read your usage.')
+  })
+
+  describe('Your first 14 days', () => {
+    const onboarding = (over: Partial<NonNullable<MyUsageResponse['onboarding']>> = {}) => ({
+      firstSync: '2026-11-20',
+      state: 'inProgress' as const,
+      activeWeek1: 3,
+      activeWeek2: 1,
+      features: ['mcp' as const],
+      dayOfWindow: 9,
+      ...over,
+    })
+
+    it('is hidden before the first sync', async () => {
+      expect(await render(NOV)).not.toContain('Your first 14 days')
+    })
+
+    it('shows the state, the day, and each rule as done or n of m', async () => {
+      state.usage = usage({ onboarding: onboarding() })
+      const html = await render(NOV)
+      expect(html).toContain('Your first 14 days')
+      expect(html).toContain('From your first sync on 2026-11-20. Only you can see this.')
+      expect(html).toContain('In progress')
+      expect(html).toContain('Day 9 of 14')
+      expect(html).toMatch(/Tokens on 2 or more days in week 1<\/span><span[^>]*>Done</)
+      expect(html).toContain('1 of 2 days')
+      expect(html).toContain('1 of 2 features')
+      expect(html).toContain('Features used: MCP.')
+    })
+
+    it('uses neutral words for each state', async () => {
+      state.usage = usage({ onboarding: onboarding({ state: 'onboarded', activeWeek2: 2, features: ['mcp', 'plan'], dayOfWindow: 14 }) })
+      expect(await render(NOV)).toContain('>Done<')
+      state.usage = usage({ onboarding: onboarding({ state: 'missed', dayOfWindow: 14 }) })
+      const ended = await render(NOV)
+      expect(ended).toContain('Window ended')
+      expect(ended).not.toContain('Day 14 of 14')
+      expect(ended).not.toMatch(/missed|fail/i)
+    })
+  })
+
+  describe('Happy to help', () => {
+    it('shows the checkbox unchecked by default, with what it does', async () => {
+      const html = await render(NOV)
+      expect(html).toContain('Happy to help with Claude Code')
+      expect(html).toContain('Your name shows on the Adoption page under your teams. Turn it off any time.')
+      expect(html).toMatch(/<input type="checkbox" name="helpVolunteer"\/>/)
+    })
+
+    it('is checked when the person opted in', async () => {
+      state.usage = usage({ helpVolunteer: true })
+      expect(await render(NOV)).toMatch(/<input type="checkbox" name="helpVolunteer" checked=""\/>/)
+    })
   })
 })

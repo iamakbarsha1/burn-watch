@@ -45,6 +45,8 @@ export interface UserDoc {
   role: 'admin' | 'manager' | 'developer'
   isActive: boolean
   createdAt: Date
+  /** v2 Phase 2. Set only by the person: listed on Adoption as happy to help. Absent = false. */
+  helpVolunteer?: boolean
 }
 
 export interface DeviceDoc {

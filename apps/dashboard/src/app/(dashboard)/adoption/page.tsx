@@ -10,11 +10,8 @@ import {
   type FeatureMatrixResponse,
   type FunnelCounts,
   type FunnelResponse,
-  type FunnelStop,
   type OnboardingCounts,
-  type OnboardingPerson,
   type OnboardingResponse,
-  type ChampionReason,
   type PracticeFeature,
   type PracticeGroup,
   type PracticeRank,
@@ -23,6 +20,7 @@ import {
   type UsageBand,
   type UsageDistributionResponse,
   USAGE_BANDS,
+  MIN_GROUP_SIZE,
 } from '@burn-watch/shared'
 import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchOnboarding, fetchPractices, fetchTeams, fetchUsageDistribution } from '@/lib/api'
 import { GroupTooSmallError, nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
@@ -236,13 +234,6 @@ const STAGES: { key: keyof FunnelCounts; label: string }[] = [
   { key: 'powerUser', label: 'Power user' },
 ]
 
-const STOPS: { key: FunnelStop; label: string }[] = [
-  { key: 'invited', label: 'Invited, not registered' },
-  { key: 'registered', label: 'Registered, no first sync' },
-  { key: 'firstSync', label: 'Synced, not active in range' },
-  { key: 'active', label: 'Active, not power user' },
-]
-
 /** Share of the previous stage, or a dash when nobody reached it. */
 const pctOf = (n: number, prev: number) => (prev === 0 ? '—' : `${Math.round((n / prev) * 100)}%`)
 
@@ -315,39 +306,10 @@ function FunnelSection({ data }: { data: FunnelResponse | null }) {
       </TableFrame>
 
       {data && (
-        <>
-          <p className="mt-3 text-xs text-ink-2">
-            Active: tokens on {plural(data.activeDays, 'day')} or more. Power user: tokens on {data.powerDays} or more of{' '}
-            {plural(data.rangeDays, 'day')} since {data.from}.
-          </p>
-          {data.stuck.length > 0 && (
-            <details className="mt-4">
-              <summary className="cursor-pointer text-sm font-medium text-ink">
-                Who is stuck ({data.stuck.length})
-              </summary>
-              {STOPS.map((stop) => {
-                const people = data.stuck.filter((p) => p.stoppedAt === stop.key)
-                if (people.length === 0) return null
-                return (
-                  <div key={stop.key} className="mt-3">
-                    <h3 className="text-xs font-medium tracking-wide text-ink-2 uppercase">
-                      {stop.label} ({people.length})
-                    </h3>
-                    <ul className="mt-1 space-y-1 text-sm">
-                      {people.map((p) => (
-                        <li key={p.userId ?? p.email} className="flex flex-wrap gap-x-3">
-                          <span className="text-ink">{p.name ?? p.email}</span>
-                          <span className="text-ink-2">{p.teams.length ? p.teams.join(', ') : 'No team'}</span>
-                          <span className="tabular-nums text-ink-3">{p.lastStepDate}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )
-              })}
-            </details>
-          )}
-        </>
+        <p className="mt-3 text-xs text-ink-2">
+          Active: tokens on {plural(data.activeDays, 'day')} or more. Power user: tokens on {data.powerDays} or more of{' '}
+          {plural(data.rangeDays, 'day')} since {data.from}. Teams show from {MIN_GROUP_SIZE} members.
+        </p>
       )}
     </Section>
   )
@@ -358,15 +320,6 @@ function onboardedOf(c: OnboardingCounts, min: number) {
   const done = c.onboarded + c.missed
   if (done === 0) return '—'
   return `${c.onboarded} of ${done}${done >= min ? ` (${Math.round((c.onboarded / done) * 100)}%)` : ''}`
-}
-
-/** What a person still lacks, in plain words. */
-function missing(p: OnboardingPerson, d: OnboardingResponse) {
-  const gaps: string[] = []
-  if (p.activeWeek1 < d.activeDaysPerWeek) gaps.push(`week 1: ${p.activeWeek1} of ${d.activeDaysPerWeek} days`)
-  if (p.activeWeek2 < d.activeDaysPerWeek) gaps.push(`week 2: ${p.activeWeek2} of ${d.activeDaysPerWeek} days`)
-  if (p.features.length < d.minFeatures) gaps.push(`features: ${p.features.length} of ${d.minFeatures}`)
-  return gaps.join(' · ')
 }
 
 function OnboardingRow({ name, c, min }: { name: string; c: OnboardingCounts; min: number }) {
@@ -383,18 +336,10 @@ function OnboardingRow({ name, c, min }: { name: string; c: OnboardingCounts; mi
 }
 
 function OnboardingSection({ data }: { data: OnboardingResponse | null }) {
-  const teamName = new Map(data?.teams.map((t) => [t.teamId, t.teamName]))
-  const teamsOf = (p: OnboardingPerson) => (p.teamIds.length ? p.teamIds.map((id) => teamName.get(id) ?? id).join(', ') : 'No team')
-  const lists = data
-    ? [
-        { key: 'inProgress', label: 'In progress', when: (p: OnboardingPerson) => `day ${p.dayOfWindow} of 14` },
-        { key: 'missed', label: 'Missed', when: (p: OnboardingPerson) => `first sync ${p.firstSync}` },
-      ].map((l) => ({ ...l, people: data.people.filter((p) => p.state === l.key) }))
-    : []
   return (
     <Section
       title="Onboarding"
-      description="People whose first sync is in this range. Onboarded: tokens on 2 or more days in each of their first two weeks, and 2 or more Claude Code features in their first 14 days. No feature data: no Claude Code use in those 14 days, so they are not scored."
+      description="People whose first sync is in this range. Counts only, no names. Onboarded: tokens on 2 or more days in each of their first two weeks, and 2 or more Claude Code features in their first 14 days. Window ended: their 14 days are over without both. No feature data: no Claude Code use in those 14 days, so features are unknown."
     >
       <TableFrame>
         <table className="w-full">
@@ -403,7 +348,7 @@ function OnboardingSection({ data }: { data: OnboardingResponse | null }) {
               <Th>Team</Th>
               <Th numeric>New</Th>
               <Th numeric>Onboarded</Th>
-              <Th numeric>Missed</Th>
+              <Th numeric>Window ended</Th>
               <Th numeric>In progress</Th>
               <Th numeric>No feature data</Th>
             </tr>
@@ -411,6 +356,8 @@ function OnboardingSection({ data }: { data: OnboardingResponse | null }) {
           <tbody>
             {data === null ? (
               <EmptyRow colSpan={6}>Could not read onboarding. Try again in a moment.</EmptyRow>
+            ) : data.total === null ? (
+              <EmptyRow colSpan={6}>{`Fewer than ${MIN_GROUP_SIZE} people started in this range, so no counts are shown.`}</EmptyRow>
             ) : data.total.cohort === 0 ? (
               <EmptyRow colSpan={6}>Nobody had a first sync in this range.</EmptyRow>
             ) : (
@@ -427,28 +374,9 @@ function OnboardingSection({ data }: { data: OnboardingResponse | null }) {
       </TableFrame>
       {data && (
         <p className="mt-3 text-xs text-ink-2">
-          Onboarded counts people whose 14 days are over. A percentage shows from {data.minForPercent} of them.
+          Onboarded counts people whose 14 days are over. A percentage shows from {data.minForPercent} of them. Teams
+          show from {MIN_GROUP_SIZE} new people.
         </p>
-      )}
-      {lists.map(
-        (l) =>
-          l.people.length > 0 && (
-            <details key={l.key} className="mt-4">
-              <summary className="cursor-pointer text-sm font-medium text-ink">
-                {l.label} ({l.people.length})
-              </summary>
-              <ul className="mt-2 space-y-1 text-sm">
-                {l.people.map((p) => (
-                  <li key={p.userId} className="flex flex-wrap gap-x-3">
-                    <span className="text-ink">{p.name}</span>
-                    <span className="text-ink-2">{teamsOf(p)}</span>
-                    <span className="tabular-nums text-ink-3">{l.when(p)}</span>
-                    <span className="text-ink-2">{missing(p, data!)}</span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          ),
       )}
     </Section>
   )
@@ -462,10 +390,10 @@ const FEATURES: Record<FeatureKey, string> = {
   sdk: 'SDK',
 }
 
-/** "n of m" for a feature; SDK counts only people whose agent reports it. */
-function usedOf(c: FeatureCounts, key: FeatureKey) {
+/** Share of the group that used a feature; SDK counts only people whose agent reports it. */
+function shareOf(c: FeatureCounts, key: FeatureKey) {
   const of = key === 'sdk' ? c.sdkKnown : c.users
-  return of === 0 ? '—' : `${c.used[key]} of ${of}`
+  return of === 0 ? '—' : `${Math.round((c.used[key] / of) * 100)}%`
 }
 
 function FeatureRow({ name, c }: { name: string; c: FeatureCounts }) {
@@ -475,7 +403,7 @@ function FeatureRow({ name, c }: { name: string; c: FeatureCounts }) {
       <Td numeric>{c.users}</Td>
       {FEATURE_KEYS.map((k) => (
         <Td key={k} numeric>
-          {usedOf(c, k)}
+          {shareOf(c, k)}
         </Td>
       ))}
     </Tr>
@@ -483,11 +411,10 @@ function FeatureRow({ name, c }: { name: string; c: FeatureCounts }) {
 }
 
 function FeaturesSection({ data }: { data: FeatureMatrixResponse | null }) {
-  const teamName = new Map(data?.teams.map((t) => [t.teamId, t.teamName]))
   return (
     <Section
       title="Features"
-      description="Claude Code users who used each feature on at least one day in this range. Claude Code only. SDK needs agent 0.4 or later, so it counts only people whose agent reports it."
+      description={`Share of Claude Code users in each group who used a feature on at least one day in this range. Counts only, no names. SDK needs agent 0.4 or later, so its share counts only people whose agent reports it. Teams show from ${MIN_GROUP_SIZE} members.`}
     >
       <TableFrame>
         <table className="w-full">
@@ -519,46 +446,6 @@ function FeaturesSection({ data }: { data: FeatureMatrixResponse | null }) {
           </tbody>
         </table>
       </TableFrame>
-
-      {data && data.people.length > 0 && (
-        <details className="mt-4">
-          <summary className="cursor-pointer text-sm font-medium text-ink">
-            Per person ({data.people.length})
-          </summary>
-          <TableFrame>
-            <table className="w-full">
-              <thead>
-                <tr>
-                  <Th>Name</Th>
-                  <Th>Team</Th>
-                  <Th numeric>Active days</Th>
-                  {FEATURE_KEYS.map((k) => (
-                    <Th key={k} numeric>
-                      {FEATURES[k]}
-                    </Th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.people.map((p) => (
-                  <Tr key={p.userId}>
-                    <Td className="text-ink">{p.name}</Td>
-                    <Td className="text-ink-2">
-                      {p.teamIds.length ? p.teamIds.map((id) => teamName.get(id) ?? id).join(', ') : 'No team'}
-                    </Td>
-                    <Td numeric>{p.activeDays}</Td>
-                    {FEATURE_KEYS.map((k) => (
-                      <Td key={k} numeric>
-                        {p.days[k] ? plural(p.days[k], 'day') : '—'}
-                      </Td>
-                    ))}
-                  </Tr>
-                ))}
-              </tbody>
-            </table>
-          </TableFrame>
-        </details>
-      )}
     </Section>
   )
 }
@@ -649,79 +536,65 @@ function PracticesSection({ data, rankBy, params }: { data: PracticesResponse | 
           )}
         </>
       )}
-      {data && <Champions data={data} />}
+      {data && <Volunteers data={data} />}
       {data && <Setup data={data} />}
     </Section>
   )
 }
 
-const REASONS: Record<Exclude<ChampionReason, 'ok'>, string> = {
-  tooFew: 'Too few users to suggest',
-  noneEligible: 'No one to suggest',
-}
-
 const featureList = (keys: PracticeFeature[]) => (keys.length ? keys.map((k) => FEATURES[k]).join(', ') : '—')
 
-/** R2 A7. A hint only: nothing is stored and nobody is told. */
-function Champions({ data }: { data: PracticesResponse }) {
-  if (data.champions.length === 0) return null
+/** v2 Phase 2. Only people who opted in on My usage are listed. */
+function Volunteers({ data }: { data: PracticesResponse }) {
   return (
     <div className="mt-6">
-      <h3 className="text-sm font-medium text-ink">Suggested champions</h3>
+      <h3 className="text-sm font-medium text-ink">Happy to help</h3>
       <p className="mt-1 mb-3 text-xs text-ink-2">
-        The top 2 per team by {RANK_LABELS[data.rankBy].toLowerCase()}. Teams need 3 or more Claude Code users. A
-        suggestion only; nobody is told.
+        People who said they are happy to help with Claude Code. Anyone can add themselves on{' '}
+        <Link href="/me" className="text-brand underline-offset-4 hover:underline">
+          My usage
+        </Link>
+        .
       </p>
-      <TableFrame>
-        <table className="w-full">
-          <thead>
-            <tr>
-              <Th>Team</Th>
-              <Th>Champion</Th>
-              <Th numeric>Active days</Th>
-              <Th>Uses</Th>
-              <Th>Can help with</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.champions.flatMap((team) =>
-              team.reason !== 'ok'
-                ? [
-                    <Tr key={team.teamId ?? 'none'}>
-                      <Td className="font-medium text-ink">{team.teamName}</Td>
-                      <Td className="text-ink-3">
-                        {REASONS[team.reason]} ({plural(team.users, 'user')})
-                      </Td>
-                      <Td numeric>{''}</Td>
-                      <Td>{''}</Td>
-                      <Td>{''}</Td>
-                    </Tr>,
-                  ]
-                : team.champions.map((c, i) => (
-                    <Tr key={`${team.teamId ?? 'none'}:${c.userId}`}>
-                      <Td className="font-medium text-ink">{i === 0 ? team.teamName : ''}</Td>
-                      <Td className="text-ink">{c.name}</Td>
-                      <Td numeric>{c.activeDays}</Td>
-                      <Td className="text-ink-2">{featureList(c.uses)}</Td>
-                      <Td className="text-ink-2">{featureList(c.canHelpWith)}</Td>
-                    </Tr>
-                  )),
-            )}
-          </tbody>
-        </table>
-      </TableFrame>
+      {data.volunteers.length === 0 ? (
+        <p className="text-sm text-ink-2">Nobody has added themselves yet.</p>
+      ) : (
+        <TableFrame>
+          <table className="w-full">
+            <thead>
+              <tr>
+                <Th>Team</Th>
+                <Th>Name</Th>
+                <Th>Can help with</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.volunteers.flatMap((team) =>
+                team.volunteers.map((v, i) => (
+                  <Tr key={`${team.teamId ?? 'none'}:${v.userId}`}>
+                    <Td className="font-medium text-ink">{i === 0 ? team.teamName : ''}</Td>
+                    <Td className="text-ink">{v.name}</Td>
+                    <Td className="text-ink-2">{featureList(v.canHelpWith)}</Td>
+                  </Tr>
+                )),
+              )}
+            </tbody>
+          </table>
+        </TableFrame>
+      )}
+      <p className="mt-2 text-xs text-ink-2">Can help with: features they used that fewer than half of their team used.</p>
     </div>
   )
 }
 
-/** R2 D5. Shared MCP servers of each card's top users plus champions. Counts only. */
+/** R2 D5. Shared MCP servers of each card's top users plus volunteers. Counts only. */
 function Setup({ data }: { data: PracticesResponse }) {
   if (data.setup.length === 0) return null
   return (
     <div className="mt-6">
       <h3 className="text-sm font-medium text-ink">Recommended setup</h3>
       <p className="mt-1 mb-3 text-xs text-ink-2">
-        MCP servers used by at least half of the top users and champions, and by 2 or more of them. Add them to the
+        MCP servers used by at least half of the top users and volunteers, and by 2 or more of them. Add them to the
         repo once instead of each person finding them alone. Skill names need agent 0.6 or later.
       </p>
       <div className="grid gap-3 sm:grid-cols-2">

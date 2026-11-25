@@ -1,7 +1,7 @@
 # BurnWatch v2: no micromanagement
 
 Branch: `main-v2` (cut from `main` at `bbf5a9a`, 2026-11-24).
-Status: Phase 0 merged into `main-v2` (PR #42). Phase 1 built on `v2/p1-no-ranking` (2026-11-24). Phases 2 to 5 not started.
+Status: Phases 0 and 1 merged into `main-v2` (PRs #42, #43). Phase 2 built on `v2/p2-adoption-no-names` (2026-11-24). Phases 3 to 5 not started.
 
 ## Why
 
@@ -75,15 +75,21 @@ Known gaps after Phase 0:
 Moved to later phases: onboarding checklist on "My usage" (Phase 2), setup checks and seat status on "My usage" (Phase 3).
 
 Known gaps after Phase 1:
-- Champions (A7) no longer skip people who had hidden their name, because the hide flag is gone. Phase 2 replaces auto-picked champions with opt-in volunteers. Do not release between Phase 1 and Phase 2.
+- Champions (A7) no longer skip people who had hidden their name, because the hide flag is gone. Fixed in Phase 2.
 - The no-individuals check finds names, ids and emails. It does not find another person's numbers without a name. Route tests cover `/me/usage` for that.
 
-### Phase 2: adoption without names
+### Phase 2: adoption without names (built 2026-11-24)
 
-- [ ] Funnel: drop `StuckPerson[]`, keep counts.
-- [ ] Features: drop `FeaturePerson[]`, return per-feature team share.
-- [ ] Onboarding: manager view returns cohort counts only; per-person progress moves to `/me/usage`.
-- [ ] Champions: replace auto-pick with an opt-in flag on the user (`helpVolunteer: boolean`), set by the person only. Practices page lists volunteers.
+- [x] Funnel: `stuck` list and `StuckPerson` removed. Stage counts stay.
+- [x] Features: per-person grid (`FeaturePerson[]`) removed. Counts per group; the page shows each feature as a share of the group.
+- [x] Onboarding: per-person list removed. `total` is null when fewer than 5 people first synced in range. The person's own first 14 days are on My usage (`onboarding` in `/me/usage`).
+- [x] Funnel, features and onboarding: team rows only for teams of 5+ members (onboarding: cohorts of 5+). "No team" null under 5.
+- [x] Champions: auto-pick removed. `helpVolunteer` on the user, set only by the person through `PUT /v1/dashboard/me/help-volunteer` (not audited). Practices lists volunteers per team. The D5 reference group is the top quartile plus volunteers.
+- [x] `KNOWN_LEAKS`: the eight P2 entries removed. 9 left, all Phase 3.
+
+Known gaps after Phase 2:
+- D5 setup cards still give per-team counts for teams under 5 (counts of people using an MCP server, no names). Fold into Phase 3.
+- The no-individuals seed has no volunteer, so a volunteer name on Practices is not exercised there. Route tests cover it.
 
 ### Phase 3: governance and alerts
 

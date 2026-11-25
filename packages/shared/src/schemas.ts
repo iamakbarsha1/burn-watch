@@ -214,6 +214,9 @@ export const TicketPrefixesSchema = z.object({
   prefixes: z.array(z.string().regex(/^[A-Z][A-Z0-9]{1,9}$/)).max(50),
 })
 
+// v2 Phase 2. Only the person sets their own flag.
+export const HelpVolunteerSchema = z.object({ helpVolunteer: z.boolean() })
+
 // R1 B8. The audit log's `action` filter is a prefix from this closed list.
 export const AUDIT_ACTION_PREFIXES = [
   'device.', 'user.', 'invite.', 'team.', 'seat.', 'alert.', 'policy.', 'mcp.', 'org.', 'copilot.', 'view.',

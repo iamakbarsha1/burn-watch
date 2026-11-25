@@ -1,7 +1,7 @@
 import {
   MIN_GROUP_SIZE,
   PRACTICE_FEATURES,
-  type ChampionReason,
+  type HelpVolunteer,
   type FeatureKey,
   type PracticeFeature,
   type PracticeGroup,
@@ -87,29 +87,20 @@ export function practiceTips(top: PracticeGroup, rest: PracticeGroup): PracticeT
     .slice(0, 3)
 }
 
-/** R2 A7 Decision 2: a team of 2 has no champion, just "the other person". */
-export const MIN_CHAMPION_TEAM = 3
-
-export interface ChampionCandidate extends Ranked {
-  days: Record<FeatureKey, number | null>
-}
-
 /**
- * R2 A7 Decision 1: the top 2 of a team by the picked ranking, no feature
- * floor. v2 Phase 2 replaces this with opt-in volunteers.
+ * v2 Phase 2: the people in a team who set "happy to help" themselves, by
+ * name, with the features they used that fewer than half of the team used.
+ * Nobody is picked by usage.
  */
-export function suggestChampions<T extends ChampionCandidate>(
+export function teamVolunteers<T extends { userId: string; name: string; helpVolunteer: boolean; days: Record<FeatureKey, number | null> }>(
   members: T[],
-): { reason: ChampionReason; champions: { person: T; uses: PracticeFeature[]; canHelpWith: PracticeFeature[] }[] } {
-  if (members.length < MIN_CHAMPION_TEAM) return { reason: 'tooFew', champions: [] }
+): HelpVolunteer[] {
   const used = (p: T) => PRACTICE_FEATURES.filter((k) => (p.days[k] ?? 0) > 0)
-  // Features fewer than half the team uses.
   const rare = PRACTICE_FEATURES.filter((k) => members.filter((p) => (p.days[k] ?? 0) > 0).length * 2 < members.length)
-  const champions = members
-    .sort(byRank)
-    .slice(0, 2)
-    .map((person) => ({ person, uses: used(person), canHelpWith: used(person).filter((k) => rare.includes(k)) }))
-  return { reason: champions.length ? 'ok' : 'noneEligible', champions }
+  return members
+    .filter((p) => p.helpVolunteer)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((p) => ({ userId: p.userId, name: p.name, canHelpWith: used(p).filter((k) => rare.includes(k)) }))
 }
 
 /** R2 D5 Decision 5: an item needs 2 people, so a one-person tool never shows. */
