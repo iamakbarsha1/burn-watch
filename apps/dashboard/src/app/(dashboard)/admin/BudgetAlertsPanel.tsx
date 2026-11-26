@@ -28,16 +28,11 @@ type AlertType = BudgetAlert['type']
 
 const TYPE_LABELS: Record<AlertType, string> = {
   'api-spend': 'API spend',
-  'idle-seat': 'Idle seat',
+  'idle-seat': 'Unused seat',
   'limit-hit': 'Limit hits',
 }
 
-interface Person {
-  id: string
-  name: string
-}
-
-export function CreateBudgetAlertForm({ users }: { users: Person[] }) {
+export function CreateBudgetAlertForm() {
   const [state, dispatch, pending] = useActionState<BudgetAlertActionState | null, FormData>(
     createBudgetAlertAction,
     null,
@@ -61,19 +56,6 @@ export function CreateBudgetAlertForm({ users }: { users: Person[] }) {
             {Object.entries(TYPE_LABELS).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="w-40">
-          <label className="mb-1 block text-xs text-ink-2" htmlFor="alert-user">
-            Scope
-          </label>
-          <select id="alert-user" name="userId" defaultValue="" className={`${inputClass} w-full`}>
-            <option value="">Whole org</option>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
               </option>
             ))}
           </select>
@@ -127,7 +109,7 @@ export function CreateBudgetAlertForm({ users }: { users: Person[] }) {
         {type === 'idle-seat' && (
           <div className="w-28">
             <label className="mb-1 block text-xs text-ink-2" htmlFor="alert-idle-days">
-              Idle days
+              Unused days
             </label>
             <input
               id="alert-idle-days"
@@ -171,7 +153,7 @@ export function CreateBudgetAlertForm({ users }: { users: Person[] }) {
   )
 }
 
-function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] }) {
+function BudgetAlertRow({ alert }: { alert: BudgetAlert }) {
   const [updateState, updateDispatch, updatePending] = useActionState<
     BudgetAlertActionState | null,
     FormData
@@ -185,20 +167,14 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
     FormData
   >(deleteBudgetAlertAction, null)
 
-  const scopeLabel = alert.userId
-    ? (users.find((u) => u.id === alert.userId)?.name ?? 'Unknown user')
-    : 'Whole org'
-
   return (
     <Tr>
       <Td className="text-ink-2">{TYPE_LABELS[alert.type]}</Td>
-      <Td>{scopeLabel}</Td>
       <Td className="text-ink-2">{alert.agent ?? 'All agents'}</Td>
       <Td>
         <form action={updateDispatch} className="flex flex-wrap items-center gap-1.5">
           <input type="hidden" name="id" value={alert.id} />
           <input type="hidden" name="type" value={alert.type} />
-          <input type="hidden" name="userId" value={alert.userId ?? ''} />
           <input type="hidden" name="agent" value={alert.agent ?? ''} />
           {alert.type === 'api-spend' && (
             <>
@@ -231,10 +207,10 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
                 min="1"
                 max="365"
                 defaultValue={alert.idleDays ?? 14}
-                aria-label="Idle days"
+                aria-label="Unused days"
                 className={`${inputClass} w-16`}
               />
-              <span className="text-xs text-ink-3">idle days</span>
+              <span className="text-xs text-ink-3">unused days</span>
             </>
           )}
           {alert.type === 'limit-hit' && (
@@ -257,28 +233,20 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
         {updateState && !updateState.ok && <p className="mt-1 text-xs text-bad">{updateState.message}</p>}
       </Td>
       <Td numeric className="text-ink">
-        {/* The API does not return this month's limit-hit count yet. */}
         {alert.type === 'api-spend'
           ? formatCost(alert.monthToDateSpendUsd)
           : alert.type === 'idle-seat'
-            ? `${alert.idleSeats?.length ?? 0} idle`
-            : '—'}
+            ? `${alert.idleSeatCount ?? 0} unused`
+            : `${alert.people ?? 0} ${alert.people === 1 ? 'person' : 'people'}`}
       </Td>
       <Td>
         {alert.tripped ? <Badge tone="bad">Tripped</Badge> : <Badge tone="good">OK</Badge>}
-        {alert.tripped && alert.idleSeats && alert.idleSeats.length > 0 && (
-          <ul className="mt-1 text-xs text-ink-2">
-            {alert.idleSeats.map((s) => (
-              <li key={`${s.userId}:${s.agent}`}>
-                {s.userName ?? 'Removed user'} · {s.agent}
-              </li>
-            ))}
-            <li>
-              <Link href={`/adoption?idleDays=${alert.idleDays ?? 14}`} className="text-brand underline-offset-4 hover:underline">
-                See idle seats
-              </Link>
-            </li>
-          </ul>
+        {alert.tripped && alert.type === 'idle-seat' && (
+          <p className="mt-1 text-xs">
+            <Link href={`/adoption?idleDays=${alert.idleDays ?? 14}`} className="text-brand underline-offset-4 hover:underline">
+              See unused seats
+            </Link>
+          </p>
         )}
       </Td>
       <Td>
@@ -301,14 +269,13 @@ function BudgetAlertRow({ alert, users }: { alert: BudgetAlert; users: Person[] 
   )
 }
 
-export function BudgetAlertsTable({ alerts, users }: { alerts: BudgetAlert[]; users: Person[] }) {
+export function BudgetAlertsTable({ alerts }: { alerts: BudgetAlert[] }) {
   return (
     <TableFrame>
       <table className="w-full min-w-[820px] border-collapse">
         <thead className="bg-surface-2">
           <tr>
             <Th>Type</Th>
-            <Th>Scope</Th>
             <Th>Agent</Th>
             <Th>Settings</Th>
             <Th numeric>This month</Th>
@@ -317,9 +284,9 @@ export function BudgetAlertsTable({ alerts, users }: { alerts: BudgetAlert[]; us
           </tr>
         </thead>
         <tbody>
-          {alerts.length === 0 && <EmptyRow colSpan={7}>No budget alerts configured</EmptyRow>}
+          {alerts.length === 0 && <EmptyRow colSpan={6}>No budget alerts configured</EmptyRow>}
           {alerts.map((a) => (
-            <BudgetAlertRow key={a.id} alert={a} users={users} />
+            <BudgetAlertRow key={a.id} alert={a} />
           ))}
         </tbody>
       </table>

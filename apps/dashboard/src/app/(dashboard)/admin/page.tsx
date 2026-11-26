@@ -241,11 +241,11 @@ export default async function AdminPage() {
 
         <Section
           title="Budget alerts"
-          description="API spend: usage on agents a person has no seat for, against a monthly limit. Idle seat: a paid seat with no usage for a number of days. Limit hits: Claude usage limits hit this month. Tripping one shows the banner above; it clears itself once the month turns over or the condition no longer holds."
+          description="API spend: usage on agents a person has no seat for, against a monthly limit. Unused seat: a paid seat with no usage for a number of days. Limit hits: Claude usage limits hit this month. Alerts cover the whole org or one agent and show counts; names stay on the Unused seats card. Tripping one shows the banner above; it clears itself once the month turns over or the condition no longer holds."
         >
           <div className="space-y-4">
-            <CreateBudgetAlertForm users={users} />
-            <BudgetAlertsTable alerts={budgetAlerts} users={users} />
+            <CreateBudgetAlertForm />
+            <BudgetAlertsTable alerts={budgetAlerts} />
           </div>
         </Section>
 

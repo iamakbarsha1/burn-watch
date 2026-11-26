@@ -38,6 +38,10 @@ const usage = (over: Partial<MyUsageResponse> = {}): MyUsageResponse => ({
   features: { agents: ['claude', 'codex'], mcpServers: ['github', 'neon'] },
   onboarding: null,
   helpVolunteer: false,
+  seats: [],
+  freeTier: [],
+  setupChecks: [],
+  accountFlags: [],
   ...over,
 })
 
@@ -140,5 +144,36 @@ describe('MyUsagePage', () => {
       state.usage = usage({ helpVolunteer: true })
       expect(await render(NOV)).toMatch(/<input type="checkbox" name="helpVolunteer" checked=""\/>/)
     })
+  })
+})
+
+describe('Your setup', () => {
+  it('shows an empty state when there is nothing to note', async () => {
+    const html = await render(NOV)
+    expect(html).toContain('Your setup')
+    expect(html).toContain('Nothing to note')
+  })
+
+  it('shows own seats, free-tier use, setup checks and account flags in plain words', async () => {
+    state.usage = usage({
+      seats: [
+        { agent: 'claude', daysUnused: 0 },
+        { agent: 'copilot', daysUnused: 21 },
+      ],
+      freeTier: [{ agent: 'qwen', modelName: 'qwen3-coder', reason: 'free-tier-agent', people: 1, days: 3, tokens: 9000 }],
+      setupChecks: [{ agent: 'gemini', modelName: 'gemini-2.5-pro', reason: 'agent-blocked', days: 2, tokens: 500 }],
+      accountFlags: ['outside-org'],
+    })
+    const html = await render(NOV)
+    expect(html).toContain('Claude seat')
+    expect(html).toContain('in use')
+    expect(html).toContain('unused for 21 days')
+    expect(html).toContain('Qwen · qwen3-coder')
+    expect(html).toContain('free tier: the provider may train on what you send (3 days)')
+    expect(html).toContain('Gemini · gemini-2.5-pro')
+    expect(html).toContain('outside the org&#x27;s agent rules')
+    expect(html).toContain('Outside company org')
+    expect(html).not.toContain('Nothing to note')
+    expect(html).not.toMatch(/violation|idle/i)
   })
 })

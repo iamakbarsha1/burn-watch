@@ -42,9 +42,10 @@ export function schemaFields(schema: ZodTypeAny, prefix = '', depth = 0): Schema
  * Who can read a field in the dashboard or through its API.
  * scoped: you, a manager of a team you are in, and admins (viewerScope).
  * self: only you, on My usage.
+ * selfAdmin: you on My usage, and admins (v2 Phase 3: you see what an admin sees about you).
  * admin: admins only. none: stored, but no page or route shows it yet.
  */
-export type Audience = 'scoped' | 'self' | 'admin' | 'none'
+export type Audience = 'scoped' | 'self' | 'selfAdmin' | 'admin' | 'none'
 
 /**
  * Exact path, or the array's entry for a field inside an array element. The test fails on a
@@ -53,14 +54,14 @@ export type Audience = 'scoped' | 'self' | 'admin' | 'none'
  */
 export const AUDIENCE: Record<string, Audience> = {
   // Sign-in (RegisterDeviceSchema)
-  email: 'scoped', // Governance (personal accounts and free tier)
+  email: 'admin', // Governance setup-check rows, Admin seats; managers see counts only
   hostname: 'admin', // Admin users list, Devices
   platform: 'admin', // Devices
   agentVersion: 'none',
   // Nightly sync (UsagePayloadSchema)
   deviceId: 'none',
   date: 'scoped',
-  events: 'scoped', // Overview, Trends, My usage
+  events: 'scoped', // Overview, Trends, My usage; free-tier and setup-check use as counts for managers, named for admins, yours on My usage
   'enrichment.date': 'scoped',
   'enrichment.sessionCount': 'self', // My usage
   'enrichment.callCount': 'none',
@@ -73,15 +74,15 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.topSessions': 'none',
   'enrichment.toolUsage': 'scoped', // Activity, Adoption
   'enrichment.shellUsage': 'scoped', // Activity
-  'enrichment.mcpUsage': 'scoped', // Activity, Adoption, My usage
-  'enrichment.limitHitCount': 'admin', // limit-hit alerts
+  'enrichment.mcpUsage': 'scoped', // Activity, Adoption, My usage; Governance MCP shows people counts, no names
+  'enrichment.limitHitCount': 'admin', // limit-hit alerts, as a count of people
   'enrichment.claudeVersions': 'none',
   'enrichment.entrypointCounts': 'scoped', // Adoption
   'enrichment.skillCounts': 'scoped', // Adoption
   'enrichment.sidechainMessages': 'scoped', // Adoption
   'enrichment.permissionModeCounts': 'scoped', // Adoption
-  'enrichment.accountHashes': 'admin', // Governance, as labels; the hash is never shown
-  'enrichment.claudeOrgHashes': 'admin', // Governance, as labels; the hash is never shown
+  'enrichment.accountHashes': 'selfAdmin', // Governance as labels and counts per note; your own notes on My usage; the hash is never shown
+  'enrichment.claudeOrgHashes': 'selfAdmin', // Governance as labels and counts per note; your own notes on My usage; the hash is never shown
   // Set on My usage (MY_CHOICES)
   helpVolunteer: 'scoped', // My usage; your name on Adoption under your teams, only when on
 }

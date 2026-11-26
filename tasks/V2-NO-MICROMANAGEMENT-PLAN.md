@@ -91,14 +91,20 @@ Known gaps after Phase 2:
 - D5 setup cards still give per-team counts for teams under 5 (counts of people using an MCP server, no names). Fold into Phase 3.
 - The no-individuals seed has no volunteer, so a volunteer name on Practices is not exercised there. Route tests cover it.
 
-### Phase 3: governance and alerts
+### Phase 3: governance and alerts (built 2026-11-26)
 
-- [ ] Budget alerts: remove per-user scope and `limit-hit` per person; add team-level "people hitting limits" count.
-- [ ] Personal account and free-tier: admin gets counts; person gets a notice on "My usage".
-- [ ] Rename violations to "Setup checks" in API names, UI and audit sentences. Person sees own checks.
-- [ ] Idle seats to "Unused seats": trim the response to name, seat, days since last use. Person sees their own status.
-- [ ] Devices: confirm no manager route exposes `lastSeenAt` for others.
-- [ ] MCP inventory (`/governance/mcp`): drop the per-server user list for managers and admins; keep counts. Found by the Phase 0 check, missed by the audit.
+- [x] Budget alerts: no per-person alerts. `userId` is gone from the input schema; migration `0006_drop_per_person_alerts` deletes the old ones. `GET /budget-alerts` is admin only and gives counts: unused seats for an idle-seat alert, people who hit a usage limit this month for a limit-hit alert. No names.
+- [x] Free tier: counts per agent and model (`people`, `days`, `tokens`), no names. Claude accounts: `people` list replaced by `flagCounts`. The person sees their own free-tier use and account flags on My usage.
+- [x] Violations renamed to setup checks: `/governance/setup-checks` and `/governance/setup-checks/count`. Admins get named rows (decision 2). Managers get the rules and a count of people. The person sees their own setup checks on My usage.
+- [x] Idle seats renamed to unused seats: `/adoption/unused-seats`, admin only. Rows are name, seat, days since last use. The person sees their own seats on My usage.
+- [x] Devices: `lastSeenAt` only comes from `/v1/auth/admin/*` routes, all behind `requireAdmin`. No manager route has it.
+- [x] MCP inventory: per-server user list replaced by a `people` count.
+- [x] D5 setup cards: no team card for a team under 5.
+- [x] `KNOWN_LEAKS` is empty. The no-individuals check passes with 0 known leaks.
+
+Known gaps after Phase 3:
+- An admin of an org with fewer than 5 people still sees org totals (unchanged from Phase 0).
+- My usage reads other people's account days to set the "shared" flag. Only days that share the caller's account hash are read, and only the caller's flags come back.
 
 ### Phase 4: transparency and words
 

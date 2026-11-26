@@ -55,7 +55,7 @@ export function SidebarNav({
 }: {
   orientation?: 'vertical' | 'horizontal'
   role?: string | null
-  /** Policy violations in the last 30 days (B2). Only passed for admins. */
+  /** Setup checks in the last 30 days (B2). Only passed for admins. */
   governanceCount?: number
 }) {
   const pathname = usePathname()
@@ -101,7 +101,7 @@ export function SidebarNav({
                 {item.label}
                 {item.href === '/governance' && governanceCount > 0 && (
                   <span
-                    aria-label={`${governanceCount} policy violations`}
+                    aria-label={`${governanceCount} setup checks`}
                     className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-bad/15 px-1.5 text-xs font-medium text-bad"
                   >
                     {governanceCount}

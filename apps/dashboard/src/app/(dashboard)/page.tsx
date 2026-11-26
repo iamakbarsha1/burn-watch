@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { fetchOverview, fetchTeams, fetchTeamCompare, fetchViolationCount } from '@/lib/api'
+import { fetchOverview, fetchTeams, fetchTeamCompare, fetchSetupCheckCount } from '@/lib/api'
 import { unlessTooSmall } from '@/lib/group-too-small'
 import { AgentBreakdown } from '@/components/charts/AgentBreakdown'
 import { TeamFilter } from '@/components/TeamFilter'
@@ -34,7 +34,7 @@ export default async function OverviewPage({
       fetchOverview(from, to, orgId, team?.id),
       showCompare ? fetchTeamCompare(from, to).catch(() => []) : [],
       // Shares the layout's call through cache(): same request, one fetch.
-      isAdmin ? fetchViolationCount().catch(() => 0) : 0,
+      isAdmin ? fetchSetupCheckCount().catch(() => 0) : 0,
     ]),
   )
   if (!loaded) {
@@ -50,7 +50,7 @@ export default async function OverviewPage({
       </div>
     )
   }
-  const [overview, comparison, violationCount] = loaded
+  const [overview, comparison, setupCheckCount] = loaded
 
   return (
     <div>
@@ -59,10 +59,10 @@ export default async function OverviewPage({
         subtitle={`${formatRange(from, to)} · ${team ? `team ${team.name}` : 'all agents'}`}
       />
 
-      {violationCount > 0 && (
+      {setupCheckCount > 0 && (
         <p className="mb-4 rounded-lg border border-bad/35 bg-bad/10 px-4 py-3 text-sm text-bad">
-          {violationCount === 1 ? '1 use' : `${violationCount} uses`} of an agent or model outside the policy in the
-          last 30 days.{' '}
+          {setupCheckCount === 1 ? '1 setup check' : `${setupCheckCount} setup checks`} in the last 30 days: use of an
+          agent or model outside the agent rules.{' '}
           <Link href="/governance" className="font-medium underline">
             Review on Governance
           </Link>

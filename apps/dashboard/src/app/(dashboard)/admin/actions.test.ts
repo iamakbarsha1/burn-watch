@@ -308,7 +308,6 @@ describe('budget alert types', () => {
       type: 'api-spend',
       monthlyLimitUsd: 100,
       threshold: 0.8,
-      userId: null,
       agent: null,
     })
   })
@@ -318,18 +317,18 @@ describe('budget alert types', () => {
       null,
       form({ type: 'idle-seat', idleDays: '14', monthlyLimitUsd: '100', agent: 'claude' }),
     )
-    expect(createBudgetAlert).toHaveBeenCalledWith({ type: 'idle-seat', idleDays: 14, userId: null, agent: 'claude' })
+    expect(createBudgetAlert).toHaveBeenCalledWith({ type: 'idle-seat', idleDays: 14, agent: 'claude' })
   })
 
   it('sends only limit hits for limit-hit', async () => {
     await createBudgetAlertAction(null, form({ type: 'limit-hit', limitHits: '3' }))
-    expect(createBudgetAlert).toHaveBeenCalledWith({ type: 'limit-hit', limitHits: 3, userId: null, agent: null })
+    expect(createBudgetAlert).toHaveBeenCalledWith({ type: 'limit-hit', limitHits: 3, agent: null })
   })
 
   it('refuses idle days that are not a whole number in range', async () => {
     for (const idleDays of ['0', '2.5', '366', '']) {
       const state = await createBudgetAlertAction(null, form({ type: 'idle-seat', idleDays }))
-      expect(state).toMatchObject({ ok: false, message: 'Enter idle days between 1 and 365' })
+      expect(state).toMatchObject({ ok: false, message: 'Enter unused days between 1 and 365' })
     }
     expect(createBudgetAlert).not.toHaveBeenCalled()
   })
@@ -341,8 +340,13 @@ describe('budget alert types', () => {
   })
 
   it('carries the type on an update, so the API checks the right field', async () => {
-    await updateBudgetAlertAction(null, form({ id: 'a1', type: 'idle-seat', idleDays: '30', userId: '', agent: '' }))
-    expect(updateBudgetAlert).toHaveBeenCalledWith('a1', { type: 'idle-seat', idleDays: 30, userId: null, agent: null })
+    await updateBudgetAlertAction(null, form({ id: 'a1', type: 'idle-seat', idleDays: '30', agent: '' }))
+    expect(updateBudgetAlert).toHaveBeenCalledWith('a1', { type: 'idle-seat', idleDays: 30, agent: null })
+  })
+
+  it('never sends a person: alerts are org-wide or per agent', async () => {
+    await createBudgetAlertAction(null, form({ type: 'limit-hit', limitHits: '3', userId: '22222222-2222-4222-8222-222222222222' }))
+    expect(createBudgetAlert.mock.calls[0][0]).not.toHaveProperty('userId')
   })
 })
 

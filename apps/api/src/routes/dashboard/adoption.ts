@@ -5,7 +5,6 @@ import {
   addDays,
   getStore,
   idleSeats,
-  seatCost,
   seatLastUsed,
   seatedKeys,
   usdFromMicros,
@@ -16,21 +15,21 @@ import {
   type UserId,
 } from '@burn-watch/db'
 import {
-  IdleSeatsQuerySchema,
   MIN_GROUP_SIZE,
   PRACTICE_RANKS,
   type AgentName,
   type FeatureMatrixResponse,
   type FunnelCounts,
   type FunnelResponse,
-  type IdleSeatRow,
-  type IdleSeatsResponse,
   type OnboardingResponse,
   type PracticesResponse,
   type TeamVolunteers,
   type TeamSetup,
+  type UnusedSeatRow,
+  type UnusedSeatsResponse,
+  UnusedSeatsQuerySchema,
 } from '@burn-watch/shared'
-import { comparableTeams, readScope } from '../../plugins/jwt.js'
+import { comparableTeams, readScope, requireAdmin } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
 import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { today } from './dates.js'
@@ -49,6 +48,14 @@ import {
 
 const DAY_MS = 86_400_000
 const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / DAY_MS
+
+/** Days since a seat was last used, or since it started when never used, today included; 0 when used today. */
+export function daysUnused(seat: { startDate: string }, lastUsed: string | null, date: string): number {
+  // Use before the seat started does not make the seat unused earlier than its start.
+  const afterLast = lastUsed && addDays(lastUsed as IsoDate, 1)
+  const since = afterLast && afterLast > seat.startDate ? afterLast : seat.startDate
+  return Math.max(0, daysBetween(since, date) + 1)
+}
 
 const FunnelQuerySchema = z
   .object({ ...dateRangeFields, ...teamIdField })
@@ -216,13 +223,11 @@ export function funnelUsersPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, us
 const isoDay = (d: Date) => d.toISOString().slice(0, 10) as IsoDate
 
 export async function adoptionRoutes(fastify: FastifyInstance) {
-  // GET /adoption/idle-seats — A1. Admins see the org, managers their own teams.
-  fastify.get('/adoption/idle-seats', async (request, reply) => {
-    const { role } = request.user
-    if (role !== 'admin' && role !== 'manager') {
-      return reply.status(403).send({ error: 'Adoption requires admin or manager role' })
-    }
-    const parsed = IdleSeatsQuerySchema.safeParse(request.query)
+  // GET /adoption/unused-seats — A1, renamed in v2 Phase 3. Admins only and
+  // named (v2 decision 2): name, seat and days since last use, to reclaim a
+  // licence. Each person sees their own seats on My usage.
+  fastify.get('/adoption/unused-seats', { preHandler: requireAdmin(fastify) }, async (request, reply) => {
+    const parsed = UnusedSeatsQuerySchema.safeParse(request.query)
     if (!parsed.success) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
@@ -237,59 +242,31 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const inScope = scope && new Set(scope)
     const [idle, orgSeats] = await Promise.all([
       idleSeats(store, orgId, null, null, idleDays, date),
-      role === 'admin' ? seatedKeys(store, orgId).then((s) => s.size) : null,
+      seatedKeys(store, orgId).then((s) => s.size),
     ])
     const seats = idle.filter((s) => !inScope || inScope.has(s.userId))
     const ids = [...new Set(seats.map((s) => s.userId))]
 
-    const [lastUsed, users, teams] = await Promise.all([
+    const [lastUsed, users] = await Promise.all([
       seatLastUsed(store, orgId, ids),
       ids.length ? store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1 } }) : [],
-      ids.length ? comparableTeams(request.user) : [],
     ])
-    const members = teams.length
-      ? await store.teamMembers.find({ orgId, teamId: { $in: teams.map((t) => t._id) }, userId: { $in: ids } })
-      : []
-
-    // Team names only from teams the viewer may see, as on Governance.
     const nameOf = new Map(users.map((u) => [u._id, u.name]))
-    const teamName = new Map(teams.map((t) => [t._id, t.name]))
-    const teamsOf = new Map<UserId, TeamId[]>()
-    for (const m of members) {
-      if (!ids.includes(m.userId) || !teamName.has(m.teamId)) continue
-      teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
-    }
 
     const rows = seats
-      .map<IdleSeatRow>((s) => {
-        const last = lastUsed.get(s._id) ?? null
-        // Use before the seat started does not make the seat idle earlier than its start.
-        const afterLast = last && addDays(last, 1)
-        const idleSince = afterLast && afterLast > s.startDate ? afterLast : s.startDate
-        return {
-          userId: s.userId,
-          userName: nameOf.get(s.userId) ?? null,
-          teams: (teamsOf.get(s.userId) ?? []).map((id) => teamName.get(id)!).sort(),
-          agent: s.agent,
-          startDate: s.startDate,
-          lastUsed: last,
-          daysIdle: daysBetween(idleSince, date) + 1,
-          monthlyPriceUsd: usdFromMicros(s.monthlyPriceMicros),
-          costSinceUsedUsd: usdFromMicros(seatCost(s, idleSince, date, date)),
-        }
-      })
-      .sort((a, b) => b.daysIdle - a.daysIdle || a.agent.localeCompare(b.agent))
+      .map<UnusedSeatRow>((s) => ({
+        userId: s.userId,
+        userName: nameOf.get(s.userId) ?? null,
+        agent: s.agent,
+        daysUnused: daysUnused(s, lastUsed.get(s._id) ?? null, date),
+      }))
+      .sort((a, b) => b.daysUnused - a.daysUnused || a.agent.localeCompare(b.agent))
 
     // Sum in micros, so the totals carry no float drift.
     const byAgent = new Map<AgentName, { seats: number; micros: number }>()
-    const byTeam = new Map<TeamId, { seats: number; micros: number }>()
-    const add = <K>(m: Map<K, { seats: number; micros: number }>, k: K, micros: number) => {
-      const t = m.get(k) ?? { seats: 0, micros: 0 }
-      m.set(k, { seats: t.seats + 1, micros: t.micros + micros })
-    }
     for (const s of seats) {
-      add(byAgent, s.agent, s.monthlyPriceMicros)
-      for (const t of teamsOf.get(s.userId) ?? []) add(byTeam, t, s.monthlyPriceMicros)
+      const t = byAgent.get(s.agent) ?? { seats: 0, micros: 0 }
+      byAgent.set(s.agent, { seats: t.seats + 1, micros: t.micros + s.monthlyPriceMicros })
     }
     const total = seats.reduce((sum, s) => sum + s.monthlyPriceMicros, 0)
 
@@ -299,17 +276,9 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       byAgent: [...byAgent]
         .map(([agent, t]) => ({ agent, seats: t.seats, monthlyUsd: usdFromMicros(t.micros as Micros) }))
         .sort((a, b) => b.monthlyUsd - a.monthlyUsd),
-      byTeam: [...byTeam]
-        .map(([teamId, t]) => ({
-          teamId,
-          teamName: teamName.get(teamId)!,
-          seats: t.seats,
-          monthlyUsd: usdFromMicros(t.micros as Micros),
-        }))
-        .sort((a, b) => b.monthlyUsd - a.monthlyUsd),
       totalMonthlyUsd: usdFromMicros(total as Micros),
       orgSeats,
-    } satisfies IdleSeatsResponse
+    } satisfies UnusedSeatsResponse
   })
 
   // GET /adoption/funnel — A3.
@@ -644,7 +613,8 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const setup = [
       // With a team filter the scope card would repeat the team card.
       ...(teamId ? [] : [card(null, role === 'admin' ? 'Whole org' : 'All your teams', null)]),
-      ...groups.map((g) => card(g.teamId, g.teamName, g.ids)),
+      // v2 rule 2: no per-team counts for a team under MIN_GROUP_SIZE.
+      ...groups.filter((g) => g.ids.size >= MIN_GROUP_SIZE).map((g) => card(g.teamId, g.teamName, g.ids)),
     ]
 
     if (!split) return { ...base, top: null, rest: null, tips: [], volunteers, setup } satisfies PracticesResponse

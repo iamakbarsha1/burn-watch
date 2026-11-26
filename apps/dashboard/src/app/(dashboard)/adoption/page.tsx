@@ -22,7 +22,7 @@ import {
   USAGE_BANDS,
   MIN_GROUP_SIZE,
 } from '@burn-watch/shared'
-import { fetchFeatures, fetchFunnel, fetchIdleSeats, fetchOnboarding, fetchPractices, fetchTeams, fetchUsageDistribution } from '@/lib/api'
+import { fetchFeatures, fetchFunnel, fetchOnboarding, fetchPractices, fetchTeams, fetchUnusedSeats, fetchUsageDistribution } from '@/lib/api'
 import { GroupTooSmallError, nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
 import { agentById } from '@/lib/agents'
 import { formatCost, formatRange, resolveRange } from '@/lib/format'
@@ -52,10 +52,12 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
   const { from, to } = resolveRange(params)
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
+  const isAdmin = role === 'admin'
   const rankBy = PRACTICE_RANKS.find((r) => r === params.rankBy) ?? 'days'
   const loaded = await unlessTooSmall(
     Promise.all([
-      fetchIdleSeats(idleDays, team?.id).catch(nullUnlessTooSmall),
+      // Named seats are admin only (v2 decision 2); a manager would get 403.
+      isAdmin ? fetchUnusedSeats(idleDays, team?.id).catch(nullUnlessTooSmall) : undefined,
       fetchFunnel(from, to, team?.id).catch(nullUnlessTooSmall),
       fetchOnboarding(from, to, team?.id).catch(nullUnlessTooSmall),
       fetchFeatures(from, to, team?.id).catch(nullUnlessTooSmall),
@@ -92,90 +94,84 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
       )}
 
       <div className="space-y-6">
-        <Section
-          title="Idle seats"
-          description="Paid seats with no tokens on their agent for the number of days below. Seats newer than that are left out. Cancel seats in Admin > Seats."
-        >
-          <form method="get" className="mb-4 flex items-center gap-2">
-            {carried.map(([k, v]) => (
-              <input key={k} type="hidden" name={k} value={v} />
-            ))}
-            <label htmlFor="idle-days" className="text-xs text-ink-2">
-              Idle for at least
-            </label>
-            <input
-              id="idle-days"
-              type="number"
-              name="idleDays"
-              min={1}
-              max={365}
-              step={1}
-              defaultValue={idleDays}
-              className={`${inputClass} w-24`}
-            />
-            <span className="text-xs text-ink-2">days</span>
-            <button type="submit" className={secondaryButtonClass}>
-              Show
-            </button>
-          </form>
+        {data !== undefined && (
+          <Section
+            title="Unused seats"
+            description="Paid seats with no tokens on their agent for the number of days below. Seats newer than that are left out. Cancel seats in Admin > Seats."
+          >
+            <form method="get" className="mb-4 flex items-center gap-2">
+              {carried.map(([k, v]) => (
+                <input key={k} type="hidden" name={k} value={v} />
+              ))}
+              <label htmlFor="idle-days" className="text-xs text-ink-2">
+                Unused for at least
+              </label>
+              <input
+                id="idle-days"
+                type="number"
+                name="idleDays"
+                min={1}
+                max={365}
+                step={1}
+                defaultValue={idleDays}
+                className={`${inputClass} w-24`}
+              />
+              <span className="text-xs text-ink-2">days</span>
+              <button type="submit" className={secondaryButtonClass}>
+                Show
+              </button>
+            </form>
 
-          {data && data.rows.length > 0 && (
-            <>
-              <p className="mb-1 text-sm text-ink">
-                {data.rows.length} idle {data.rows.length === 1 ? 'seat' : 'seats'},{' '}
-                {formatCost(data.totalMonthlyUsd)}/month
-              </p>
-              <p className="mb-3 text-sm text-ink-2">
-                {data.byAgent
-                  .map((a) => `${agentById(a.agent)?.label ?? a.agent}: ${a.seats}, ${formatCost(a.monthlyUsd)}/month`)
-                  .join(' · ')}
-              </p>
-            </>
-          )}
+            {data && data.rows.length > 0 && (
+              <>
+                <p className="mb-1 text-sm text-ink">
+                  {data.rows.length} unused {data.rows.length === 1 ? 'seat' : 'seats'},{' '}
+                  {formatCost(data.totalMonthlyUsd)}/month
+                </p>
+                <p className="mb-3 text-sm text-ink-2">
+                  {data.byAgent
+                    .map((a) => `${agentById(a.agent)?.label ?? a.agent}: ${a.seats}, ${formatCost(a.monthlyUsd)}/month`)
+                    .join(' · ')}
+                </p>
+              </>
+            )}
 
-          <TableFrame>
-            <table className="w-full">
-              <thead>
-                <tr>
-                  <Th>Person</Th>
-                  <Th>Teams</Th>
-                  <Th>Agent</Th>
-                  <Th numeric>Last used</Th>
-                  <Th numeric>Days idle</Th>
-                  <Th numeric>$/month</Th>
-                  <Th numeric>Cost since last use</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {data === null ? (
-                  <EmptyRow colSpan={7}>Could not read idle seats. Try again in a moment.</EmptyRow>
-                ) : data.rows.length > 0 ? (
-                  data.rows.map((r) => (
-                    <Tr key={`${r.userId}:${r.agent}`}>
-                      <Td className="font-medium text-ink">{r.userName ?? 'Removed user'}</Td>
-                      <Td className="text-ink-2">{r.teams.length ? r.teams.join(', ') : '—'}</Td>
-                      <Td>{agentById(r.agent)?.label ?? r.agent}</Td>
-                      <Td numeric>{r.lastUsed ?? <Badge tone="warn">never</Badge>}</Td>
-                      <Td numeric>{r.daysIdle}</Td>
-                      <Td numeric>{formatCost(r.monthlyPriceUsd)}</Td>
-                      <Td numeric>{formatCost(r.costSinceUsedUsd)}</Td>
-                    </Tr>
-                  ))
-                ) : data.orgSeats === 0 ? (
-                  <EmptyRow colSpan={7}>
-                    No seats entered yet. Add them in{' '}
-                    <Link href="/admin" className="text-brand underline-offset-4 hover:underline">
-                      Admin &gt; Seats
-                    </Link>
-                    .
-                  </EmptyRow>
-                ) : (
-                  <EmptyRow colSpan={7}>No seats idle for {idleDays}+ days.</EmptyRow>
-                )}
-              </tbody>
-            </table>
-          </TableFrame>
-        </Section>
+            <TableFrame>
+              <table className="w-full">
+                <thead>
+                  <tr>
+                    <Th>Person</Th>
+                    <Th>Agent</Th>
+                    <Th numeric>Days unused</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data === null ? (
+                    <EmptyRow colSpan={3}>Could not read unused seats. Try again in a moment.</EmptyRow>
+                  ) : data.rows.length > 0 ? (
+                    data.rows.map((r) => (
+                      <Tr key={`${r.userId}:${r.agent}`}>
+                        <Td className="font-medium text-ink">{r.userName ?? 'Removed user'}</Td>
+                        <Td>{agentById(r.agent)?.label ?? r.agent}</Td>
+                        <Td numeric>{r.daysUnused}</Td>
+                      </Tr>
+                    ))
+                  ) : data.orgSeats === 0 ? (
+                    <EmptyRow colSpan={3}>
+                      No seats entered yet. Add them in{' '}
+                      <Link href="/admin" className="text-brand underline-offset-4 hover:underline">
+                        Admin &gt; Seats
+                      </Link>
+                      .
+                    </EmptyRow>
+                  ) : (
+                    <EmptyRow colSpan={3}>No seats unused for {idleDays}+ days.</EmptyRow>
+                  )}
+                </tbody>
+              </table>
+            </TableFrame>
+          </Section>
+        )}
 
         <DistributionSection data={distribution} />
 

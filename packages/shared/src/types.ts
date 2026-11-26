@@ -196,6 +196,30 @@ export interface MyUsageResponse {
   onboarding: MyOnboarding | null
   /** The person listed themselves as happy to help with Claude Code. */
   helpVolunteer: boolean
+  /** v2 Phase 3: the person's own status, the same facts an admin sees about them. */
+  seats: MySeat[]
+  /** Own free-tier or unpriced use in range. */
+  freeTier: FreeTierModelRow[]
+  /** Own use outside the org's agent rules in range. */
+  setupChecks: MySetupCheck[]
+  /** Own Claude account flags in range. */
+  accountFlags: ClaudeAccountFlag[]
+}
+
+/** One of the person's own seats. */
+export interface MySeat {
+  agent: AgentName
+  /** Days since last use, today included; 0 when used today. */
+  daysUnused: number
+}
+
+/** One (agent, model) of the person's own use outside the agent rules. */
+export interface MySetupCheck {
+  agent: AgentName
+  modelName: string
+  reason: SetupCheckReason
+  days: number
+  tokens: number
 }
 
 /** Average active days per week over the range. */
@@ -337,8 +361,6 @@ export interface TicketUsageResponse {
 export interface BudgetAlert {
   id: string
   type: 'api-spend' | 'idle-seat' | 'limit-hit'
-  userId: string | null
-  userName: string | null
   agent: AgentName | null
   monthlyLimitUsd: number
   threshold: number
@@ -349,8 +371,10 @@ export interface BudgetAlert {
   monthToDateSpendUsd: number
   idleDays: number | null
   limitHits: number | null
-  /** idle-seat only; null for the other types. */
-  idleSeats: { userId: string; userName: string | null; agent: AgentName }[] | null
+  /** idle-seat only: unused seats right now. Names are on the Unused seats card. Null for the other types. */
+  idleSeatCount: number | null
+  /** limit-hit only: people who hit a usage limit this month. Null for the other types. */
+  people: number | null
 }
 
 // GET /v1/integrations/copilot/status.
@@ -474,39 +498,27 @@ export interface CopilotSeatsResponse {
   ambiguousLogins: string[]
 }
 
-// GET /v1/dashboard/governance/free-tier (B1). Admins see the org, managers
-// their own teams. `reason` says why the agent flagged the row: an agent with
-// only a free tier, or a model the collector has no price for.
+// GET /v1/dashboard/governance/free-tier (B1). Counts only (v2 Phase 3): admins
+// see the org, managers their own teams. `reason` says why the agent flagged the
+// row: an agent with only a free tier, or a model the collector has no price for.
 export type FreeTierReason = 'free-tier-agent' | 'unpriced-model'
 
-export interface FreeTierRow {
-  userId: string
-  /** Null when the user row is gone. */
-  userName: string | null
-  userEmail: string | null
-  /** Names of the viewer's visible teams this user is in. */
-  teams: string[]
+/** One (agent, model) over the scope. For `/me/usage` the counts are the person's own. */
+export interface FreeTierModelRow {
   agent: AgentName
   modelName: string
   reason: FreeTierReason
-  /** Distinct days with free-tier use in the range. */
+  /** People with use of this model in range. 1 on `/me/usage`. */
+  people: number
+  /** Distinct days with use in the range. */
   days: number
-  tokens: number
-  firstDate: string
-  lastDate: string
-}
-
-export interface FreeTierTeamTotal {
-  /** Null for users in none of the viewer's visible teams. */
-  teamId: string | null
-  teamName: string | null
-  users: number
   tokens: number
 }
 
 export interface FreeTierResponse {
-  rows: FreeTierRow[]
-  byTeam: FreeTierTeamTotal[]
+  /** Distinct people with any free-tier use in range. */
+  people: number
+  rows: FreeTierModelRow[]
 }
 
 /** R1 B2. 'unset' means the org has no rule for the agent yet. */
@@ -520,16 +532,33 @@ export interface AgentPolicy {
   note: string | null
 }
 
-export type ViolationReason = 'agent-blocked' | 'agent-not-set' | 'model-not-listed'
+export type SetupCheckReason = 'agent-blocked' | 'agent-not-set' | 'model-not-listed'
 
-/** One (user, agent, model) group of usage outside the policy. Same shape as a free-tier row. */
-export type ViolationRow = Omit<FreeTierRow, 'reason'> & { reason: ViolationReason }
+/** One (user, agent, model) group of use outside the agent rules. Admins only (v2 decision 2). */
+export interface SetupCheckRow {
+  userId: string
+  /** Null when the user row is gone. */
+  userName: string | null
+  userEmail: string | null
+  /** Names of the teams this user is in. */
+  teams: string[]
+  agent: AgentName
+  modelName: string
+  reason: SetupCheckReason
+  days: number
+  tokens: number
+  firstDate: string
+  lastDate: string
+}
 
-export interface ViolationsResponse {
+// GET /v1/dashboard/governance/setup-checks (R1 B2, renamed in v2 Phase 3).
+export interface SetupChecksResponse {
   /** All five agents, in AGENTS order. */
   policies: AgentPolicy[]
-  rows: ViolationRow[]
-  byTeam: FreeTierTeamTotal[]
+  /** Distinct people in scope with use outside the rules. */
+  people: number
+  /** Named rows, admins only; [] for managers. */
+  rows: SetupCheckRow[]
   /** Model names used in the range per agent, for the edit form. Admins only; {} for managers. */
   seenModels: Partial<Record<AgentName, string[]>>
 }
@@ -543,7 +572,8 @@ export interface McpServerRow {
   source: McpServerSource
   approved: boolean
   note: string | null
-  users: { userId: string; name: string | null }[]
+  /** Distinct people who called it in range. No names (v2 Phase 3). */
+  people: number
   calls: number
   /** Distinct days with a call in the range. */
   days: number
@@ -572,20 +602,6 @@ export interface ClaudeOrgRow {
   includesYou: boolean
 }
 
-export interface ClaudeAccountPerson {
-  userId: string
-  name: string
-  teamIds: string[]
-  /** Days with any account or org hash. */
-  hashedDays: number
-  /** Account labels, in label order. */
-  accounts: string[]
-  /** Days with an org hash that is not the company's. Null when the company org is not set. */
-  outsideOrgDays: number | null
-  claudeSeat: boolean
-  flags: ClaudeAccountFlag[]
-}
-
 export interface ClaudeAccountsResponse {
   from: string
   to: string
@@ -598,39 +614,30 @@ export interface ClaudeAccountsResponse {
   companyOrgUsers: number | null
   orgs: ClaudeOrgRow[]
   accounts: { label: string; users: number; days: number; shared: boolean }[]
-  /** People with a hashed day, most flags first. */
-  people: ClaudeAccountPerson[]
+  /** People per flag. No names (v2 Phase 3); each person sees their own flags on My usage. */
+  flagCounts: Record<ClaudeAccountFlag, number>
 }
 
-// GET /v1/dashboard/adoption/idle-seats (R1 A1). Seats with no tokens on their
-// own agent for `idleDays`+ days. Admins see the org, managers their own teams.
-export interface IdleSeatRow {
+// GET /v1/dashboard/adoption/unused-seats (R1 A1, renamed in v2 Phase 3). Admins
+// only, named (v2 decision 2): seats with no tokens on their own agent for
+// `idleDays`+ days. Each person sees their own seats on My usage.
+export interface UnusedSeatRow {
   userId: string
   /** Null when the user row is gone. */
   userName: string | null
-  /** Names of the viewer's visible teams this user is in. */
-  teams: string[]
   agent: AgentName
-  startDate: string
-  /** Last day with tokens on this agent. Null when never used. */
-  lastUsed: string | null
-  /** Days since the day after `lastUsed`, or since `startDate` when never used, today included. */
-  daysIdle: number
-  monthlyPriceUsd: number
-  /** Seat cost from the first idle day to today. */
-  costSinceUsedUsd: number
+  /** Days since last use, or since the seat started when never used, today included. */
+  daysUnused: number
 }
 
-export interface IdleSeatsResponse {
+export interface UnusedSeatsResponse {
   idleDays: number
-  /** Longest idle first. */
-  rows: IdleSeatRow[]
+  /** Longest unused first. */
+  rows: UnusedSeatRow[]
   byAgent: { agent: AgentName; seats: number; monthlyUsd: number }[]
-  /** A seat holder in two teams counts in both. Holders in no visible team are left out. */
-  byTeam: { teamId: string; teamName: string; seats: number; monthlyUsd: number }[]
   totalMonthlyUsd: number
-  /** Seats the org has at all, so the page can tell "none entered" from "none idle". Admins only; null for managers. */
-  orgSeats: number | null
+  /** Seats the org has at all, so the page can tell "none entered" from "none unused". */
+  orgSeats: number
 }
 
 // GET /v1/dashboard/adoption/funnel (R1 A3). How many people reached each step

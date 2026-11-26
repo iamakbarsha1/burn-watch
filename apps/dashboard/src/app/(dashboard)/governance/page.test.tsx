@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { ClaudeAccountsResponse, FreeTierResponse, McpInventoryResponse, ViolationsResponse } from '@burn-watch/shared'
+import type { ClaudeAccountsResponse, FreeTierResponse, McpInventoryResponse, SetupChecksResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
   data: null as FreeTierResponse | null,
   tooSmall: false,
   mcp: null as McpInventoryResponse | null,
-  violations: null as ViolationsResponse | null,
+  checks: null as SetupChecksResponse | null,
   count: 0,
   accounts: null as ClaudeAccountsResponse | null,
   accountsRead: 0,
@@ -28,11 +28,11 @@ vi.mock('@/lib/api', () => ({
     if (!state.data) throw new Error('down')
     return state.data
   },
-  fetchViolations: async () => {
-    if (!state.violations) throw new Error('down')
-    return state.violations
+  fetchSetupChecks: async () => {
+    if (!state.checks) throw new Error('down')
+    return state.checks
   },
-  fetchViolationCount: async () => state.count,
+  fetchSetupCheckCount: async () => state.count,
   fetchClaudeAccounts: async () => {
     state.accountsRead++
     if (!state.accounts) throw new Error('down')
@@ -64,18 +64,18 @@ const render = async () =>
 
 beforeEach(() => {
   state.role = 'admin'
-  state.data = { rows: [], byTeam: [] }
+  state.data = { people: 0, rows: [] }
   state.tooSmall = false
   state.mcp = { servers: [], unusedApprovals: [] }
-  state.violations = {
+  state.checks = {
     policies: (['claude', 'qwen', 'gemini', 'codex', 'copilot'] as const).map((agent) => ({
       agent,
       rule: 'unset' as const,
       models: [],
       note: null,
     })),
+    people: 0,
     rows: [],
-    byTeam: [],
     seenModels: {},
   }
   state.count = 0
@@ -86,7 +86,7 @@ beforeEach(() => {
 describe('a group too small', () => {
   it('replaces every section with the group-too-small notice when one read is refused', async () => {
     state.tooSmall = true
-    state.mcp = { servers: [{ server: 'github', calls: 1, users: [], approved: false }] } as never
+    state.mcp = { servers: [{ server: 'github', calls: 1, people: 1, approved: false }] } as never
     const html = await render()
     expect(html).toContain('This group has fewer than 5 people')
     expect(html).not.toContain('github')
@@ -102,13 +102,10 @@ const ACCOUNTS: ClaudeAccountsResponse = {
   companyOrgUsers: null,
   orgs: [{ id: 'c'.repeat(64), label: 'Claude org 1', users: 2, days: 4, ours: false, includesYou: true }],
   accounts: [{ label: 'Account 1', users: 2, days: 4, shared: true }],
-  people: [
-    { userId: 'u1', name: 'Ada', teamIds: [], hashedDays: 3, accounts: ['Account 1'], outsideOrgDays: null, claudeSeat: false, flags: ['shared'] },
-    { userId: 'u3', name: 'Cy', teamIds: [], hashedDays: 1, accounts: ['Account 2'], outsideOrgDays: null, claudeSeat: false, flags: [] },
-  ],
+  flagCounts: { shared: 2, 'outside-org': 0, several: 1, 'seat-no-use': 0, 'use-no-seat': 0 },
 }
 
-const VIOLATIONS: ViolationsResponse = {
+const CHECKS: SetupChecksResponse = {
   policies: [
     { agent: 'claude', rule: 'models', models: ['claude-opus-5'], note: 'Opus only' },
     { agent: 'qwen', rule: 'blocked', models: [], note: null },
@@ -131,7 +128,7 @@ const VIOLATIONS: ViolationsResponse = {
       lastDate: '2026-11-05',
     },
   ],
-  byTeam: [{ teamId: null, teamName: null, users: 1, tokens: 500 }],
+  people: 1,
   seenModels: { claude: ['claude-opus-5', 'claude-opus-5-5'] },
 }
 
@@ -142,7 +139,7 @@ const MCP: McpInventoryResponse = {
       source: 'local',
       approved: true,
       note: 'browser tests',
-      users: [{ userId: 'u1', name: 'Ada' }],
+      people: 3,
       calls: 40,
       days: 2,
       lastDate: '2026-11-05',
@@ -152,7 +149,7 @@ const MCP: McpInventoryResponse = {
       source: 'claude.ai',
       approved: false,
       note: null,
-      users: [{ userId: 'u2', name: 'Bo' }],
+      people: 1,
       calls: 3,
       days: 1,
       lastDate: '2026-11-03',
@@ -173,31 +170,17 @@ describe('GovernancePage', () => {
     expect(html).toContain('BW-43')
   })
 
-  it('renders a row with its reason badge', async () => {
+  it('renders a free-tier row with its reason badge and counts, no names', async () => {
     state.role = 'manager'
     state.data = {
-      rows: [
-        {
-          userId: 'u1',
-          userName: 'Ada',
-          userEmail: 'ada@x.test',
-          teams: ['Platform'],
-          agent: 'qwen',
-          modelName: 'coder-model',
-          reason: 'free-tier-agent',
-          days: 3,
-          tokens: 900,
-          firstDate: '2026-11-01',
-          lastDate: '2026-11-05',
-        },
-      ],
-      byTeam: [{ teamId: 't1', teamName: 'Platform', users: 1, tokens: 900 }],
+      people: 2,
+      rows: [{ agent: 'qwen', modelName: 'coder-model', reason: 'free-tier-agent', people: 2, days: 3, tokens: 900 }],
     }
     const html = await render()
-    expect(html).toContain('Ada')
     expect(html).toContain('coder-model')
     expect(html).toContain('free-tier agent')
-    expect(html).toContain('Platform: 1 person')
+    expect(html).toContain('2 people used a free tier or an unpriced model')
+    expect(html).not.toContain('Person')
   })
 
   it('says so when the API is down', async () => {
@@ -212,7 +195,8 @@ describe('GovernancePage', () => {
   it('lists MCP servers with badges and admin buttons, including unused approvals', async () => {
     state.mcp = MCP
     const html = await render()
-    expect(html).toContain('2 servers, 1 not approved, used by 2 people')
+    expect(html).toContain('2 servers, 1 not approved')
+    expect(html).not.toContain('Ada')
     expect(html).toContain('claude.ai connector')
     expect(html).toContain('not approved')
     expect(html).toContain('browser tests')
@@ -235,9 +219,12 @@ describe('GovernancePage', () => {
     expect(await render()).toContain('Could not read MCP usage')
   })
 
-  it('shows the policy with badges, violations and admin edit forms', async () => {
-    state.violations = VIOLATIONS
+  it('shows the rules with badges, named setup-check rows and admin edit forms', async () => {
+    state.checks = CHECKS
     const html = await render()
+    expect(html).toContain('1 person used something outside the rules in this range.')
+    expect(html).toContain('Ada')
+    expect(html).toContain('ada@x.test')
     expect(html).toContain('listed models only')
     expect(html).toContain('claude-opus-5')
     expect(html).toContain('Opus only')
@@ -248,38 +235,43 @@ describe('GovernancePage', () => {
     expect(html).toContain('[edit:claude:claude-opus-5|claude-opus-5-5]')
   })
 
-  it('shows the violation empty state', async () => {
-    expect(await render()).toContain('No usage outside the policy in this range.')
+  it('shows the setup-check empty state', async () => {
+    expect(await render()).toContain('Nobody used something outside the rules in this range.')
   })
 
-  it('hides the edit forms and the banner from a manager', async () => {
+  it('shows a manager the rules and a people count, no names, no edit forms, no banner', async () => {
     state.role = 'manager'
-    state.violations = VIOLATIONS
+    state.checks = { ...CHECKS, people: 2, rows: [], seenModels: {} }
     state.count = 3
     const html = await render()
-    expect(html).toContain('model not listed')
+    expect(html).toContain('listed models only')
+    expect(html).toContain('2 people used something outside the rules in this range.')
+    expect(html).not.toContain('Ada')
     expect(html).not.toContain('[edit:')
-    expect(html).not.toContain('outside the policy in the last 30 days')
+    expect(html).not.toContain('setup checks in the last 30 days')
+    expect(html).not.toMatch(/violation/i)
   })
 
   it('shows the 30-day banner to an admin', async () => {
     state.count = 3
-    expect(await render()).toContain('3 uses of an agent or model outside the policy in the last 30 days.')
+    expect(await render()).toContain('3 setup checks in the last 30 days')
   })
 
-  it('says so when the policy cannot be read', async () => {
-    state.violations = null
-    expect(await render()).toContain('Could not read the policy')
+  it('says so when the rules cannot be read', async () => {
+    state.checks = null
+    expect(await render()).toContain('Could not read the agent rules')
   })
 
-  it('shows Claude accounts to an admin: coverage, unset org prompt, flags, quiet rows folded', async () => {
+  it('shows Claude accounts to an admin: coverage, unset org prompt, counts per flag', async () => {
     state.accounts = ACCOUNTS
     const html = await render()
     expect(html).toContain('Account data from 2 of 3 Claude Code users. The rest need agent 0.4 or later.')
     expect(html).toContain('Mark your company’s Claude org')
     expect(html).toContain('[orgs:Claude org 1]')
-    expect(html).toContain('Shared account')
-    expect(html).toContain('Show all (1 more)')
+    expect(html).toContain('<td class')
+    expect(html).toMatch(/Shared account<\/td><td[^>]*>2</)
+    expect(html).toMatch(/Several accounts<\/td><td[^>]*>1</)
+    expect(html).not.toContain('Outside company org')
     expect(html).not.toMatch(/[0-9a-f]{64}/)
   })
 

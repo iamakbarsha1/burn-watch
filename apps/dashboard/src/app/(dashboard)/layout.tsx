@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getSession, getUserRole } from '@/lib/session'
 import { SidebarNav } from '@/components/SidebarNav'
-import { fetchViolationCount } from '@/lib/api'
+import { fetchSetupCheckCount } from '@/lib/api'
 import { RangeBar } from '@/components/RangeBar'
 import { SignOutButton } from './SignOutButton'
 
@@ -14,8 +14,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const session = await getSession()
   if (!session) redirect('/login')
   const role = await getUserRole()
-  // B2 alert: admins see the policy-violation count on the Governance link.
-  const governanceCount = role === 'admin' ? await fetchViolationCount().catch(() => 0) : 0
+  // B2 alert: admins see the setup-check count on the Governance link.
+  const governanceCount = role === 'admin' ? await fetchSetupCheckCount().catch(() => 0) : 0
 
   return (
     <div className="flex min-h-screen bg-surface-0">

@@ -47,6 +47,12 @@ describe('transparency field list', () => {
     expect(audienceOf('enrichment.sessionCount')).toBe('self')
   })
 
+  it('v2 Phase 3: names stay with admins, and you see your own account notes', () => {
+    expect(audienceOf('email')).toBe('admin')
+    expect(audienceOf('enrichment.accountHashes')).toBe('selfAdmin')
+    expect(audienceOf('enrichment.claudeOrgHashes')).toBe('selfAdmin')
+  })
+
   it('lists the help flag under its schema key, visible to the viewer scope', () => {
     const mine = FIELD_GROUPS.find((g) => g.title === 'What you choose on My usage')!.fields.map((f) => f.path)
     expect(mine).toEqual(Object.keys(HelpVolunteerSchema.shape))

@@ -136,4 +136,13 @@ export const MIGRATIONS: readonly Migration[] = [
       await db.collection('users').updateMany({ hideOnLeaderboard: { $exists: true } }, { $unset: { hideOnLeaderboard: '' } })
     },
   },
+  {
+    id: '0006_drop_per_person_alerts',
+    description: 'v2: delete budget alerts set on one person',
+    // Alerts are org-wide or per agent now. Turning a per-person limit into an
+    // org-wide one would change what it means, so it goes. A re-run matches nothing.
+    async run(db) {
+      await db.collection('budgetAlerts').deleteMany({ userId: { $ne: null } })
+    },
+  },
 ]
