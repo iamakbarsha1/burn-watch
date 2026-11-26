@@ -857,6 +857,9 @@ async function auditLog(store: Store) {
  * view of it, so must not see that view; BO was in it, so must.
  */
 async function auditMe(store: Store) {
+  // buildServer needs signing secrets; CI has none, and these sign only tokens made here.
+  process.env.JWT_SECRET ??= 'dashboard-pipelines-access-secret'
+  process.env.JWT_REFRESH_SECRET ??= 'dashboard-pipelines-refresh-secret'
   const { buildServer } = await import('../build-server.js')
   const app = buildServer()
   await app.ready()
