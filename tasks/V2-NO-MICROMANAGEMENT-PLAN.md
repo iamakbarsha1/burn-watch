@@ -1,7 +1,7 @@
 # BurnWatch v2: no micromanagement
 
 Branch: `main-v2` (cut from `main` at `bbf5a9a`, 2026-11-24).
-Status: Phases 0 and 1 merged into `main-v2` (PRs #42, #43). Phase 2 built on `v2/p2-adoption-no-names` (2026-11-24). Phases 3 to 5 not started.
+Status: shipped 2026-11-26 as `web-v1.0.0`. Phases 0 to 4 merged into `main-v2` (PRs #42 to #46); `main-v2` merged into `main` by PR #47.
 
 ## Why
 
@@ -118,12 +118,16 @@ Known gaps after Phase 4:
 - "Who viewed my data" uses current team membership. Someone who left a team does not see views of it from before; someone who joined sees views of it from before they joined.
 - The word check covers the dashboard only. API field names such as `streak` on `/me/usage` stay.
 
-### Phase 5: ship
+### Phase 5: ship (done 2026-11-26)
 
-- [ ] Full suite, typecheck, dashboard pipelines on local Mongo.
-- [ ] Preview check signed in as admin, manager and member: each page shows only what the rules allow.
-- [ ] Merge `main-v2` into `main` by PR. Release `web-v1.0.0` (breaking: features removed). Prod deploy, then the same three-role check on prod.
-- [ ] CHANGELOG entry that lists every removed feature and why.
+- [x] Full suite, typecheck, dashboard pipelines on local Mongo. 1,395 tests, word check, 37 pipeline checks, no-individuals check (27 routes, 0 known leaks).
+- [x] Three-role check as admin, manager and member: each page shows only what the rules allow. Run on a local stack with a seeded MongoDB, not a Vercel preview: the preview dashboard calls the prod API, so it cannot show unreleased API code. 13 pages per role, no page errors.
+- [x] Merge `main-v2` into `main` by PR (#47). Migrations 0005 and 0006 ran on prod before the merge. Released `web-v1.0.0` (breaking: features removed). Prod deploy, then the same three-role check on prod.
+- [x] CHANGELOG entry that lists every removed feature and why.
+
+Known gaps after Phase 5:
+- Prod's only team (Al-Sorat) has 2 people, so a manager sees "group too small" on every team view. The rule is working; real team numbers need a team of 5.
+- `manager.test@test.com` is a test manager on prod, made through the invite flow. Delete it from Admin when it is no longer needed.
 
 ## Decisions (confirmed 2026-11-24)
 
