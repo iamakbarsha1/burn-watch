@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import type { JWT as JwtInstance } from '@fastify/jwt'
 import { MIN_GROUP_SIZE } from '@burn-watch/shared'
 import { getStore, type DeviceId, type OrgId, type TeamDoc, type TeamId, type UserId } from '@burn-watch/db'
+import { orgPeople } from './org-people.js'
 
 export interface JwtPayload {
   deviceId?: string
@@ -145,10 +146,22 @@ export type ScopeRefusal = 403 | 404 | 'too_small'
  * viewerScope, narrowed to one team when the request names one, and refused
  * as `too_small` when it covers other people but fewer than MIN_GROUP_SIZE of
  * them. A scope of just the caller is their own data and always allowed.
- * Undefined (an admin's whole org) is not counted here.
+ * Undefined (an admin's whole org) counts the org's active people the same
+ * way, unless `adminOp`: the named admin lists (unused seats, setup checks)
+ * exist so an admin can act on one person, whatever the org's size.
  */
-export async function readScope(user: JwtPayload, teamId?: string): Promise<UserId[] | undefined | ScopeRefusal> {
+export async function readScope(
+  user: JwtPayload,
+  teamId?: string,
+  opts: { adminOp?: boolean } = {},
+): Promise<UserId[] | undefined | ScopeRefusal> {
   const scope = teamId ? await teamScope(user, teamId as TeamId) : await viewerScope(user)
+  if (scope === undefined) {
+    if (opts.adminOp) return undefined
+    const people = await orgPeople(user.orgId as OrgId)
+    const self = people.length === 1 && people[0] === user.userId
+    return !self && people.length < MIN_GROUP_SIZE ? 'too_small' : undefined
+  }
   if (!Array.isArray(scope)) return scope
   const self = scope.length === 1 && scope[0] === user.userId
   return !self && new Set(scope).size < MIN_GROUP_SIZE ? 'too_small' : scope

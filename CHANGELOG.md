@@ -8,6 +8,27 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v1.1.0 (2026-11-27)
+
+v2.1: closes the gaps left after v2.
+
+- An admin of an org with fewer than 5 active people now gets "group too
+  small" for org totals, the same as a manager of a small team. An admin
+  alone in the org still sees their own data. Unused seats and setup
+  checks still name people to an admin, since they exist so an admin can
+  act on one person. Adoption and Governance show them under the "group
+  too small" notice.
+- Who viewed my data now goes by who a view covered when it happened.
+  Each view row stores the people it covered, so joining or leaving a team
+  later no longer changes which views you see. Views from before this
+  release have no such record and still go by the teams you are in today.
+- API: `streak` on `GET /v1/dashboard/me/usage` is now `consecutiveDays`
+  (same shape: `current`, `longest`, `lastActive`). My usage shows
+  "Consecutive days".
+- CI: the neutral-words check now covers the API and shared packages too.
+- `/privacy` says the minimum group size applies to a whole org.
+- No migration. No schema sync.
+
 ## web-v1.0.0 (2026-11-26)
 
 v2: no micromanagement. Breaking: features are removed and API responses

@@ -51,8 +51,8 @@ jobs:
           node-version: 22
           cache: npm
 
-      # .npmrc sets legacy-peer-deps for the better-auth / drizzle-orm peer
-      # conflict, so plain `npm ci` picks it up.
+      # .npmrc sets legacy-peer-deps: better-auth's better-call wants zod 4 as a
+      # peer while the workspaces pin zod 3. Plain `npm ci` picks it up.
       - name: Install dependencies
         run: npm ci
 

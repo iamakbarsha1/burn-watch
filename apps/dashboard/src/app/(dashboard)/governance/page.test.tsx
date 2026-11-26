@@ -132,6 +132,27 @@ const CHECKS: SetupChecksResponse = {
   seenModels: { claude: ['claude-opus-5', 'claude-opus-5-5'] },
 }
 
+describe('an org under 5 people (v2.1)', () => {
+  it('still shows an admin the agent rules and named setup checks under the notice', async () => {
+    state.tooSmall = true
+    state.checks = CHECKS
+    const html = await render()
+    expect(html).toContain('This group has fewer than 5 people')
+    expect(html).toContain('Setup checks')
+    expect(html).toContain('Ada')
+  })
+
+  it('shows a manager only the notice', async () => {
+    state.role = 'manager'
+    state.tooSmall = true
+    state.checks = CHECKS
+    const html = await render()
+    expect(html).toContain('This group has fewer than 5 people')
+    expect(html).not.toContain('Setup checks')
+    expect(html).not.toContain('Ada')
+  })
+})
+
 const MCP: McpInventoryResponse = {
   servers: [
     {

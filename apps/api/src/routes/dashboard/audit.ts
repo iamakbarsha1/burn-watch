@@ -86,11 +86,19 @@ export async function auditRoutes(fastify: FastifyInstance) {
         actorId: { $ne: me },
         at: { $gte: startOf(from), $lt: new Date(startOf(to).getTime() + 86_400_000) },
         $or: [
-          { 'target.type': 'scope', 'target.label': 'org' },
-          ...(teamIds.length ? [{ 'target.type': 'team' as const, 'target.id': { $in: teamIds } }] : []),
-          ...(managerIds.length
-            ? [{ 'target.type': 'scope' as const, 'target.label': 'managed teams', actorId: { $in: managerIds } }]
-            : []),
+          // v2.1 rows say who they covered at the time.
+          { coveredUserIds: me },
+          // Older rows do not, so they go by the teams the caller is in today.
+          {
+            coveredUserIds: { $exists: false },
+            $or: [
+              { 'target.type': 'scope', 'target.label': 'org' },
+              ...(teamIds.length ? [{ 'target.type': 'team' as const, 'target.id': { $in: teamIds } }] : []),
+              ...(managerIds.length
+                ? [{ 'target.type': 'scope' as const, 'target.label': 'managed teams', actorId: { $in: managerIds } }]
+                : []),
+            ],
+          },
         ],
       },
       { sort: { at: -1 }, limit: 200 },

@@ -64,6 +64,12 @@ vi.mock('@burn-watch/db', async (importOriginal) => {
   }
 })
 
+// The fake store ignores filters, so a users read would count every seeded
+// user, or none. Org size is set here instead: 5 by default, the smallest org
+// an admin sees totals for. A test that needs a smaller org sets `orgSize.ids`.
+const orgSize = vi.hoisted(() => ({ ids: [] as string[] }))
+vi.mock('../plugins/org-people.js', () => ({ orgPeople: async () => orgSize.ids }))
+
 // Rate limiting is not what these tests cover. The plugin is a no-op here, so
 // `config.rateLimit` on a route is simply inert metadata.
 vi.mock('@fastify/rate-limit', () => ({ default: fp(async () => {}) }))
@@ -152,6 +158,7 @@ beforeEach(async () => {
   mongoState.pingFails = false
   mongoState.schemaFails = false
   mongoState.docs = {}
+  orgSize.ids = [USER_A, USER_B, ...PEERS]
   mongoState.aggregates = {}
   mongoState.calls = []
   mongoState.failOn = null
@@ -297,6 +304,30 @@ describe('dashboard routes — viewer scoping', () => {
     // The audit event names the viewer as actor by design; no data read may.
     const reads = mongoState.calls.filter((c) => c.collection !== 'auditEvents')
     expect(inspect(reads, { depth: null }), url).not.toContain(USER_A)
+  })
+
+  describe('an admin of an org under 5 people (v2.1)', () => {
+    const asAdmin = (url: string) => app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+
+    it.each(SCOPED_URLS)('refuses org totals for an org of 4 on %s', async (url) => {
+      orgSize.ids = [USER_A, USER_B, PEERS[0], PEERS[1]]
+      const res = await asAdmin(url)
+      expect(res.statusCode, url).toBe(403)
+      expect(res.json(), url).toEqual({ error: 'group_too_small', minGroupSize: 5 })
+    })
+
+    it.each(SCOPED_URLS)('lets an admin alone in the org read their own data on %s', async (url) => {
+      orgSize.ids = [USER_A]
+      expect((await asAdmin(url)).statusCode, url).toBe(200)
+    })
+
+    it.each(['/v1/dashboard/adoption/unused-seats', '/v1/dashboard/governance/setup-checks'])(
+      'still answers the named admin list %s for an org of 4',
+      async (url) => {
+        orgSize.ids = [USER_A, USER_B, PEERS[0], PEERS[1]]
+        expect((await asAdmin(range(url))).statusCode, url).toBe(200)
+      },
+    )
   })
 })
 
@@ -1489,7 +1520,7 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
       to: t,
       rangeDays: 2, // counted from the first day ever used, not from `from`
       activeDays: 2,
-      streak: { current: 2, longest: 2, lastActive: t },
+      consecutiveDays: { current: 2, longest: 2, lastActive: t },
       totalTokens: 1000,
       sessions: 4,
       totalCostUsd: 5,
@@ -1530,16 +1561,16 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
     for (const leak of [USER_B, ...PEERS, OTHER.name, OTHER.email, 'Ada', 'ada@example.com']) expect(text).not.toContain(leak)
   })
 
-  it('reads the streak from all-time snapshots', async () => {
+  it('reads consecutive days from all-time snapshots', async () => {
     seed()
     await get('developer')
-    const [, streakFilter] = callsTo(mongoState, 'dailySnapshots', 'find').map(([f]) => f as Record<string, unknown>)
-    expect(streakFilter).toEqual({ orgId: ORG_A, userId: USER_A, totalTokens: { $gt: 0 } })
+    const [, runFilter] = callsTo(mongoState, 'dailySnapshots', 'find').map(([f]) => f as Record<string, unknown>)
+    expect(runFilter).toEqual({ orgId: ORG_A, userId: USER_A, totalTokens: { $gt: 0 } })
   })
 
-  it('answers zeros and an empty streak with no usage', async () => {
+  it('answers zeros and no consecutive days with no usage', async () => {
     const body = (await get('developer')).json()
-    expect(body).toMatchObject({ activeDays: 0, totalTokens: 0, totalCostUsd: 0, agents: [], streak: { current: 0, longest: 0, lastActive: null } })
+    expect(body).toMatchObject({ activeDays: 0, totalTokens: 0, totalCostUsd: 0, agents: [], consecutiveDays: { current: 0, longest: 0, lastActive: null } })
     expect(body.onboarding).toBeNull()
     expect(body.helpVolunteer).toBe(false)
     expect(body).toMatchObject({ seats: [], freeTier: [], setupChecks: [], accountFlags: [] })
@@ -4938,6 +4969,26 @@ describe('audit log (R1 B8)', () => {
       expect(new Set(ids)).toEqual(new Set([`view:${ORG_A}:${USER_A}:governance:all:${today()}`]))
     })
 
+    // v2.1: who a view covered is kept on the row, so a later team change does not rewrite it.
+    const covered = () =>
+      mongoCalls('auditEvents', 'updateOne').map(
+        ([, update]) => (update as { $addToSet?: { coveredUserIds: { $each: string[] } } }).$addToSet?.coveredUserIds.$each,
+      )
+
+    it('adds the org people at the time to a whole-org view', async () => {
+      mongoState.docs.users = [USER_A, USER_B, ...PEERS].map((_id) => ({ _id }))
+      expect((await call('GET', `/v1/dashboard/usage-distribution?from=${DATE}&to=${DATE}`)).statusCode).toBe(200)
+      expect(covered()).toEqual([[USER_A, USER_B, ...PEERS]])
+      // Unioned over the day: never in $setOnInsert, where it would conflict with $addToSet.
+      expect(views()[0]).not.toHaveProperty('coveredUserIds')
+    })
+
+    it('adds the team members at the time to a team view', async () => {
+      teamOf()
+      await call('GET', `/v1/dashboard/overview?from=${DATE}&to=${DATE}&teamId=${TEAM_A}`, undefined, 'manager')
+      expect(covered()).toEqual([[USER_A, USER_B, ...PEERS]])
+    })
+
     it('records adoption, people and team comparison reads', async () => {
       await call('GET', '/v1/dashboard/adoption/unused-seats')
       await call('GET', '/v1/auth/admin/users')
@@ -5042,9 +5093,15 @@ describe('audit log (R1 B8)', () => {
               actorId: { $ne: USER_A },
               at: range,
               $or: [
-                { 'target.type': 'scope', 'target.label': 'org' },
-                { 'target.type': 'team', 'target.id': { $in: [TEAM_A] } },
-                { 'target.type': 'scope', 'target.label': 'managed teams', actorId: { $in: [USER_B] } },
+                { coveredUserIds: USER_A },
+                {
+                  coveredUserIds: { $exists: false },
+                  $or: [
+                    { 'target.type': 'scope', 'target.label': 'org' },
+                    { 'target.type': 'team', 'target.id': { $in: [TEAM_A] } },
+                    { 'target.type': 'scope', 'target.label': 'managed teams', actorId: { $in: [USER_B] } },
+                  ],
+                },
               ],
             },
             { sort: { at: -1 }, limit: 200 },
@@ -5063,11 +5120,15 @@ describe('audit log (R1 B8)', () => {
       },
     )
 
+    /** The pre-v2.1 branch: rows with no coveredUserIds, matched by today's teams. */
+    const legacyBranches = () =>
+      (mongoCalls('auditEvents', 'find')[0][0] as { $or: [unknown, { $or: unknown }] }).$or[1].$or
+
     it('drops the team and manager branches when the caller is in no team', async () => {
       const res = await call('GET', '/v1/dashboard/audit/me', undefined, 'developer')
       expect(res.statusCode).toBe(200)
       expect(mongoCalls('teamMembers', 'find')).toHaveLength(1)
-      expect((mongoCalls('auditEvents', 'find')[0][0] as { $or: unknown }).$or).toEqual([
+      expect(legacyBranches()).toEqual([
         { 'target.type': 'scope', 'target.label': 'org' },
       ])
       expect(mongoCalls('users', 'find')).toEqual([])
@@ -5079,7 +5140,7 @@ describe('audit log (R1 B8)', () => {
       // The fake store ignores filters, so the manager read is emptied by hand.
       vi.spyOn(getStore().teamMembers, 'find').mockResolvedValueOnce([row] as never).mockResolvedValueOnce([])
       await call('GET', '/v1/dashboard/audit/me', undefined, 'developer')
-      expect((mongoCalls('auditEvents', 'find')[0][0] as { $or: unknown }).$or).toEqual([
+      expect(legacyBranches()).toEqual([
         { 'target.type': 'scope', 'target.label': 'org' },
         { 'target.type': 'team', 'target.id': { $in: [TEAM_A] } },
       ])

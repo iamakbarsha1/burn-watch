@@ -320,7 +320,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     if (!parsed.success) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
-    const scope = await readScope(request.user, parsed.data.teamId)
+    const scope = await readScope(request.user, parsed.data.teamId, { adminOp: true })
     if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 

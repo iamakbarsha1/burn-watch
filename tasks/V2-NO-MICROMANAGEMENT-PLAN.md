@@ -129,6 +129,18 @@ Known gaps after Phase 5:
 - Prod's only team (Al-Sorat) has 2 people, so a manager sees "group too small" on every team view. The rule is working; real team numbers need a team of 5.
 - `manager.test@test.com` is a test manager on prod, made through the invite flow. Delete it from Admin when it is no longer needed.
 
+### v2.1: close the known gaps (web-v1.1.0, 2026-11-27)
+
+- [x] Small orgs: an admin's whole-org read counts the org's active people and answers `group_too_small` under 5 (an admin alone in the org still sees their own data). Unused seats and setup checks pass `adminOp` and skip the count, so an admin can still act on one person. Closes the Phase 0 and Phase 3 gap.
+- [x] Who viewed my data: each view row stores `coveredUserIds` (the read's scope, or the org's active people for a whole-org view), unioned over the day with `$addToSet`. `/audit/me` matches on it. Rows from before v2.1 have no field and still go by current teams. Closes the Phase 4 gap for every view from 2026-11-27 on.
+- [x] Words: `streak` renamed `consecutiveDays` in the API, shared types and My usage. `scripts/check-words.sh` now covers `apps/api/src` and `packages/*/src`. Allowlist: pre-v2 audit labels and migration 0005. Closes the Phase 4 gap.
+- [x] Postgres leftovers: already removed in `cb195f8` (2026-11-21). `legacy-peer-deps` in `.npmrc` stays, because `better-call` wants zod 4 and the workspaces use zod 3. The CI comment that blamed drizzle is fixed.
+- Prod team size (Phase 5 gap): left as is, by decision. It is data, not code. Managers see team numbers once a team has 5 people.
+
+Known gaps after v2.1:
+- Views written before 2026-11-27 still match by current teams. They expire within a year.
+- A whole-org view covers the org's active people at the time, so someone who joins the org later does not see it. Someone deactivated before the view is not covered, which is correct.
+
 ## Decisions (confirmed 2026-11-24)
 
 1. Minimum group size: **5**.

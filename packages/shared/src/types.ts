@@ -159,8 +159,8 @@ export interface TeamComparison {
   daily: { date: string; totalCost: number }[]
 }
 
-/** R1 A8. Runs of active days, weekends never break one. See apps/api streaks.ts. */
-export interface Streak {
+/** R1 A8. Runs of consecutive active days, weekends never break one. See apps/api consecutive-days.ts. */
+export interface ConsecutiveDays {
   /** Active days in the live run, 0 if broken. */
   current: number
   /** Longest run, all time. */
@@ -185,7 +185,7 @@ export interface MyUsageResponse {
   /** Days with any tokens, in range. */
   activeDays: number
   /** All time. Shown only to the person. */
-  streak: Streak
+  consecutiveDays: ConsecutiveDays
   totalTokens: number
   sessions: number
   totalCostUsd: number

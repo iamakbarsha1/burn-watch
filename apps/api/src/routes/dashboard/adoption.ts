@@ -36,7 +36,6 @@ import { today } from './dates.js'
 import { countFeatures, featureDays, mcpServersPipeline, type FeatureFields } from './features.js'
 import type { EnrichmentRange } from './enrichment.js'
 import { MIN_QUARTILE_PEOPLE, practiceGroup, practiceTips, quartileSplit, recommendedSetup, teamVolunteers } from './quartile.js'
-import { streaks } from './streaks.js'
 import {
   ACTIVE_DAYS_PER_WEEK,
   MIN_FEATURES,
@@ -232,7 +231,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
     const { idleDays, teamId } = parsed.data
-    const scope = await readScope(request.user, teamId)
+    const scope = await readScope(request.user, teamId, { adminOp: true })
     if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'adoption', scope, teamId)
 
@@ -484,7 +483,7 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
       teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
     }
 
-    // Today's data is not synced yet, as in the streak rule.
+    // Today's data is not synced yet, as in the consecutive-days rule.
     const lastSynced = addDays(today(), -1)
     const people = cohort.map((r) => ({
       teamIds: teamsOf.get(r.userId) ?? [],

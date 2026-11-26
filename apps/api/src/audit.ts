@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify'
 import type { AuditAction, AuditSurface, AuditTarget } from '@burn-watch/shared'
 import { getStore, newId, type AuditEventDoc, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
 import type { JwtPayload } from './plugins/jwt.js'
+import { orgPeople } from './plugins/org-people.js'
 
 /** Views expire after a year (Decision 4). Actions keep expiresAt null until B9 picks a period. */
 const VIEW_RETENTION_MS = 365 * 24 * 60 * 60 * 1000
@@ -90,6 +91,14 @@ export async function auditView(
     target = { type: teamId ? 'team' : 'scope', id: teamId ?? null, label: null }
   }
 
+  let covered: UserId[] | undefined
+  try {
+    covered = scope ?? (await orgPeople(orgId))
+  } catch {
+    // Without it the row reads as a pre-v2.1 view: matched by current teams.
+    covered = undefined
+  }
+
   const _id = `view:${orgId}:${viewer.userId}:${surface}:${teamId ?? 'all'}:${day}`
   const event: AuditEventDoc = {
     _id,
@@ -104,13 +113,19 @@ export async function auditView(
     lastAt: now,
     count: 1,
     expiresAt: new Date(now.getTime() + VIEW_RETENTION_MS),
+    ...(covered && { coveredUserIds: covered }),
   }
-  // _id comes from the filter; lastAt and count change on every view.
-  const { _id: _key, lastAt, count: _count, ...onInsert } = event
+  // _id comes from the filter; lastAt, count and coverage change on every view.
+  const { _id: _key, lastAt, count: _count, coveredUserIds: _covered, ...onInsert } = event
   await write(request, event, () =>
     getStore().auditEvents.updateOne(
       { _id },
-      { $setOnInsert: onInsert, $inc: { count: 1 }, $set: { lastAt } },
+      {
+        $setOnInsert: onInsert,
+        $inc: { count: 1 },
+        $set: { lastAt },
+        ...(covered && { $addToSet: { coveredUserIds: { $each: covered } } }),
+      },
       { upsert: true },
     ),
   )

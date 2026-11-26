@@ -139,7 +139,7 @@ function WhoViewed({ audit }: { audit: AuditMeResponse | null }) {
   return (
     <Section
       title="Who viewed my data"
-      description="Views that included you: the whole org, a team you are in, or the teams your manager runs. Teams are the ones you are in today."
+      description="Views that included you: the whole org, a team you are in, or the teams your manager runs. Each view counts the people it covered at the time. Views before 2026-11-27 go by the teams you are in today."
     >
       {audit === null ? (
         <p className="text-sm text-ink-2">Could not read who viewed your data. Try again in a moment.</p>
@@ -203,9 +203,9 @@ export default async function MyUsagePage({ searchParams }: { searchParams: Prom
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <StatTile label="Active days" value={`${usage.activeDays} of ${usage.rangeDays}`} hint="Days with any tokens" />
             <StatTile
-              label="Current streak"
-              value={plural(usage.streak.current, 'day')}
-              hint={`Longest ${plural(usage.streak.longest, 'day')}. Only visible to you.`}
+              label="Consecutive days"
+              value={plural(usage.consecutiveDays.current, 'day')}
+              hint={`Longest ${plural(usage.consecutiveDays.longest, 'day')}. Only visible to you.`}
             />
             <StatTile label="Tokens" value={formatTokens(usage.totalTokens)} />
             <StatTile label="Sessions" value={formatCount(usage.sessions)} />
@@ -261,7 +261,7 @@ export default async function MyUsagePage({ searchParams }: { searchParams: Prom
           </Section>
 
           <p className="text-xs text-ink-2">
-            Active day: any tokens that day (UTC). Streaks count all time, and weekends do not break one. Today and
+            Active day: any tokens that day (UTC). Consecutive days count all time, and weekends do not break a run. Today and
             yesterday may not be synced yet.
           </p>
         </>

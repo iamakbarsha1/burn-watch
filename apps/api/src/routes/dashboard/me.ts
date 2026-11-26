@@ -4,7 +4,7 @@ import { HelpVolunteerSchema, type AgentName, type MyUsageResponse } from '@burn
 import { dateQuerySchema } from './query-schema.js'
 import { today } from './dates.js'
 import { mcpServersPipeline } from './features.js'
-import { streaks } from './streaks.js'
+import { consecutiveDays } from './consecutive-days.js'
 import { WINDOW_DAYS, onboardingOf } from './onboarding.js'
 import { freeTierPipeline, freeTierRows, setupCheckGroups, setupCheckReason, type ModelGroup } from './governance.js'
 import { groupAccounts } from './accounts.js'
@@ -88,7 +88,7 @@ export async function meRoutes(fastify: FastifyInstance) {
 
     const [inRange, activeDates, mcpRows, me] = await Promise.all([
       store.dailySnapshots.find({ orgId, userId, date: { $gte: from, $lte: to } }),
-      // Streaks are all time. At most one row per day.
+      // Consecutive days are all time. At most one row per day.
       store.dailySnapshots.find({ orgId, userId, totalTokens: { $gt: 0 } }, { projection: { date: 1 } }),
       store.claudeEnrichment.aggregate<{ _id: UserId; servers: string[] }>(
         mcpServersPipeline({ orgId, userIds: [userId], from, to }),
@@ -133,7 +133,7 @@ export async function meRoutes(fastify: FastifyInstance) {
           },
         },
       )
-      // Today's data is not synced yet, as in the streak rule.
+      // Today's data is not synced yet, as in the consecutive-days rule.
       onboarding = { firstSync, ...onboardingOf(firstSync, dates, docs, addDays(today(), -1)) }
     }
     const status = await ownStatus(orgId, userId, from, to)
@@ -145,7 +145,7 @@ export async function meRoutes(fastify: FastifyInstance) {
       to,
       rangeDays: Math.round((Date.parse(to) - Date.parse(start)) / DAY_MS) + 1,
       activeDays,
-      streak: streaks(dates, today()),
+      consecutiveDays: consecutiveDays(dates, today()),
       totalTokens,
       sessions,
       totalCostUsd: usdFromMicros(costMicros as Micros),

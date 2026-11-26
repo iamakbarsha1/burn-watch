@@ -26,6 +26,7 @@ const state = vi.hoisted(() => ({
   distribution: null as UsageDistributionResponse | 'tooSmall' | null,
   distributionAsked: [] as unknown[][],
   teams: [] as Team[],
+  tooSmall: false,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -43,6 +44,7 @@ vi.mock('@/lib/api', () => ({
   },
   fetchFunnel: async (from: string, to: string) => {
     state.funnelAsked.push([from, to])
+    if (state.tooSmall) throw new GroupTooSmallError('group_too_small')
     if (!state.funnel) throw new Error('down')
     return state.funnel
   },
@@ -96,6 +98,36 @@ beforeEach(() => {
   state.distribution = null
   state.distributionAsked = []
   state.teams = []
+  state.tooSmall = false
+})
+
+describe('an org under 5 people (v2.1)', () => {
+  const seats: UnusedSeatsResponse = {
+    idleDays: 14,
+    rows: [{ userId: 'u1', userName: 'Ada', agent: 'claude', daysUnused: 20 }],
+    byAgent: [{ agent: 'claude', seats: 1, monthlyUsd: 100 }],
+    totalMonthlyUsd: 100,
+    orgSeats: 3,
+  } as never
+
+  it('still shows an admin the unused seats under the group-too-small notice', async () => {
+    state.tooSmall = true
+    state.data = seats
+    const html = await render()
+    expect(html).toContain('This group has fewer than 5 people')
+    expect(html).toContain('Unused seats')
+    expect(html).toContain('Ada')
+  })
+
+  it('shows a manager only the notice', async () => {
+    state.role = 'manager'
+    state.tooSmall = true
+    state.data = seats
+    const html = await render()
+    expect(html).toContain('This group has fewer than 5 people')
+    expect(html).not.toContain('Unused seats')
+    expect(html).not.toContain('Ada')
+  })
 })
 
 describe('AdoptionPage', () => {
