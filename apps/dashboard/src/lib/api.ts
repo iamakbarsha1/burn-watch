@@ -1,11 +1,10 @@
 import { cache } from 'react'
+import { GroupTooSmallError } from './group-too-small'
 import { cookies } from 'next/headers'
 import type {
   OverviewResponse,
-  LeaderboardEntry,
-  LeaderboardSort,
-  LeaderboardSettings,
-  LeaderboardSettingsResponse,
+  MyUsageResponse,
+  UsageDistributionResponse,
   TrendPoint,
   ToolUsageSummary,
   OrgProjectSummary,
@@ -26,10 +25,10 @@ import type {
   SeatAssignAll,
   AgentName,
   FreeTierResponse,
-  ViolationsResponse,
+  SetupChecksResponse,
   AgentPolicyInput,
   McpInventoryResponse,
-  IdleSeatsResponse,
+  UnusedSeatsResponse,
   FeatureMatrixResponse,
   OnboardingResponse,
   PracticeRank,
@@ -39,6 +38,7 @@ import type {
   FunnelResponse,
   AuditRow,
   AuditQuery,
+  AuditMeResponse,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -72,7 +72,11 @@ async function errorMessage(res: Response, path: string): Promise<string> {
 async function apiFetch<T>(path: string): Promise<T> {
   const headers = await authHeaders()
   const res = await fetch(`${API_URL}${path}`, { cache: 'no-store', headers })
-  if (!res.ok) throw new Error(await errorMessage(res, path))
+  if (!res.ok) {
+    const message = await errorMessage(res, path)
+    if (res.status === 403 && message === 'group_too_small') throw new GroupTooSmallError(message)
+    throw new Error(message)
+  }
   return res.json() as Promise<T>
 }
 
@@ -121,28 +125,19 @@ export async function fetchOverview(
   return apiFetch(`/v1/dashboard/overview?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}`)
 }
 
-export async function fetchLeaderboard(
-  from: string,
-  to: string,
-  orgId: string,
-  teamId?: string,
-  sort?: LeaderboardSort,
-): Promise<LeaderboardEntry[]> {
-  const sortQuery = sort ? `&sort=${sort}` : ''
-  return apiFetch(`/v1/dashboard/leaderboard?from=${from}&to=${to}&orgId=${orgId}${teamQuery(teamId)}${sortQuery}`)
+// Any role. The caller's own numbers only; the API takes the user from the token.
+export async function fetchMyUsage(from: string, to: string): Promise<MyUsageResponse> {
+  return apiFetch(`/v1/dashboard/me/usage?from=${from}&to=${to}`)
 }
 
-export async function fetchLeaderboardSettings(): Promise<LeaderboardSettingsResponse> {
-  return apiFetch('/v1/dashboard/leaderboard/settings')
+// Any role. Sets only the caller's own "happy to help with Claude Code".
+export async function setHelpVolunteer(helpVolunteer: boolean): Promise<{ helpVolunteer: boolean }> {
+  return apiMutate('PUT', '/v1/dashboard/me/help-volunteer', { helpVolunteer })
 }
 
-// Admin only; the API answers 403 to anyone else.
-export async function saveLeaderboardSettings(input: LeaderboardSettings): Promise<LeaderboardSettings> {
-  return apiMutate('PUT', '/v1/dashboard/leaderboard/settings', input)
-}
-
-export async function setHideOnLeaderboard(hideOnLeaderboard: boolean): Promise<{ hideOnLeaderboard: boolean }> {
-  return apiMutate('PUT', '/v1/dashboard/leaderboard/me', { hideOnLeaderboard })
+// Admin or manager. Counts per band, no names; 403 group_too_small under MIN_GROUP_SIZE people.
+export async function fetchUsageDistribution(from: string, to: string, teamId?: string): Promise<UsageDistributionResponse> {
+  return apiFetch(`/v1/dashboard/usage-distribution?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
 export async function fetchTrends(
@@ -312,16 +307,16 @@ export async function fetchFreeTier(from: string, to: string, teamId?: string): 
   return apiFetch(`/v1/dashboard/governance/free-tier?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
-export async function fetchViolations(from: string, to: string, teamId?: string): Promise<ViolationsResponse> {
-  return apiFetch(`/v1/dashboard/governance/violations?from=${from}&to=${to}${teamQuery(teamId)}`)
+export async function fetchSetupChecks(from: string, to: string, teamId?: string): Promise<SetupChecksResponse> {
+  return apiFetch(`/v1/dashboard/governance/setup-checks?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
 /**
- * Policy violations in the last 30 days, admins only. Cached per request: the
+ * Setup checks (use outside the agent rules) in the last 30 days, admins only. Cached per request: the
  * layout's nav count and a page's banner share one call.
  */
-export const fetchViolationCount = cache(async (): Promise<number> => {
-  return (await apiFetch<{ count: number }>('/v1/dashboard/governance/violations/count')).count
+export const fetchSetupCheckCount = cache(async (): Promise<number> => {
+  return (await apiFetch<{ count: number }>('/v1/dashboard/governance/setup-checks/count')).count
 })
 
 export async function setAgentPolicy(agent: AgentName, input: AgentPolicyInput): Promise<{ agent: AgentName }> {
@@ -352,8 +347,9 @@ export async function setCompanyClaudeOrgs(ids: string[]): Promise<{ count: numb
   return apiMutate('PUT', '/v1/dashboard/governance/claude-orgs', { ids })
 }
 
-export async function fetchIdleSeats(idleDays: number, teamId?: string): Promise<IdleSeatsResponse> {
-  return apiFetch(`/v1/dashboard/adoption/idle-seats?idleDays=${idleDays}${teamQuery(teamId)}`)
+// Admins only; a manager gets 403.
+export async function fetchUnusedSeats(idleDays: number, teamId?: string): Promise<UnusedSeatsResponse> {
+  return apiFetch(`/v1/dashboard/adoption/unused-seats?idleDays=${idleDays}${teamQuery(teamId)}`)
 }
 
 export async function fetchFunnel(from: string, to: string, teamId?: string): Promise<FunnelResponse> {
@@ -380,6 +376,14 @@ export async function fetchAuditLog(q: AuditQuery): Promise<AuditRow[]> {
   const params = new URLSearchParams()
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') params.set(k, String(v))
   return apiFetch(`/v1/dashboard/audit?${params}`)
+}
+
+// v2 Phase 4. Any role: who viewed data that covered the caller. Defaults to the last 90 days.
+export async function fetchAuditMe(from?: string, to?: string): Promise<AuditMeResponse> {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  return apiFetch(`/v1/dashboard/audit/me?${params}`)
 }
 
 // The key goes in the body or query, never the path: it comes from a

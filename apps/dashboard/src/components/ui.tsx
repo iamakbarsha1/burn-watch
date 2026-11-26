@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { MIN_GROUP_SIZE } from '@burn-watch/shared'
 
 /**
  * The shared vocabulary every page is built from. Before this, each page
@@ -106,6 +107,16 @@ export function EmptyState({ title, message }: { title: string; message?: ReactN
       <p className="text-sm font-medium text-ink">{title}</p>
       {message && <p className="mx-auto mt-2 max-w-md text-sm text-ink-2">{message}</p>}
     </div>
+  )
+}
+
+/** What a page shows when the API refused its read as a group too small (v2 rule 2). */
+export function GroupTooSmall() {
+  return (
+    <EmptyState
+      title={`This group has fewer than ${MIN_GROUP_SIZE} people`}
+      message={`BurnWatch hides numbers for any group under ${MIN_GROUP_SIZE} people, so no total can point at one person. Pick a larger team, or the whole org if you can see it.`}
+    />
   )
 }
 

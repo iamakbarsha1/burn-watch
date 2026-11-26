@@ -3,8 +3,8 @@ import type { Document } from 'mongodb'
 import { getStore, type IsoDate, type OrgId, type UserId } from '@burn-watch/db'
 import { TicketPrefixesSchema, type TicketRow, type TicketUsageResponse } from '@burn-watch/shared'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
-import { dateQuerySchema as QuerySchema } from './query-schema.js'
-import { requireAdmin, viewerScope } from '../../plugins/jwt.js'
+import { dateQuerySchema as QuerySchema, isRefusal, refuse } from './query-schema.js'
+import { readScope, requireAdmin } from '../../plugins/jwt.js'
 import { audit } from '../../audit.js'
 
 // Jira key: letter, then 1-9 letters or digits, a dash, a number from 1. No `_`,
@@ -137,11 +137,13 @@ export async function ticketsRoutes(fastify: FastifyInstance) {
     const from = (parsed.data.date ?? parsed.data.from!) as IsoDate
     const to = (parsed.data.date ?? parsed.data.to!) as IsoDate
     const orgId = request.user.orgId as OrgId
+    const scope = await readScope(request.user)
+    if (isRefusal(scope)) return refuse(reply, scope)
     const store = getStore()
     const [org, groups] = await Promise.all([
       store.organizations.findOne({ _id: orgId }, { projection: { ticketPrefixes: 1 } }),
       store.claudeEnrichment.aggregate<BranchGroup>(
-        ticketTotals({ orgId, userIds: await viewerScope(request.user), from, to }),
+        ticketTotals({ orgId, userIds: scope, from, to }),
       ),
     ])
     const prefixes = org?.ticketPrefixes?.length ? org.ticketPrefixes : null

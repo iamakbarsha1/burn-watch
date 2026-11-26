@@ -8,6 +8,77 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v1.0.0 (2026-11-26)
+
+v2: no micromanagement. Breaking: features are removed and API responses
+change. BurnWatch now shows team-level Claude Code cost and adoption, and
+each person gets a private view of their own usage. Plan and rules:
+`tasks/V2-NO-MICROMANAGEMENT-PLAN.md`. The agent does not change.
+
+Removed, and why:
+
+- **Leaderboard and the 0 to 100 score** (`/users`, the leaderboard route,
+  `SCORE_WEIGHTS`). Ranking people by AI use is the problem v2 fixes.
+  Replaced by My usage (`/me`) for each person and a usage distribution
+  for managers: how many people use it 0, 1 to 2, 3 to 4 or 5+ days a
+  week, with no names.
+- **Cost per person, value multiple, API spend per person.** These put a
+  price on a person. Cost by org, team, project and ticket stays. Each
+  person sees their own cost on My usage.
+- **Streaks and active days in any manager or admin view.** That is
+  presence tracking. Your own streak stays on My usage, visible only to
+  you.
+- **Leaderboard settings** (`developerView`, `showNames`, `showOthersCost`)
+  and **"hide me on the leaderboard"** (`hideOnLeaderboard`). Nothing is
+  left for them to control. Migration `0005_drop_leaderboard_settings`
+  unsets the fields.
+- **"Stuck" list on the adoption funnel.** It named people who use AI
+  less. Stage counts per team stay.
+- **Per-person onboarding status ("missed", "in progress").** It graded
+  new hires pass or fail. Managers see cohort counts. New hires see their
+  own first 14 days on My usage. The API state `missed` is now
+  `windowEnded`.
+- **Per-person feature grid.** Replaced by the share of a team that has
+  used each feature.
+- **Auto-picked champions.** They singled people out without asking.
+  People now volunteer as "happy to help" from My usage.
+- **Per-person budget alerts.** A personal spend cap reads as
+  monitoring. Org and team budgets stay. Migration
+  `0006_drop_per_person_alerts` deletes the old ones.
+- **Named limit-hit alerts.** Replaced by a count of people who hit a
+  usage limit, as a signal to raise limits. You see your own limit hits.
+- **Named lists of personal accounts and free-tier use.** Admins see
+  counts. You see a notice about your own account on My usage.
+- **Per-server user list in the MCP inventory.** Replaced by a count of
+  people.
+- **"Last seen" on devices for managers.** Admins keep it for asset
+  management.
+
+Kept, renamed:
+
+- Policy violations are now **setup checks**
+  (`/governance/setup-checks`). Admins see names, since it is a security
+  control. Managers see a count. You see your own checks on My usage.
+- Idle seats are now **unused seats** (`/adoption/unused-seats`), admin
+  only: name, seat, days since last use. You see your own seats.
+
+Added:
+
+- Groups under 5 people return "group too small" instead of numbers
+  (`403 group_too_small`).
+- **Who viewed my data** on My usage (`GET /v1/dashboard/audit/me`):
+  views of the whole org, a team you are in, or your manager's teams, for
+  the last 90 days.
+- **What BurnWatch will never do** on `/privacy`.
+- CI: "Neutral words" fails on ranking or blame words in the dashboard,
+  and a real-MongoDB check fails if any response names another person
+  outside the admin allowlist or answers for a group under 5.
+
+Upgrade: run migrations 0005 and 0006
+(`npm run sync -w @burn-watch/db`). Known gaps: an admin of an org under
+5 people still sees org totals, and Who viewed my data goes by the teams
+you are in today.
+
 ## Agent v0.6.0 (2026-11-23)
 
 Own usage collector, cutover and cleanup. The agent now collects usage

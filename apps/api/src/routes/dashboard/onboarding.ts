@@ -1,11 +1,9 @@
 import { addDays, type IsoDate } from '@burn-watch/db'
-import { FEATURE_KEYS, type OnboardingCounts, type OnboardingResult } from '@burn-watch/shared'
+import { ACTIVE_DAYS_PER_WEEK, FEATURE_KEYS, MIN_FEATURES, type OnboardingCounts, type OnboardingResult } from '@burn-watch/shared'
 import { featureDays, type FeatureFields } from './features.js'
 
-/** R2 D6 Decision 1: tokens on 2+ days in week 1 and 2+ days in week 2. */
-export const ACTIVE_DAYS_PER_WEEK = 2
-/** Decision 2: any 2 of A5's five features, each on 1+ day. */
-export const MIN_FEATURES = 2
+// Shared, so My usage states the same rules the API applies.
+export { ACTIVE_DAYS_PER_WEEK, MIN_FEATURES }
 /** Decision 5: a percentage only from 5 finished windows. */
 export const MIN_FOR_PERCENT = 5
 export const WINDOW_DAYS = 14
@@ -40,11 +38,11 @@ export function onboardingOf(
   const onboarded =
     activeWeek1 >= ACTIVE_DAYS_PER_WEEK && activeWeek2 >= ACTIVE_DAYS_PER_WEEK && features.length >= MIN_FEATURES
   if (onboarded) return { state: 'onboarded', ...base }
-  return { state: addDays(firstSync, WINDOW_DAYS - 1) > lastSynced ? 'inProgress' : 'missed', ...base }
+  return { state: addDays(firstSync, WINDOW_DAYS - 1) > lastSynced ? 'inProgress' : 'windowEnded', ...base }
 }
 
 export function countOnboarding(results: Pick<OnboardingResult, 'state'>[]): OnboardingCounts {
-  const c: OnboardingCounts = { cohort: results.length, onboarded: 0, missed: 0, inProgress: 0, noFeatureData: 0 }
+  const c: OnboardingCounts = { cohort: results.length, onboarded: 0, windowEnded: 0, inProgress: 0, noFeatureData: 0 }
   for (const r of results) c[r.state]++
   return c
 }

@@ -1,5 +1,7 @@
+import type { Document } from 'mongodb'
 import type { ClaudeEnrichmentDoc } from '@burn-watch/db'
-import { FEATURE_KEYS, type FeatureCounts, type FeatureKey, type FeaturePerson } from '@burn-watch/shared'
+import { FEATURE_KEYS, type FeatureCounts, type FeatureKey } from '@burn-watch/shared'
+import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 
 /** The enrichment fields A5 reads. Every one may be null or absent on old days. */
 export type FeatureFields = Partial<
@@ -43,7 +45,7 @@ export function featureDays(docs: FeatureFields[]): Record<FeatureKey, number | 
 }
 
 /** Decision 2: "used" means at least one day in range. */
-export function countFeatures(people: Pick<FeaturePerson, 'days'>[]): FeatureCounts {
+export function countFeatures(people: { days: Record<FeatureKey, number | null> }[]): FeatureCounts {
   const used = Object.fromEntries(FEATURE_KEYS.map((k) => [k, 0])) as Record<FeatureKey, number>
   let sdkKnown = 0
   for (const p of people) {
@@ -51,4 +53,17 @@ export function countFeatures(people: Pick<FeaturePerson, 'days'>[]): FeatureCou
     if (p.days.sdk !== null) sdkKnown++
   }
   return { users: people.length, used, sdkKnown }
+}
+
+/**
+ * Distinct MCP server keys per person in range, for "features tried". Built
+ * like `toolUsageTotals`, grouped by user instead of summed for the org.
+ */
+export function mcpServersPipeline(range: EnrichmentRange): Document[] {
+  return [
+    enrichmentMatch(range),
+    { $project: { userId: 1, keys: { $map: { input: { $objectToArray: { $ifNull: ['$mcpUsage', {}] } }, in: '$$this.k' } } } },
+    { $unwind: '$keys' },
+    { $group: { _id: '$userId', servers: { $addToSet: '$keys' } } },
+  ]
 }

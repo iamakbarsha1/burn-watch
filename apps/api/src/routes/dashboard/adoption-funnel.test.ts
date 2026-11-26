@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Document } from 'mongodb'
-import type { IsoDate, OrgId, TeamId, UserId } from '@burn-watch/db'
-import { countFunnel, funnelThresholds, funnelUsersPipeline, stageOf, stuckList, type FunnelPerson } from './adoption.js'
+import type { IsoDate, OrgId, UserId } from '@burn-watch/db'
+import { countFunnel, daysUnused, funnelThresholds, funnelUsersPipeline, stageOf, type FunnelPerson } from './adoption.js'
 import { daysBefore } from './dates.js'
 
 /**
@@ -87,29 +87,6 @@ describe('countFunnel', () => {
   })
 })
 
-describe('stuckList', () => {
-  it('lists everyone short of power user by stopping point, with the date of their last step', () => {
-    const teams = new Map([['t1' as TeamId, 'Web'], ['t2' as TeamId, 'Platform']])
-    const stuck = stuckList(
-      [
-        person({ name: 'Zoe', activeDays: 3, lastSync: '2026-11-21' as IsoDate }),
-        person({ name: 'Bo', firstSync: null, lastSync: null, teamIds: ['t1', 't2'] as TeamId[] }),
-        person({ userId: null, name: null, email: 'new@example.invalid', since: '2026-11-01' as IsoDate }),
-        person({ name: 'Pat', activeDays: 6 }),
-        person({ name: 'Cy', activeDays: 1, lastSync: '2026-11-19' as IsoDate }),
-      ],
-      WEEK,
-      teams,
-    )
-    expect(stuck.map((s) => [s.stoppedAt, s.name ?? s.email, s.lastStepDate, s.teams])).toEqual([
-      ['invited', 'new@example.invalid', '2026-11-01', []],
-      ['registered', 'Bo', '2026-11-05', ['Platform', 'Web']],
-      ['firstSync', 'Cy', '2026-11-19', []],
-      ['active', 'Zoe', '2026-11-21', []],
-    ])
-  })
-})
-
 describe('funnelUsersPipeline', () => {
   const ORG = 'ORG' as OrgId
   const from = daysBefore(TODAY, 6)
@@ -129,5 +106,28 @@ describe('funnelUsersPipeline', () => {
     expect(usage[1].$group.activeDays).toEqual({
       $sum: { $cond: [{ $and: [{ $gte: ['$date', '2026-11-16'] }, { $lte: ['$date', TODAY] }] }, 1, 0] },
     })
+  })
+})
+
+describe('daysUnused', () => {
+  const seat = { startDate: '2026-11-01' }
+
+  it('is 0 for a seat used today', () => {
+    expect(daysUnused(seat, TODAY, TODAY)).toBe(0)
+  })
+
+  it('counts the days after the last use, today included', () => {
+    expect(daysUnused(seat, '2026-11-20', TODAY)).toBe(2)
+  })
+
+  it('counts a never-used seat from its start date, today included', () => {
+    expect(daysUnused(seat, null, TODAY)).toBe(22)
+    expect(daysUnused({ startDate: TODAY }, null, TODAY)).toBe(1)
+  })
+
+  it('ignores use before the seat started', () => {
+    expect(daysUnused(seat, '2026-10-15', TODAY)).toBe(22)
+    // The day before the start counts the same as never used.
+    expect(daysUnused(seat, '2026-10-31', TODAY)).toBe(22)
   })
 })

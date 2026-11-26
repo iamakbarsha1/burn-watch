@@ -1,3 +1,4 @@
+import { MIN_GROUP_SIZE } from '@burn-watch/shared'
 import { Badge, PageHeader, Section, TableFrame, Td, Th, Tr } from '@/components/ui'
 import { AUDIENCE, FIELD_GROUPS, audienceOf, type Audience } from '@/lib/transparency'
 
@@ -9,8 +10,17 @@ const NEVER = [
   'Your raw Claude account ID. It is hashed on your laptop before it is sent',
 ]
 
+const WONT = [
+  'Rank people against each other.',
+  'Give anyone a number that rates them.',
+  'Show one person\'s usage to a manager.',
+  'Read your prompts or your code.',
+]
+
 const SEES: Record<Audience, [boolean, boolean, boolean]> = {
   scoped: [true, true, true],
+  self: [true, false, false],
+  selfAdmin: [true, false, true],
   admin: [false, false, true],
   none: [false, false, false],
 }
@@ -24,12 +34,20 @@ export default function PrivacyPage() {
     <div className="max-w-5xl space-y-6">
       <PageHeader
         title="What BurnWatch knows about me"
-        subtitle="Every field the agent on your laptop can send, and who can see it. This list is built from the schema the server checks every upload against."
+        subtitle="Every field the agent on your laptop can send, the choices you make here, and who can see each one. This list is built from the schemas the server checks every upload and change against."
       />
 
       <Section title="Never collected">
         <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
           {NEVER.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      </Section>
+
+      <Section title="What BurnWatch will never do">
+        <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
+          {WONT.map((line) => (
             <li key={line}>{line}</li>
           ))}
         </ul>
@@ -42,7 +60,13 @@ export default function PrivacyPage() {
       </p>
 
       <p className="text-sm text-ink-2">
-        Admins can see a log of who opened views that include team or person data.
+        Admins can see a log of who opened views that include team or person data. You can see who
+        viewed data that includes you under Who viewed my data on My usage.
+      </p>
+
+      <p className="text-sm text-ink-2">
+        Totals for a team, or for the teams a manager runs, are hidden when they cover fewer than{' '}
+        {MIN_GROUP_SIZE} people. A small team cannot be used to read one person&apos;s numbers.
       </p>
 
       {FIELD_GROUPS.map((group) => (

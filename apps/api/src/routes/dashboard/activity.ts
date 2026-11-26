@@ -3,8 +3,8 @@ import type { Document } from 'mongodb'
 import { getStore, type IsoDate, type OrgId } from '@burn-watch/db'
 import type { ToolUsageSummary } from '@burn-watch/shared'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
-import { dateQuerySchema as QuerySchema } from './query-schema.js'
-import { viewerScope } from '../../plugins/jwt.js'
+import { dateQuerySchema as QuerySchema, isRefusal, refuse } from './query-schema.js'
+import { readScope } from '../../plugins/jwt.js'
 
 /** `toolUsage`, `shellUsage` and `mcpUsage` under the category each belongs to. */
 const CATEGORIES: readonly { category: ToolUsageSummary['category']; path: string }[] = [
@@ -74,13 +74,15 @@ export async function activityRoutes(fastify: FastifyInstance) {
       }
       const from = (parsed.data.date ?? parsed.data.from!) as IsoDate
       const to = (parsed.data.date ?? parsed.data.to!) as IsoDate
+      const scope = await readScope(request.user)
+      if (isRefusal(scope)) return refuse(reply, scope)
 
       // The pipeline already produces `ToolUsageSummary` rows, so there is
       // nothing left for the handler to fold. The node-side merge it replaces
       // lived here because Postgres could not reach inside a JSONB column
       // without the lateral unnest in the statement below it.
       return await getStore().claudeEnrichment.aggregate<ToolUsageSummary>(
-        toolUsageTotals({ orgId, userIds: await viewerScope(request.user), from, to }),
+        toolUsageTotals({ orgId, userIds: scope, from, to }),
       )
     },
   )

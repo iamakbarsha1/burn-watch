@@ -8,7 +8,6 @@ import {
   fetchCopilotStatus,
   fetchTeams,
   fetchSeats,
-  fetchLeaderboardSettings,
 } from '@/lib/api'
 import { formatCost, formatTokens, formatAgo, today } from '@/lib/format'
 import { InviteForm } from './InviteForm'
@@ -17,7 +16,6 @@ import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
 import { CopilotPanel } from './CopilotPanel'
 import { CreateTeamForm, TeamsList } from './TeamsPanel'
 import { AddSeatForm, AssignAllSeatsForm, SeatsTable } from './SeatsPanel'
-import { LeaderboardSettingsForm } from './LeaderboardSettingsForm'
 import {
   PageHeader,
   StatTile,
@@ -42,14 +40,13 @@ export default async function AdminPage() {
   // Null rather than [] for the status: there is no empty Copilot status, and
   // the panel renders "could not read" rather than quietly claiming the
   // integration is unconfigured when the API is the thing that is down.
-  const [users, invites, budgetAlerts, copilotStatus, teams, seats, leaderboard] = await Promise.all([
+  const [users, invites, budgetAlerts, copilotStatus, teams, seats] = await Promise.all([
     fetchAdminUsers().catch(() => []),
     fetchPendingInvites().catch(() => []),
     fetchBudgetAlerts().catch(() => []),
     fetchCopilotStatus().catch(() => null),
     fetchTeams().catch(() => []),
     fetchSeats().catch(() => []),
-    fetchLeaderboardSettings().catch(() => null),
   ])
   const firstOfMonth = `${today().slice(0, 8)}01`
 
@@ -243,23 +240,12 @@ export default async function AdminPage() {
         </Section>
 
         <Section
-          title="Leaderboard"
-          description="What managers and developers see on the Leaderboard. Admins always see every name and cost. Managers see their own teams. A person can hide their own name, which shows as Anonymous to everyone but admins."
-        >
-          {leaderboard ? (
-            <LeaderboardSettingsForm settings={leaderboard} />
-          ) : (
-            <p className="text-sm text-bad">Could not read the leaderboard settings.</p>
-          )}
-        </Section>
-
-        <Section
           title="Budget alerts"
-          description="API spend: usage on agents a person has no seat for, against a monthly limit. Idle seat: a paid seat with no usage for a number of days. Limit hits: Claude usage limits hit this month. Tripping one shows the banner above; it clears itself once the month turns over or the condition no longer holds."
+          description="API spend: usage on agents a person has no seat for, against a monthly limit. Unused seat: a paid seat with no usage for a number of days. Limit hits: Claude usage limits hit this month. Alerts cover the whole org or one agent and show counts; names stay on the Unused seats card. Tripping one shows the banner above; it clears itself once the month turns over or the condition no longer holds."
         >
           <div className="space-y-4">
-            <CreateBudgetAlertForm users={users} />
-            <BudgetAlertsTable alerts={budgetAlerts} users={users} />
+            <CreateBudgetAlertForm />
+            <BudgetAlertsTable alerts={budgetAlerts} />
           </div>
         </Section>
 

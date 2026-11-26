@@ -176,62 +176,66 @@ export interface FeaturesTried {
   mcpServers: string[]
 }
 
-export type LeaderboardSort = 'activeDays' | 'score' | 'streak' | 'tokens' | 'cost'
-
-/** Org leaderboard settings. Absent on the org = own, true, false. */
-export interface LeaderboardSettings {
-  /** What a developer sees: own row, own row with rank, or the whole list. */
-  developerView: 'own' | 'rank' | 'full'
-  /** Off shows people as "Person N" to managers and developers. */
-  showNames: boolean
-  /** On lets developers see cost on other people's rows. */
-  showOthersCost: boolean
-}
-
-/** GET /leaderboard/settings: the org settings plus the caller's own choice. */
-export interface LeaderboardSettingsResponse extends LeaderboardSettings {
-  hideOnLeaderboard: boolean
-}
-
-/**
- * One leaderboard row. Every cost field is null on a row the viewer may not
- * see cost on, and a masked row carries no real name, email or user id.
- */
-export interface LeaderboardEntry {
-  userId: string
-  name: string
-  email: string
-  claude: { tokens: number; costUsd: number | null }
-  qwen: { tokens: number; costUsd: number | null }
-  gemini: { tokens: number; costUsd: number | null }
-  codex: { tokens: number; costUsd: number | null }
-  copilot: { tokens: number; costUsd: number | null }
-  totalCostUsd: number | null
-  totalTokens: number
-  sessions: number
-  cacheHitRate: number | null
-  /** Prorated seat cost over the range plus apiSpendUsd. */
-  actualCostUsd: number | null
-  /** Value of usage on agents this person has no seat for. */
-  apiSpendUsd: number | null
-  /** totalCostUsd ÷ actualCostUsd; null when actual cost is 0. */
-  valueMultiple: number | null
-  /** Position under the chosen sort, shared on ties (1, 2, 2, 4). */
-  rank: number
-  /** People ranked, so a lone row can read "#3 of 12". */
-  outOf: number
-  /** Days in range, starting at the first usage day of the ranked people, for "12 of 30". */
+// GET /v1/dashboard/me/usage (v2 Phase 1). The caller's own numbers, never anyone else's.
+export interface MyUsageResponse {
+  from: string
+  to: string
+  /** Days in range, for "12 of 30". */
   rangeDays: number
-  /** 0-100: active days, current streak, tokens, features tried vs the top person, 40/30/20/10. */
-  score: number
   /** Days with any tokens, in range. */
   activeDays: number
+  /** All time. Shown only to the person. */
   streak: Streak
+  totalTokens: number
+  sessions: number
+  totalCostUsd: number
+  /** Agents with tokens in range only. */
+  agents: { agent: AgentName; tokens: number; costUsd: number }[]
   features: FeaturesTried
+  /** Null before the first sync. */
+  onboarding: MyOnboarding | null
+  /** The person listed themselves as happy to help with Claude Code. */
+  helpVolunteer: boolean
+  /** v2 Phase 3: the person's own status, the same facts an admin sees about them. */
+  seats: MySeat[]
+  /** Own free-tier or unpriced use in range. */
+  freeTier: FreeTierModelRow[]
+  /** Own use outside the org's agent rules in range. */
+  setupChecks: MySetupCheck[]
+  /** Own Claude account flags in range. */
+  accountFlags: ClaudeAccountFlag[]
 }
 
-// One row of the admin team view. Unlike LeaderboardEntry this covers every
-// user in the org, so the fields that depend on usage are all nullable or zero
+/** One of the person's own seats. */
+export interface MySeat {
+  agent: AgentName
+  /** Days since last use, today included; 0 when used today. */
+  daysUnused: number
+}
+
+/** One (agent, model) of the person's own use outside the agent rules. */
+export interface MySetupCheck {
+  agent: AgentName
+  modelName: string
+  reason: SetupCheckReason
+  days: number
+  tokens: number
+}
+
+/** Average active days per week over the range. */
+export const USAGE_BANDS = ['none', '1-2', '3-4', '5+'] as const
+export type UsageBand = (typeof USAGE_BANDS)[number]
+
+// GET /v1/dashboard/usage-distribution (v2 Phase 1). Counts per band, no names.
+export interface UsageDistributionResponse {
+  from: string
+  to: string
+  /** Active people in scope, MIN_GROUP_SIZE or more. */
+  people: number
+  bands: Record<UsageBand, number>
+}
+
+// One row of the admin team view. It covers every user in the org, so the fields that depend on usage are all nullable or zero
 // for someone who has been invited but never run the agent.
 export interface AdminUserRow {
   id: string
@@ -357,8 +361,6 @@ export interface TicketUsageResponse {
 export interface BudgetAlert {
   id: string
   type: 'api-spend' | 'idle-seat' | 'limit-hit'
-  userId: string | null
-  userName: string | null
   agent: AgentName | null
   monthlyLimitUsd: number
   threshold: number
@@ -369,8 +371,10 @@ export interface BudgetAlert {
   monthToDateSpendUsd: number
   idleDays: number | null
   limitHits: number | null
-  /** idle-seat only; null for the other types. */
-  idleSeats: { userId: string; userName: string | null; agent: AgentName }[] | null
+  /** idle-seat only: unused seats right now. Names are on the Unused seats card. Null for the other types. */
+  idleSeatCount: number | null
+  /** limit-hit only: people who hit a usage limit this month. Null for the other types. */
+  people: number | null
 }
 
 // GET /v1/integrations/copilot/status.
@@ -494,39 +498,27 @@ export interface CopilotSeatsResponse {
   ambiguousLogins: string[]
 }
 
-// GET /v1/dashboard/governance/free-tier (B1). Admins see the org, managers
-// their own teams. `reason` says why the agent flagged the row: an agent with
-// only a free tier, or a model the collector has no price for.
+// GET /v1/dashboard/governance/free-tier (B1). Counts only (v2 Phase 3): admins
+// see the org, managers their own teams. `reason` says why the agent flagged the
+// row: an agent with only a free tier, or a model the collector has no price for.
 export type FreeTierReason = 'free-tier-agent' | 'unpriced-model'
 
-export interface FreeTierRow {
-  userId: string
-  /** Null when the user row is gone. */
-  userName: string | null
-  userEmail: string | null
-  /** Names of the viewer's visible teams this user is in. */
-  teams: string[]
+/** One (agent, model) over the scope. For `/me/usage` the counts are the person's own. */
+export interface FreeTierModelRow {
   agent: AgentName
   modelName: string
   reason: FreeTierReason
-  /** Distinct days with free-tier use in the range. */
+  /** People with use of this model in range. 1 on `/me/usage`. */
+  people: number
+  /** Distinct days with use in the range. */
   days: number
-  tokens: number
-  firstDate: string
-  lastDate: string
-}
-
-export interface FreeTierTeamTotal {
-  /** Null for users in none of the viewer's visible teams. */
-  teamId: string | null
-  teamName: string | null
-  users: number
   tokens: number
 }
 
 export interface FreeTierResponse {
-  rows: FreeTierRow[]
-  byTeam: FreeTierTeamTotal[]
+  /** Distinct people with any free-tier use in range. */
+  people: number
+  rows: FreeTierModelRow[]
 }
 
 /** R1 B2. 'unset' means the org has no rule for the agent yet. */
@@ -540,16 +532,33 @@ export interface AgentPolicy {
   note: string | null
 }
 
-export type ViolationReason = 'agent-blocked' | 'agent-not-set' | 'model-not-listed'
+export type SetupCheckReason = 'agent-blocked' | 'agent-not-set' | 'model-not-listed'
 
-/** One (user, agent, model) group of usage outside the policy. Same shape as a free-tier row. */
-export type ViolationRow = Omit<FreeTierRow, 'reason'> & { reason: ViolationReason }
+/** One (user, agent, model) group of use outside the agent rules. Admins only (v2 decision 2). */
+export interface SetupCheckRow {
+  userId: string
+  /** Null when the user row is gone. */
+  userName: string | null
+  userEmail: string | null
+  /** Names of the teams this user is in. */
+  teams: string[]
+  agent: AgentName
+  modelName: string
+  reason: SetupCheckReason
+  days: number
+  tokens: number
+  firstDate: string
+  lastDate: string
+}
 
-export interface ViolationsResponse {
+// GET /v1/dashboard/governance/setup-checks (R1 B2, renamed in v2 Phase 3).
+export interface SetupChecksResponse {
   /** All five agents, in AGENTS order. */
   policies: AgentPolicy[]
-  rows: ViolationRow[]
-  byTeam: FreeTierTeamTotal[]
+  /** Distinct people in scope with use outside the rules. */
+  people: number
+  /** Named rows, admins only; [] for managers. */
+  rows: SetupCheckRow[]
   /** Model names used in the range per agent, for the edit form. Admins only; {} for managers. */
   seenModels: Partial<Record<AgentName, string[]>>
 }
@@ -563,7 +572,8 @@ export interface McpServerRow {
   source: McpServerSource
   approved: boolean
   note: string | null
-  users: { userId: string; name: string | null }[]
+  /** Distinct people who called it in range. No names (v2 Phase 3). */
+  people: number
   calls: number
   /** Distinct days with a call in the range. */
   days: number
@@ -592,20 +602,6 @@ export interface ClaudeOrgRow {
   includesYou: boolean
 }
 
-export interface ClaudeAccountPerson {
-  userId: string
-  name: string
-  teamIds: string[]
-  /** Days with any account or org hash. */
-  hashedDays: number
-  /** Account labels, in label order. */
-  accounts: string[]
-  /** Days with an org hash that is not the company's. Null when the company org is not set. */
-  outsideOrgDays: number | null
-  claudeSeat: boolean
-  flags: ClaudeAccountFlag[]
-}
-
 export interface ClaudeAccountsResponse {
   from: string
   to: string
@@ -618,39 +614,30 @@ export interface ClaudeAccountsResponse {
   companyOrgUsers: number | null
   orgs: ClaudeOrgRow[]
   accounts: { label: string; users: number; days: number; shared: boolean }[]
-  /** People with a hashed day, most flags first. */
-  people: ClaudeAccountPerson[]
+  /** People per flag. No names (v2 Phase 3); each person sees their own flags on My usage. */
+  flagCounts: Record<ClaudeAccountFlag, number>
 }
 
-// GET /v1/dashboard/adoption/idle-seats (R1 A1). Seats with no tokens on their
-// own agent for `idleDays`+ days. Admins see the org, managers their own teams.
-export interface IdleSeatRow {
+// GET /v1/dashboard/adoption/unused-seats (R1 A1, renamed in v2 Phase 3). Admins
+// only, named (v2 decision 2): seats with no tokens on their own agent for
+// `idleDays`+ days. Each person sees their own seats on My usage.
+export interface UnusedSeatRow {
   userId: string
   /** Null when the user row is gone. */
   userName: string | null
-  /** Names of the viewer's visible teams this user is in. */
-  teams: string[]
   agent: AgentName
-  startDate: string
-  /** Last day with tokens on this agent. Null when never used. */
-  lastUsed: string | null
-  /** Days since the day after `lastUsed`, or since `startDate` when never used, today included. */
-  daysIdle: number
-  monthlyPriceUsd: number
-  /** Seat cost from the first idle day to today. */
-  costSinceUsedUsd: number
+  /** Days since last use, or since the seat started when never used, today included. */
+  daysUnused: number
 }
 
-export interface IdleSeatsResponse {
+export interface UnusedSeatsResponse {
   idleDays: number
-  /** Longest idle first. */
-  rows: IdleSeatRow[]
+  /** Longest unused first. */
+  rows: UnusedSeatRow[]
   byAgent: { agent: AgentName; seats: number; monthlyUsd: number }[]
-  /** A seat holder in two teams counts in both. Holders in no visible team are left out. */
-  byTeam: { teamId: string; teamName: string; seats: number; monthlyUsd: number }[]
   totalMonthlyUsd: number
-  /** Seats the org has at all, so the page can tell "none entered" from "none idle". Admins only; null for managers. */
-  orgSeats: number | null
+  /** Seats the org has at all, so the page can tell "none entered" from "none unused". */
+  orgSeats: number
 }
 
 // GET /v1/dashboard/adoption/funnel (R1 A3). How many people reached each step
@@ -666,22 +653,6 @@ export interface FunnelCounts {
   powerUser: number
 }
 
-/** The last stage a person reached, when it is not power user. */
-export type FunnelStop = 'invited' | 'registered' | 'firstSync' | 'active'
-
-export interface StuckPerson {
-  stoppedAt: FunnelStop
-  /** Null for an unused invite. */
-  userId: string | null
-  name: string | null
-  /** The invite email when there is no user. */
-  email: string | null
-  /** Names of the viewer's visible teams this person is in. */
-  teams: string[]
-  /** Invite sent, account created, or last day with tokens, by stage. */
-  lastStepDate: string
-}
-
 export interface FunnelResponse {
   from: string
   to: string
@@ -691,13 +662,18 @@ export interface FunnelResponse {
   powerDays: number
   /** Each person once, even when in two teams. */
   total: FunnelCounts
-  /** Visible teams by name. A person in two teams counts in both. */
+  /** Visible teams of MIN_GROUP_SIZE or more members. A person in two teams counts in both. */
   teams: ({ teamId: string; teamName: string } & FunnelCounts)[]
-  /** People in no visible team. Admins only, with no team filter; null otherwise. */
+  /** People in no visible team. Admins only, with no team filter, and MIN_GROUP_SIZE or more people; null otherwise. */
   noTeam: FunnelCounts | null
-  /** Everyone short of power user, same scope as the counts. */
-  stuck: StuckPerson[]
 }
+
+/**
+ * v2 rule 2: a dashboard read over fewer than this many people answers 403
+ * `group_too_small` instead of numbers, so no total can point at one person.
+ * A person reading only their own data is never refused.
+ */
+export const MIN_GROUP_SIZE = 5
 
 // R2 A5 feature matrix. Claude Code only.
 export const FEATURE_KEYS = ['mcp', 'skills', 'subagents', 'plan', 'sdk'] as const
@@ -712,33 +688,25 @@ export interface FeatureCounts {
   sdkKnown: number
 }
 
-export interface FeaturePerson {
-  userId: string
-  /** "Hidden" for a manager when the person hides their name on the leaderboard. */
-  name: string
-  /** Visible teams only. */
-  teamIds: string[]
-  /** Days with Claude Code use in range. */
-  activeDays: number
-  /** Days each feature was used. `sdk` is null when no day in range came from agent 0.4.0+. */
-  days: Record<FeatureKey, number | null>
-}
-
 export interface FeatureMatrixResponse {
   from: string
   to: string
   /** Each person once, even when in two teams. */
   total: FeatureCounts
-  /** Visible teams by name. A person in two teams counts in both. */
+  /** Visible teams of MIN_GROUP_SIZE or more members. A person in two teams counts in both. */
   teams: ({ teamId: string; teamName: string } & FeatureCounts)[]
-  /** People in no visible team. Admins only, with no team filter; null otherwise. */
+  /** People in no visible team. Admins only, with no team filter, and MIN_GROUP_SIZE or more people; null otherwise. */
   noTeam: FeatureCounts | null
-  people: FeaturePerson[]
 }
 
 // GET /v1/dashboard/adoption/onboarding (R2 D6). New people in the range and
 // whether they got going in their first 14 days. Admins see the org, managers their teams.
-export type OnboardingState = 'onboarded' | 'missed' | 'inProgress' | 'noFeatureData'
+/** R2 D6 Decision 1: tokens on 2+ days in week 1 and 2+ days in week 2. */
+export const ACTIVE_DAYS_PER_WEEK = 2
+/** Decision 2: any 2 of A5's five features, each on 1+ day. */
+export const MIN_FEATURES = 2
+
+export type OnboardingState = 'onboarded' | 'windowEnded' | 'inProgress' | 'noFeatureData'
 
 export interface OnboardingResult {
   state: OnboardingState
@@ -755,16 +723,13 @@ export interface OnboardingCounts {
   /** People whose first sync is in range. */
   cohort: number
   onboarded: number
-  missed: number
+  windowEnded: number
   inProgress: number
   noFeatureData: number
 }
 
-export interface OnboardingPerson extends OnboardingResult {
-  userId: string
-  name: string
-  /** Visible teams only. */
-  teamIds: string[]
+/** v2 Phase 2: the person's own first 14 days, on My usage only. */
+export interface MyOnboarding extends OnboardingResult {
   firstSync: string
 }
 
@@ -776,18 +741,18 @@ export interface OnboardingResponse {
   minFeatures: number
   /** Below this many finished windows the page shows counts, not a percentage. */
   minForPercent: number
-  total: OnboardingCounts
+  /** v2 rule 2: null when fewer than MIN_GROUP_SIZE people first synced in range. */
+  total: OnboardingCounts | null
+  /** Visible teams whose cohort is MIN_GROUP_SIZE or more. */
   teams: ({ teamId: string; teamName: string } & OnboardingCounts)[]
-  /** Admins only, with no team filter; null otherwise. */
+  /** Admins only, with no team filter, and a cohort of MIN_GROUP_SIZE or more; null otherwise. */
   noTeam: OnboardingCounts | null
-  /** Missed and in progress only, names shown (D6 Decision 6). */
-  people: OnboardingPerson[]
 }
 
 // GET /v1/dashboard/adoption/practices (R2 A6). The top quartile of Claude Code
 // users against everyone else. Aggregates only: no names or user ids.
-/** What ranks people into the top quartile: active days, Claude tokens, or the A8 leaderboard score. */
-export const PRACTICE_RANKS = ['days', 'tokens', 'score'] as const
+/** What ranks people into the top quartile: active days or Claude tokens. */
+export const PRACTICE_RANKS = ['days', 'tokens'] as const
 export type PracticeRank = (typeof PRACTICE_RANKS)[number]
 /** The A5 features A6 compares. SDK is left out: few days report it. */
 export const PRACTICE_FEATURES = ['mcp', 'skills', 'subagents', 'plan'] as const
@@ -812,30 +777,19 @@ export interface PracticeTip {
   gap: number
 }
 
-/** Why a team has no champion: under 3 Claude Code users, or everyone left out (hidden from a manager). */
-export type ChampionReason = 'ok' | 'tooFew' | 'noneEligible'
-
-// R2 A7. A hint only: nothing is stored and nobody is told.
-export interface ChampionSuggestion {
+// v2 Phase 2. People who set "happy to help with Claude Code" themselves. Nobody else is named.
+export interface HelpVolunteer {
   userId: string
   name: string
-  activeDays: number
-  /** The person hid their name on the leaderboard. Admins only ever see this true. */
-  hidden: boolean
-  uses: PracticeFeature[]
-  /** Features they use that fewer than half of the team uses. */
+  /** Features they used in range that fewer than half of the team used. */
   canHelpWith: PracticeFeature[]
 }
 
-export interface TeamChampions {
+export interface TeamVolunteers {
   /** Null for "No team", admins only. */
   teamId: string | null
   teamName: string
-  /** Claude Code users in the team in range. */
-  users: number
-  /** 0 to 2, ranked by `rankBy`. */
-  champions: ChampionSuggestion[]
-  reason: ChampionReason
+  volunteers: HelpVolunteer[]
 }
 
 // R2 D5. Counts only: no names or user ids.
@@ -855,7 +809,7 @@ export interface TeamSetup {
   /** Null for the card that covers the whole scope. */
   teamId: string | null
   teamName: string
-  /** Top-quartile members plus A7 champions. */
+  /** Top-quartile members plus volunteers. */
   groupSize: number
   reason: 'ok' | 'smallGroup'
   items: SetupItem[]
@@ -873,10 +827,8 @@ export interface PracticesResponse {
   rest: PracticeGroup | null
   /** At most 3, largest gap first. */
   tips: PracticeTip[]
-  /** Per visible team. Empty when names are off for a manager. */
-  champions: TeamChampions[]
-  /** The org turned leaderboard names off and the viewer is a manager. */
-  namesOff: boolean
+  /** Per visible team with at least one volunteer. */
+  volunteers: TeamVolunteers[]
   /** R2 D5: shared MCP setup per card. The scope card comes first. */
   setup: TeamSetup[]
 }
@@ -906,6 +858,7 @@ export type AuditAction =
   | 'policy.unset'
   | 'mcp.approve'
   | 'mcp.unapprove'
+  /** Removed in v2. Kept so audit rows written before then still read. */
   | 'org.leaderboard_settings'
   | 'org.min_claude_version'
   | 'org.claude_orgs'
@@ -917,7 +870,9 @@ export type AuditAction =
 
 /** Reads that show other people's data, logged once per viewer, surface, scope and UTC day. */
 export type AuditSurface =
+  /** Removed in v2. Kept so audit rows written before then still read. */
   | 'leaderboard'
+  | 'usage_distribution'
   | 'governance'
   | 'adoption'
   | 'people'
@@ -935,6 +890,31 @@ export interface AuditTarget {
   type: AuditTargetType
   id: string | null
   label: string | null
+}
+
+// GET /v1/dashboard/audit/me (v2 Phase 4). Views whose scope covered the
+// caller: a whole-org view, a view of a team they are in, or a manager's view
+// of their managed teams when the caller is in one. Team membership is read as
+// it is today, not as it was on the day of the view.
+export interface AuditMeRow {
+  /** First view that UTC day. */
+  at: string
+  /** Last view that day. */
+  lastAt: string | null
+  /** Views that day. */
+  count: number
+  surface: AuditSurface
+  /** Name resolved at read time; null when the user row is gone. */
+  viewer: { name: string | null; role: string }
+  /** What was viewed: the whole org, managed teams, or one team by name. */
+  scope: string | null
+}
+
+export interface AuditMeResponse {
+  from: string
+  to: string
+  /** Newest first, at most 200. */
+  rows: AuditMeRow[]
 }
 
 // GET /v1/dashboard/audit. Admin only, newest first.

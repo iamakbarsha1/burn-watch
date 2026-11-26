@@ -41,9 +41,11 @@ export function schemaFields(schema: ZodTypeAny, prefix = '', depth = 0): Schema
 /**
  * Who can read a field in the dashboard or through its API.
  * scoped: you, a manager of a team you are in, and admins (viewerScope).
+ * self: only you, on My usage.
+ * selfAdmin: you on My usage, and admins (v2 Phase 3: you see what an admin sees about you).
  * admin: admins only. none: stored, but no page or route shows it yet.
  */
-export type Audience = 'scoped' | 'admin' | 'none'
+export type Audience = 'scoped' | 'self' | 'selfAdmin' | 'admin' | 'none'
 
 /**
  * Exact path, or the array's entry for a field inside an array element. The test fails on a
@@ -52,18 +54,18 @@ export type Audience = 'scoped' | 'admin' | 'none'
  */
 export const AUDIENCE: Record<string, Audience> = {
   // Sign-in (RegisterDeviceSchema)
-  email: 'scoped', // Leaderboard
+  email: 'admin', // Governance setup-check rows, Admin seats; managers see counts only
   hostname: 'admin', // Admin users list, Devices
   platform: 'admin', // Devices
   agentVersion: 'none',
   // Nightly sync (UsagePayloadSchema)
   deviceId: 'none',
   date: 'scoped',
-  events: 'scoped', // Overview, Leaderboard, Trends
+  events: 'scoped', // Overview, Trends, My usage; free-tier and setup-check use as counts for managers, named for admins, yours on My usage
   'enrichment.date': 'scoped',
-  'enrichment.sessionCount': 'scoped', // Leaderboard
+  'enrichment.sessionCount': 'self', // My usage
   'enrichment.callCount': 'none',
-  'enrichment.cacheHitRate': 'scoped', // Leaderboard
+  'enrichment.cacheHitRate': 'none', // Adoption works its cache rate out from token counts, not this
   'enrichment.writtenTokens': 'none',
   'enrichment.activityBreakdown': 'none',
   'enrichment.projectBreakdown': 'scoped', // Projects
@@ -72,15 +74,17 @@ export const AUDIENCE: Record<string, Audience> = {
   'enrichment.topSessions': 'none',
   'enrichment.toolUsage': 'scoped', // Activity, Adoption
   'enrichment.shellUsage': 'scoped', // Activity
-  'enrichment.mcpUsage': 'scoped', // Activity, Leaderboard, Adoption
-  'enrichment.limitHitCount': 'admin', // limit-hit alerts
+  'enrichment.mcpUsage': 'scoped', // Activity, Adoption, My usage; Governance MCP shows people counts, no names
+  'enrichment.limitHitCount': 'admin', // limit-hit alerts, as a count of people
   'enrichment.claudeVersions': 'none',
   'enrichment.entrypointCounts': 'scoped', // Adoption
   'enrichment.skillCounts': 'scoped', // Adoption
   'enrichment.sidechainMessages': 'scoped', // Adoption
   'enrichment.permissionModeCounts': 'scoped', // Adoption
-  'enrichment.accountHashes': 'admin', // Governance, as labels; the hash is never shown
-  'enrichment.claudeOrgHashes': 'admin', // Governance, as labels; the hash is never shown
+  'enrichment.accountHashes': 'selfAdmin', // Governance as labels and counts per note; your own notes on My usage; the hash is never shown
+  'enrichment.claudeOrgHashes': 'selfAdmin', // Governance as labels and counts per note; your own notes on My usage; the hash is never shown
+  // Set on My usage (MY_CHOICES)
+  helpVolunteer: 'scoped', // My usage; your name on Adoption under your teams, only when on
 }
 
 export function audienceOf(path: string): Audience | undefined {
@@ -90,6 +94,16 @@ export function audienceOf(path: string): Audience | undefined {
   const parent = path.replace(/\[\]\.[^.]+$/, '')
   return parent === path ? undefined : AUDIENCE[parent]
 }
+
+/** Saved from the dashboard by the person, not sent by the agent. Keys match HelpVolunteerSchema. */
+const MY_CHOICES: SchemaField[] = [
+  {
+    path: 'helpVolunteer',
+    description: 'Whether you are happy to help with Claude Code. Off unless you turn it on.',
+    depth: 0,
+    group: false,
+  },
+]
 
 export const FIELD_GROUPS = [
   {
@@ -101,5 +115,10 @@ export const FIELD_GROUPS = [
     title: 'Every evening sync',
     description: "Sent once a day with yesterday's totals.",
     fields: schemaFields(UsagePayloadSchema),
+  },
+  {
+    title: 'What you choose on My usage',
+    description: 'Saved when you change it. Only you can change it.',
+    fields: MY_CHOICES,
   },
 ]

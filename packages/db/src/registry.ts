@@ -122,7 +122,7 @@ export const COLLECTIONS = {
   // Admin list, seat cost and idle-seat checks all read one org's seats.
   seats: spec<SeatDoc>([{ name: 'seats_org_agent', key: { orgId: 1, agent: 1 } }]),
 
-  // The violation list and the admin alert count read one org's rules.
+  // The setup-check list and the admin alert count read one org's rules.
   agentPolicies: spec<AgentPolicyDoc>([{ name: 'agentPolicies_org', key: { orgId: 1 } }]),
 
   // The governance MCP list reads one org's approvals on every request.

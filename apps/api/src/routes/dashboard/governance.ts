@@ -20,22 +20,22 @@ import {
   McpServerKeySchema,
   type AgentName,
   type AgentPolicy,
+  type ClaudeAccountFlag,
   type ClaudeAccountsResponse,
+  type FreeTierModelRow,
   type FreeTierResponse,
-  type FreeTierRow,
-  type FreeTierTeamTotal,
   type McpInventoryResponse,
   type McpServerRow,
   type McpServerSource,
-  type ViolationReason,
-  type ViolationRow,
-  type ViolationsResponse,
+  type SetupCheckReason,
+  type SetupCheckRow,
+  type SetupChecksResponse,
 } from '@burn-watch/shared'
 import { comparableTeams, readScope, requireAdmin, type JwtPayload } from '../../plugins/jwt.js'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
 import { groupAccounts } from './accounts.js'
 import { audit, auditView } from '../../audit.js'
-import { dateRangeFields, scopeError, teamIdField } from './query-schema.js'
+import { dateRangeFields, isRefusal, refuse, teamIdField } from './query-schema.js'
 import { daysBefore, today } from './dates.js'
 
 const QuerySchema = z
@@ -69,27 +69,57 @@ function usageGroupPipeline(match: Document): Document[] {
   ]
 }
 
+/** One (agent, model) group of usage rows over the range, with the people in it. */
+export interface ModelGroup {
+  _id: { agent: AgentName; modelName: string }
+  users: UserId[]
+  days: number
+  tokens: number
+}
+
 /**
- * B1: every free-tier usage row in range, grouped per user, agent and model.
- * `userIds` undefined means the whole org (admin with no team filter).
+ * B1: free-tier usage in range per agent and model, with the people in each
+ * group for counting. `userIds` undefined means the whole org.
  */
 export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userIds?: UserId[]): Document[] {
-  return usageGroupPipeline({
-    orgId,
-    isFreeTier: true,
-    date: { $gte: from, $lte: to },
-    ...(userIds && { userId: { $in: userIds } }),
-  })
+  return [
+    { $match: { orgId, isFreeTier: true, date: { $gte: from, $lte: to }, ...(userIds && { userId: { $in: userIds } }) } },
+    {
+      $group: {
+        _id: { agent: '$agent', modelName: '$modelName' },
+        users: { $addToSet: '$userId' },
+        dates: { $addToSet: '$date' },
+        tokens: { $sum: '$totalTokens' },
+      },
+    },
+    { $project: { users: 1, days: { $size: '$dates' }, tokens: 1 } },
+    { $sort: { tokens: -1, '_id.agent': 1, '_id.modelName': 1 } },
+  ]
+}
+
+/** Free-tier rows and the distinct people across them. */
+export function freeTierRows(groups: ModelGroup[]): FreeTierResponse {
+  return {
+    people: new Set(groups.flatMap((g) => g.users)).size,
+    rows: groups.map<FreeTierModelRow>((g) => ({
+      agent: g._id.agent,
+      modelName: g._id.modelName,
+      reason: FREE_TIER_AGENTS.has(g._id.agent) ? 'free-tier-agent' : 'unpriced-model',
+      people: g.users.length,
+      days: g.days,
+      tokens: g.tokens,
+    })),
+  }
 }
 
 const AGENT_NAMES = AgentNameSchema.options
 
 /**
- * B2: the `$or` branches that select usage outside the policy. An agent with
+ * B2 setup checks: the `$or` branches that select usage outside the agent rules. An agent with
  * no rule or a blocked rule matches whole; a models-only agent matches every
  * model not listed, by exact name. Empty means nothing can violate.
  */
-export function violationBranches(policies: Pick<AgentPolicyDoc, 'agent' | 'rule' | 'models'>[]): Document[] {
+export function setupCheckBranches(policies: Pick<AgentPolicyDoc, 'agent' | 'rule' | 'models'>[]): Document[] {
   const byAgent = new Map(policies.map((p) => [p.agent, p]))
   const whole = AGENT_NAMES.filter((a) => !byAgent.has(a) || byAgent.get(a)!.rule === 'blocked')
   const models = AGENT_NAMES.flatMap((a) => {
@@ -99,22 +129,14 @@ export function violationBranches(policies: Pick<AgentPolicyDoc, 'agent' | 'rule
   return [...(whole.length ? [{ agent: { $in: whole } }] : []), ...models]
 }
 
-export function violationReason(policies: Map<AgentName, AgentPolicyDoc>, agent: AgentName): ViolationReason {
+export function setupCheckReason(policies: Map<AgentName, AgentPolicyDoc>, agent: AgentName): SetupCheckReason {
   const rule = policies.get(agent)?.rule
   return rule === 'blocked' ? 'agent-blocked' : rule === 'models' ? 'model-not-listed' : 'agent-not-set'
 }
 
-/**
- * Names, emails and team names for usage groups, plus per-team totals. Team
- * names only come from teams the viewer may see, so a manager never learns the
- * name of a team they do not manage.
- */
-async function nameGroups<R>(
-  viewer: JwtPayload,
-  groups: UsageGroup[],
-  reasonOf: (g: UsageGroup) => R,
-) {
-  if (groups.length === 0) return { rows: [], byTeam: [] }
+/** Names, emails and team names for setup-check groups. Admins only, so every team is visible. */
+async function nameGroups(viewer: JwtPayload, groups: UsageGroup[], reasonOf: (g: UsageGroup) => SetupCheckReason) {
+  if (groups.length === 0) return []
   const store = getStore()
   const orgId = viewer.orgId as OrgId
   const ids = [...new Set(groups.map((g) => g._id.userId))]
@@ -134,7 +156,7 @@ async function nameGroups<R>(
     teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
   }
 
-  const rows = groups.map((g) => ({
+  return groups.map<SetupCheckRow>((g) => ({
     userId: g._id.userId,
     userName: userById.get(g._id.userId)?.name ?? null,
     userEmail: userById.get(g._id.userId)?.email ?? null,
@@ -147,34 +169,23 @@ async function nameGroups<R>(
     firstDate: g.firstDate,
     lastDate: g.lastDate,
   }))
-
-  // A user in two teams counts in both, as on /teams/compare.
-  const totals = new Map<TeamId | null, { users: Set<UserId>; tokens: number }>()
-  for (const g of groups) {
-    const userTeams = teamsOf.get(g._id.userId) ?? []
-    for (const key of userTeams.length ? userTeams : [null]) {
-      const t = totals.get(key) ?? { users: new Set(), tokens: 0 }
-      t.users.add(g._id.userId)
-      t.tokens += g.tokens
-      totals.set(key, t)
-    }
-  }
-  const byTeam = [...totals]
-    .map<FreeTierTeamTotal>(([teamId, t]) => ({
-      teamId,
-      teamName: teamId ? teamName.get(teamId)! : null,
-      users: t.users.size,
-      tokens: t.tokens,
-    }))
-    .sort((a, b) => b.tokens - a.tokens)
-
-  return { rows, byTeam }
 }
 
-/** Number of violation groups in the org over the last 30 days: the admin alert. */
-export async function violationCount(orgId: OrgId): Promise<number> {
+/** Usage outside the agent rules over `match`, grouped per user, agent and model. Empty when nothing can fail. */
+export async function setupCheckGroups(orgId: OrgId, match: Document) {
   const store = getStore()
-  const branches = violationBranches(await store.agentPolicies.find({ orgId }))
+  const docs = await store.agentPolicies.find({ orgId })
+  const branches = setupCheckBranches(docs)
+  const groups = branches.length
+    ? await store.usageEvents.aggregate<UsageGroup>(usageGroupPipeline({ ...match, orgId, $or: branches }))
+    : []
+  return { groups, byAgent: new Map(docs.map((d) => [d.agent, d])) }
+}
+
+/** Number of setup-check groups in the org over the last 30 days: the admin alert. */
+export async function setupCheckCount(orgId: OrgId): Promise<number> {
+  const store = getStore()
+  const branches = setupCheckBranches(await store.agentPolicies.find({ orgId }))
   if (branches.length === 0) return 0
   const to = today()
   const [r] = await store.usageEvents.aggregate<{ n: number }>([
@@ -188,7 +199,7 @@ export async function violationCount(orgId: OrgId): Promise<number> {
 interface McpGroup {
   _id: string
   calls: number
-  users: UserId[]
+  people: number
   days: number
   lastDate: IsoDate
 }
@@ -211,7 +222,7 @@ export function mcpInventoryPipeline(range: EnrichmentRange): Document[] {
         lastDate: { $max: '$date' },
       },
     },
-    { $project: { calls: 1, users: 1, days: { $size: '$dates' }, lastDate: 1 } },
+    { $project: { calls: 1, people: { $size: '$users' }, days: { $size: '$dates' }, lastDate: 1 } },
     { $sort: { calls: -1, _id: 1 } },
   ]
 }
@@ -231,7 +242,7 @@ export function mcpSource(server: string): McpServerSource {
 const ServerQuery = z.object({ server: McpServerKeySchema })
 
 export async function governanceRoutes(fastify: FastifyInstance) {
-  // GET /governance/free-tier — admins see the org, managers their own teams.
+  // GET /governance/free-tier — counts only. Admins see the org, managers their own teams.
   fastify.get('/governance/free-tier', async (request, reply) => {
     if (request.user.role !== 'admin' && request.user.role !== 'manager') {
       return reply.status(403).send({ error: 'Governance requires admin or manager role' })
@@ -244,18 +255,15 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
 
     const scope = await readScope(request.user, parsed.data.teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const orgId = request.user.orgId as OrgId
-    const groups = await getStore().usageEvents.aggregate<UsageGroup>(freeTierPipeline(orgId, from, to, scope))
-    const named = await nameGroups(request.user, groups, (g) =>
-      FREE_TIER_AGENTS.has(g._id.agent) ? ('free-tier-agent' as const) : ('unpriced-model' as const),
-    )
-    return named satisfies FreeTierResponse
+    const groups = await getStore().usageEvents.aggregate<ModelGroup>(freeTierPipeline(orgId, from, to, scope))
+    return freeTierRows(groups)
   })
 
-  // GET /governance/mcp — B3 inventory. Same role rules as free-tier; managers read approvals too.
+  // GET /governance/mcp — B3 inventory, counts only. Same role rules as free-tier; managers read approvals too.
   fastify.get('/governance/mcp', async (request, reply) => {
     if (request.user.role !== 'admin' && request.user.role !== 'manager') {
       return reply.status(403).send({ error: 'Governance requires admin or manager role' })
@@ -265,7 +273,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
     const scope = await readScope(request.user, parsed.data.teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const store = getStore()
@@ -277,11 +285,6 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       store.mcpApprovals.find({ orgId }),
     ])
 
-    const ids = [...new Set(groups.flatMap((g) => g.users))]
-    const users = ids.length
-      ? await store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1 } })
-      : []
-    const nameOf = new Map(users.map((u) => [u._id, u.name]))
     const approvalOf = new Map(approvals.map((a) => [a.server, a]))
 
     const servers = groups.map<McpServerRow>((g) => ({
@@ -289,9 +292,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       source: mcpSource(g._id),
       approved: approvalOf.has(g._id),
       note: approvalOf.get(g._id)?.note ?? null,
-      users: g.users
-        .map((userId) => ({ userId, name: nameOf.get(userId) ?? null }))
-        .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')),
+      people: g.people,
       calls: g.calls,
       days: g.days,
       lastDate: g.lastDate,
@@ -307,9 +308,10 @@ export async function governanceRoutes(fastify: FastifyInstance) {
 
   const admin = { preHandler: requireAdmin(fastify) }
 
-  // GET /governance/violations — B2. The policy for all five agents, usage
-  // outside it, and (admins) the models seen per agent for the edit form.
-  fastify.get('/governance/violations', async (request, reply) => {
+  // GET /governance/setup-checks — B2. The rules for all five agents and how
+  // many people used something outside them. Admins also get the named rows
+  // (v2 decision 2) and the models seen per agent for the edit form.
+  fastify.get('/governance/setup-checks', async (request, reply) => {
     const { role } = request.user
     if (role !== 'admin' && role !== 'manager') {
       return reply.status(403).send({ error: 'Governance requires admin or manager role' })
@@ -319,7 +321,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
     const scope = await readScope(request.user, parsed.data.teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, parsed.data.teamId)
 
     const store = getStore()
@@ -329,12 +331,8 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       date: { $gte: parsed.data.from as IsoDate, $lte: parsed.data.to as IsoDate },
       ...(scope && { userId: { $in: scope } }),
     }
-    const docs = await store.agentPolicies.find({ orgId })
-    const byAgent = new Map(docs.map((d) => [d.agent, d]))
-    const branches = violationBranches(docs)
-
-    const [groups, seen] = await Promise.all([
-      branches.length ? store.usageEvents.aggregate<UsageGroup>(usageGroupPipeline({ ...base, $or: branches })) : [],
+    const [{ groups, byAgent }, seen] = await Promise.all([
+      setupCheckGroups(orgId, base),
       role === 'admin'
         ? store.usageEvents.aggregate<{ _id: AgentName; models: string[] }>([
             { $match: base },
@@ -342,21 +340,20 @@ export async function governanceRoutes(fastify: FastifyInstance) {
           ])
         : [],
     ])
-    const named = await nameGroups(request.user, groups, (g) => violationReason(byAgent, g._id.agent))
-
     return {
       policies: AGENT_NAMES.map<AgentPolicy>((agent) => {
         const d = byAgent.get(agent)
         return { agent, rule: d?.rule ?? 'unset', models: d?.models ?? [], note: d?.note ?? null }
       }),
-      rows: named.rows as ViolationRow[],
-      byTeam: named.byTeam,
+      people: new Set(groups.map((g) => g._id.userId)).size,
+      rows: role === 'admin' ? await nameGroups(request.user, groups, (g) => setupCheckReason(byAgent, g._id.agent)) : [],
       seenModels: Object.fromEntries(seen.map((s) => [s._id, [...s.models].sort()])),
-    } satisfies ViolationsResponse
+    } satisfies SetupChecksResponse
   })
 
-  // GET /governance/accounts — R2 B6. Admins only (Decision 2): Claude orgs and
-  // accounts seen, as labels, and per-person flags. Hashes are never rendered.
+  // GET /governance/accounts — R2 B6. Admins only: Claude orgs and accounts
+  // seen, as labels, and how many people carry each flag. No names (v2 Phase
+  // 3); each person sees their own flags on My usage. Hashes are never rendered.
   fastify.get('/governance/accounts', admin, async (request, reply) => {
     const parsed = QuerySchema.safeParse(request.query)
     if (!parsed.success) {
@@ -366,20 +363,19 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     const to = parsed.data.to as IsoDate
     const { teamId } = parsed.data
     const scope = await readScope(request.user, teamId)
-    if (scope === 403 || scope === 404) return reply.status(scope).send(scopeError(scope))
+    if (isRefusal(scope)) return refuse(reply, scope)
     await auditView(request, 'governance', scope, teamId)
 
     const store = getStore()
     const orgId = request.user.orgId as OrgId
     const inScope = scope && { userId: { $in: scope } }
-    const [docs, org, seats, teams] = await Promise.all([
+    const [docs, org, seats] = await Promise.all([
       store.claudeEnrichment.find(
         { orgId, date: { $gte: from, $lte: to }, ...inScope },
         { projection: { userId: 1, date: 1, accountHashes: 1, claudeOrgHashes: 1 } },
       ),
       store.organizations.findOne({ _id: orgId }, { projection: { ownClaudeOrgHashes: 1 } }),
       store.seats.find({ orgId, agent: 'claude', ...inScope }, { projection: { userId: 1 } }),
-      comparableTeams(request.user),
     ])
     const own = org?.ownClaudeOrgHashes ?? []
     const grouped = groupAccounts(docs, {
@@ -388,24 +384,14 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       seatsEntered: seats.length,
       viewerId: request.user.userId,
     })
-
-    const ids = grouped.people.map((p) => p.userId)
-    const teamIds = teams.map((t) => t._id)
-    const [users, members] = ids.length
-      ? await Promise.all([
-          store.users.find({ orgId, _id: { $in: ids } }, { projection: { name: 1 } }),
-          teamIds.length ? store.teamMembers.find({ orgId, teamId: { $in: teamIds }, userId: { $in: ids } }) : Promise.resolve([]),
-        ])
-      : [[], []]
-    const nameOf = new Map(users.map((u) => [u._id, u.name]))
-    const teamsOf = new Map<UserId, TeamId[]>()
-    for (const m of members) {
-      if (!ids.includes(m.userId) || !teamIds.includes(m.teamId)) continue
-      teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
+    const flagCounts: Record<ClaudeAccountFlag, number> = {
+      shared: 0,
+      'outside-org': 0,
+      several: 0,
+      'seat-no-use': 0,
+      'use-no-seat': 0,
     }
-    const people = grouped.people
-      .map((p) => ({ ...p, name: nameOf.get(p.userId) ?? 'Unknown', teamIds: teamsOf.get(p.userId) ?? [] }))
-      .sort((a, b) => b.flags.length - a.flags.length || a.name.localeCompare(b.name))
+    for (const p of grouped.people) for (const f of p.flags) flagCounts[f]++
 
     return {
       from,
@@ -416,7 +402,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       companyOrgUsers: grouped.companyOrgUsers,
       orgs: grouped.orgs,
       accounts: grouped.accounts,
-      people,
+      flagCounts,
     } satisfies ClaudeAccountsResponse
   })
 
@@ -446,9 +432,9 @@ export async function governanceRoutes(fastify: FastifyInstance) {
     return { count: ids.length }
   })
 
-  // GET /governance/violations/count — the admin alert in the nav, Overview and Governance.
-  fastify.get('/governance/violations/count', admin, async (request) => ({
-    count: await violationCount(request.user.orgId as OrgId),
+  // GET /governance/setup-checks/count — the admin alert in the nav, Overview and Governance.
+  fastify.get('/governance/setup-checks/count', admin, async (request) => ({
+    count: await setupCheckCount(request.user.orgId as OrgId),
   }))
 
   // PUT /governance/agent-policy/:agent — set one agent's rule. The agent is a closed set, so it is safe in the path.

@@ -2,8 +2,10 @@ import type { AuditRow, AuditSurface } from '@burn-watch/shared'
 import { agentById } from './agents'
 import { formatCost } from './format'
 
-const SURFACES: Record<AuditSurface, string> = {
+export const SURFACES: Record<AuditSurface, string> = {
+  // Removed in v2; kept so audit rows written before then still read.
   leaderboard: 'Leaderboard',
+  usage_distribution: 'Usage distribution',
   governance: 'Governance',
   adoption: 'Adoption',
   people: 'the people list',
@@ -13,7 +15,7 @@ const SURFACES: Record<AuditSurface, string> = {
   audit: 'the audit log',
 }
 
-const ALERTS: Record<string, string> = { 'api-spend': 'an API spend', 'idle-seat': 'an idle seat', 'limit-hit': 'a limit-hit' }
+const ALERTS: Record<string, string> = { 'api-spend': 'an API spend', 'idle-seat': 'an unused seat', 'limit-hit': 'a limit-hit' }
 
 const agent = (id: unknown) => agentById(String(id))?.label ?? String(id)
 
@@ -90,6 +92,7 @@ export function auditSentence(row: AuditRow, names: ReadonlyMap<string, string> 
       return `Approved MCP server ${d.server}`
     case 'mcp.unapprove':
       return `Removed the approval for MCP server ${d.server}`
+    // Removed in v2; kept so audit rows written before then still read.
     case 'org.leaderboard_settings': {
       const view = { own: 'their own row', rank: 'their own row and rank', full: 'the whole list' }[String(d.developerView)]
       return `Changed leaderboard settings: developers see ${view ?? d.developerView}, names ${d.showNames ? 'on' : 'off'}, others' cost ${d.showOthersCost ? 'on' : 'off'}`

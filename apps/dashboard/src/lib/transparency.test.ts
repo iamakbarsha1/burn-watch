@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { AUDIENCE, FIELD_GROUPS, audienceOf, schemaFields } from './transparency'
-import { UsagePayloadSchema } from '@burn-watch/shared'
+import { HelpVolunteerSchema, UsagePayloadSchema } from '@burn-watch/shared'
 
 const fields = FIELD_GROUPS.flatMap((g) => g.fields)
 
@@ -41,5 +41,21 @@ describe('transparency field list', () => {
     for (const f of ['skillCounts', 'sidechainMessages', 'permissionModeCounts', 'entrypointCounts', 'toolUsage', 'mcpUsage']) {
       expect(audienceOf(`enrichment.${f}`), f).toBe('scoped')
     }
+  })
+
+  it('marks the fields only My usage shows as visible to you alone', () => {
+    expect(audienceOf('enrichment.sessionCount')).toBe('self')
+  })
+
+  it('v2 Phase 3: names stay with admins, and you see your own account notes', () => {
+    expect(audienceOf('email')).toBe('admin')
+    expect(audienceOf('enrichment.accountHashes')).toBe('selfAdmin')
+    expect(audienceOf('enrichment.claudeOrgHashes')).toBe('selfAdmin')
+  })
+
+  it('lists the help flag under its schema key, visible to the viewer scope', () => {
+    const mine = FIELD_GROUPS.find((g) => g.title === 'What you choose on My usage')!.fields.map((f) => f.path)
+    expect(mine).toEqual(Object.keys(HelpVolunteerSchema.shape))
+    expect(audienceOf('helpVolunteer')).toBe('scoped')
   })
 })

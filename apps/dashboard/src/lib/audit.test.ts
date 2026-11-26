@@ -35,7 +35,7 @@ describe('auditSentence', () => {
     ['seat.remove', { detail: { userId: 'u2', agent: 'claude' } }, "Removed Priya's Claude seat"],
     ['seat.assign_all', { detail: { agent: 'claude', monthlyPriceUsd: 20, created: 3 } }, 'Gave 3 people a Claude seat at $20.00/month'],
     ['alert.create', { target: { type: 'alert', id: 'a', label: 'api-spend' } }, 'Created an API spend alert'],
-    ['alert.update', { target: { type: 'alert', id: 'a', label: 'idle-seat' } }, 'Changed an idle seat alert'],
+    ['alert.update', { target: { type: 'alert', id: 'a', label: 'idle-seat' } }, 'Changed an unused seat alert'],
     ['alert.delete', {}, 'Deleted a budget alert'],
     ['policy.set', { detail: { agent: 'claude', rule: 'models', models: ['opus', 'sonnet'], note: null } }, 'Allowed only opus, sonnet on Claude'],
     ['policy.set', { detail: { agent: 'qwen', rule: 'blocked', models: [], note: null } }, 'Set Qwen to blocked'],
@@ -54,6 +54,7 @@ describe('auditSentence', () => {
     ['copilot.sync', { detail: { day: '2026-11-09', reportPublished: true, written: 4 } }, 'Ran a Copilot sync for 2026-11-09: 4 rows written'],
     ['view.governance', { target: { type: 'team', id: 't', label: 'Platform' }, detail: { people: 6 } }, 'Viewed Governance for Platform (6 people)'],
     ['view.leaderboard', { target: { type: 'scope', id: null, label: 'org' } }, 'Viewed Leaderboard for the whole org'],
+    ['view.usage_distribution', { target: { type: 'team', id: 't', label: 'Platform' }, detail: { people: 6 } }, 'Viewed Usage distribution for Platform (6 people)'],
     ['view.adoption', { target: { type: 'scope', id: null, label: 'managed teams' }, detail: { people: 1 } }, 'Viewed Adoption for their teams (1 person)'],
     ['view.audit', { target: { type: 'scope', id: null, label: 'org' } }, 'Viewed the audit log for the whole org'],
   ])('%s reads as a sentence', (action, over, expected) => {

@@ -1,14 +1,16 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
-import { fetchClaudeAccounts, fetchFreeTier, fetchMcpInventory, fetchTeams, fetchViolationCount, fetchViolations } from '@/lib/api'
+import { fetchClaudeAccounts, fetchFreeTier, fetchMcpInventory, fetchSetupCheckCount, fetchSetupChecks, fetchTeams } from '@/lib/api'
+import { nullUnlessTooSmall, unlessTooSmall } from '@/lib/group-too-small'
 import { agentById } from '@/lib/agents'
+import { FLAG_LABEL } from '@/lib/account-flags'
 import { formatRange, formatTokens, resolveRange } from '@/lib/format'
 import type { RangeParams } from '@/lib/format'
 import { pickTeam } from '@/lib/teams'
 import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
-import { PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
-import type { AgentPolicyRule, ClaudeAccountFlag, ClaudeAccountPerson, McpServerSource, ViolationReason } from '@burn-watch/shared'
+import { GroupTooSmall, PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
+import type { AgentPolicyRule, ClaudeAccountFlag, McpServerSource, SetupCheckReason } from '@burn-watch/shared'
 import { McpApprovalButton } from './McpApprovalButton'
 import { AgentPolicyForm } from './AgentPolicyForm'
 import { ClaudeOrgsForm } from './ClaudeOrgsForm'
@@ -25,19 +27,10 @@ const RULE_BADGE: Record<AgentPolicyRule, { tone: 'good' | 'warn' | 'bad' | 'neu
   unset: { tone: 'warn', label: 'not set' },
 }
 
-const REASON_LABEL: Record<ViolationReason, string> = {
+const REASON_LABEL: Record<SetupCheckReason, string> = {
   'agent-blocked': 'agent blocked',
   'agent-not-set': 'agent not set',
   'model-not-listed': 'model not listed',
-}
-
-// R2 B6. Facts, not verdicts: neutral badges, no "violation".
-const FLAG_LABEL: Record<ClaudeAccountFlag, string> = {
-  shared: 'Shared account',
-  'outside-org': 'Outside company org',
-  several: 'Several accounts',
-  'seat-no-use': 'Seat, not seen on company org',
-  'use-no-seat': 'On company org, no seat',
 }
 
 const SOURCE_LABEL: Record<McpServerSource, string> = {
@@ -60,15 +53,30 @@ export default async function GovernancePage({
   const teams = await fetchTeams().catch(() => [])
   const team = pickTeam(teams, params.teamId)
   const isAdmin = role === 'admin'
-  const [data, mcp, violations, violationCount, accounts] = await Promise.all([
-    fetchFreeTier(from, to, team?.id).catch(() => null),
-    fetchMcpInventory(from, to, team?.id).catch(() => null),
-    fetchViolations(from, to, team?.id).catch(() => null),
-    isAdmin ? fetchViolationCount().catch(() => 0) : 0,
-    isAdmin ? fetchClaudeAccounts(from, to, team?.id).catch(() => null) : undefined,
-  ])
+  const loaded = await unlessTooSmall(
+    Promise.all([
+      fetchFreeTier(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchMcpInventory(from, to, team?.id).catch(nullUnlessTooSmall),
+      fetchSetupChecks(from, to, team?.id).catch(nullUnlessTooSmall),
+      isAdmin ? fetchSetupCheckCount().catch(() => 0) : 0,
+      isAdmin ? fetchClaudeAccounts(from, to, team?.id).catch(nullUnlessTooSmall) : undefined,
+    ]),
+  )
+  if (!loaded) {
+    return (
+      <div>
+        <PageHeader title="Governance" subtitle={formatRange(from, to)} />
+        {teams.length > 0 && (
+          <Suspense fallback={null}>
+            <TeamFilter teams={teams} value={team?.id} />
+          </Suspense>
+        )}
+        <GroupTooSmall />
+      </div>
+    )
+  }
+  const [data, mcp, checks, setupCheckCount, accounts] = loaded
   const mcpCols = isAdmin ? 8 : 7
-  const mcpPeople = mcp ? new Set(mcp.servers.flatMap((s) => s.users.map((u) => u.userId))).size : 0
   const mcpUnapproved = mcp ? mcp.servers.filter((s) => !s.approved).length : 0
 
   return (
@@ -78,12 +86,10 @@ export default async function GovernancePage({
         subtitle={`${formatRange(from, to)}${team ? ` · team ${team.name}` : ''}`}
       />
 
-      {violationCount > 0 && (
+      {setupCheckCount > 0 && (
         <div className="mb-4 rounded-lg border border-bad/35 bg-bad/10 px-4 py-3 text-sm text-bad">
-          {violationCount === 1
-            ? '1 use of an agent or model outside the policy in the last 30 days.'
-            : `${violationCount} uses of an agent or model outside the policy in the last 30 days.`}{' '}
-          Counted per person, agent and model.
+          {setupCheckCount === 1 ? '1 setup check' : `${setupCheckCount} setup checks`} in the last 30 days: use of an
+          agent or model outside the agent rules. Counted per person, agent and model.
         </div>
       )}
 
@@ -97,14 +103,9 @@ export default async function GovernancePage({
         title="Free-tier usage"
         description="Free tiers may let the provider train on what is sent to them, including company or client code. Check each provider's terms."
       >
-        {data && data.byTeam.length > 0 && (
+        {data && data.people > 0 && (
           <p className="mb-3 text-sm text-ink-2">
-            {data.byTeam
-              .map(
-                (t) =>
-                  `${t.teamName ?? 'No team'}: ${t.users} ${t.users === 1 ? 'person' : 'people'}, ${formatTokens(t.tokens)} tokens`,
-              )
-              .join(' · ')}
+            {data.people} {data.people === 1 ? 'person' : 'people'} used a free tier or an unpriced model
           </p>
         )}
 
@@ -112,28 +113,21 @@ export default async function GovernancePage({
           <table className="w-full">
             <thead>
               <tr>
-                <Th>Person</Th>
-                <Th>Teams</Th>
                 <Th>Agent · model</Th>
                 <Th>Why flagged</Th>
+                <Th numeric>People</Th>
                 <Th numeric>Days</Th>
                 <Th numeric>Tokens</Th>
-                <Th numeric>Last seen</Th>
               </tr>
             </thead>
             <tbody>
               {data === null ? (
-                <EmptyRow colSpan={7}>Could not read free-tier usage. Try again in a moment.</EmptyRow>
+                <EmptyRow colSpan={5}>Could not read free-tier usage. Try again in a moment.</EmptyRow>
               ) : data.rows.length === 0 ? (
-                <EmptyRow colSpan={7}>No free-tier usage in this range.</EmptyRow>
+                <EmptyRow colSpan={5}>No free-tier usage in this range.</EmptyRow>
               ) : (
                 data.rows.map((r) => (
-                  <Tr key={`${r.userId}:${r.agent}:${r.modelName}`}>
-                    <Td>
-                      <div className="font-medium text-ink">{r.userName ?? 'Removed user'}</div>
-                      {r.userEmail && <div className="text-xs text-ink-2">{r.userEmail}</div>}
-                    </Td>
-                    <Td className="text-ink-2">{r.teams.length ? r.teams.join(', ') : '—'}</Td>
+                  <Tr key={`${r.agent}:${r.modelName}`}>
                     <Td>
                       {agentById(r.agent)?.label ?? r.agent} · <span className="text-ink-2">{r.modelName}</span>
                     </Td>
@@ -144,9 +138,9 @@ export default async function GovernancePage({
                         <Badge>unpriced model</Badge>
                       )}
                     </Td>
+                    <Td numeric>{r.people}</Td>
                     <Td numeric>{r.days}</Td>
                     <Td numeric>{formatTokens(r.tokens)}</Td>
-                    <Td numeric>{r.lastDate}</Td>
                   </Tr>
                 ))
               )}
@@ -162,11 +156,11 @@ export default async function GovernancePage({
       {accounts !== undefined && <ClaudeAccountsSection data={accounts} />}
 
       <Section
-        title="Agent and model policy"
-        description="Which agents and models the org allows. Usage outside the policy is listed below. Agents with no rule are flagged until an admin sets one."
+        title="Agent and model rules"
+        description="Which agents and models the org allows. Setup checks below count use outside these rules. Agents with no rule are flagged until an admin sets one."
       >
-        {violations === null ? (
-          <p className="text-sm text-bad">Could not read the policy. Try again in a moment.</p>
+        {checks === null ? (
+          <p className="text-sm text-bad">Could not read the agent rules. Try again in a moment.</p>
         ) : (
           <>
             <TableFrame>
@@ -181,7 +175,7 @@ export default async function GovernancePage({
                   </tr>
                 </thead>
                 <tbody>
-                  {violations.policies.map((p) => (
+                  {checks.policies.map((p) => (
                     <Tr key={p.agent}>
                       <Td className="font-medium text-ink">{agentById(p.agent)?.label ?? p.agent}</Td>
                       <Td>
@@ -193,7 +187,7 @@ export default async function GovernancePage({
                       <Td className="text-ink-2">{p.note ?? '—'}</Td>
                       {isAdmin && (
                         <Td>
-                          <AgentPolicyForm policy={p} seen={violations.seenModels[p.agent] ?? []} />
+                          <AgentPolicyForm policy={p} seen={checks.seenModels[p.agent] ?? []} />
                         </Td>
                       )}
                     </Tr>
@@ -202,35 +196,28 @@ export default async function GovernancePage({
               </table>
             </TableFrame>
 
-            <h3 className="mt-6 mb-3 text-sm font-medium text-ink">Usage outside the policy</h3>
-            {violations.byTeam.length > 0 && (
-              <p className="mb-3 text-sm text-ink-2">
-                {violations.byTeam
-                  .map(
-                    (t) =>
-                      `${t.teamName ?? 'No team'}: ${t.users} ${t.users === 1 ? 'person' : 'people'}, ${formatTokens(t.tokens)} tokens`,
-                  )
-                  .join(' · ')}
-              </p>
-            )}
-            <TableFrame>
-              <table className="w-full">
-                <thead>
-                  <tr>
-                    <Th>Person</Th>
-                    <Th>Teams</Th>
-                    <Th>Agent · model</Th>
-                    <Th>Why flagged</Th>
-                    <Th numeric>Days</Th>
-                    <Th numeric>Tokens</Th>
-                    <Th numeric>Last seen</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {violations.rows.length === 0 ? (
-                    <EmptyRow colSpan={7}>No usage outside the policy in this range.</EmptyRow>
-                  ) : (
-                    violations.rows.map((r) => (
+            <h3 className="mt-6 mb-3 text-sm font-medium text-ink">Setup checks</h3>
+            <p className="mb-3 text-sm text-ink-2">
+              {checks.people === 0
+                ? 'Nobody used something outside the rules in this range.'
+                : `${checks.people} ${checks.people === 1 ? 'person' : 'people'} used something outside the rules in this range.`}
+            </p>
+            {isAdmin && checks.rows.length > 0 && (
+              <TableFrame>
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      <Th>Person</Th>
+                      <Th>Teams</Th>
+                      <Th>Agent · model</Th>
+                      <Th>Why flagged</Th>
+                      <Th numeric>Days</Th>
+                      <Th numeric>Tokens</Th>
+                      <Th numeric>Last seen</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {checks.rows.map((r) => (
                       <Tr key={`${r.userId}:${r.agent}:${r.modelName}`}>
                         <Td>
                           <div className="font-medium text-ink">{r.userName ?? 'Removed user'}</div>
@@ -247,13 +234,13 @@ export default async function GovernancePage({
                         <Td numeric>{formatTokens(r.tokens)}</Td>
                         <Td numeric>{r.lastDate}</Td>
                       </Tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </TableFrame>
+                    ))}
+                  </tbody>
+                </table>
+              </TableFrame>
+            )}
             <p className="mt-3 text-xs text-ink-2">
-              Usage is checked against the current policy, whenever it happened. Model names match exactly, so a new
+              Usage is checked against the current rules, whenever it happened. Model names match exactly, so a new
               model release is flagged until it is added.
             </p>
           </>
@@ -266,8 +253,7 @@ export default async function GovernancePage({
       >
         {mcp && mcp.servers.length > 0 && (
           <p className="mb-3 text-sm text-ink-2">
-            {mcp.servers.length} {mcp.servers.length === 1 ? 'server' : 'servers'}, {mcpUnapproved} not approved, used
-            by {mcpPeople} {mcpPeople === 1 ? 'person' : 'people'}
+            {mcp.servers.length} {mcp.servers.length === 1 ? 'server' : 'servers'}, {mcpUnapproved} not approved
           </p>
         )}
 
@@ -277,7 +263,7 @@ export default async function GovernancePage({
               <tr>
                 <Th>Server</Th>
                 <Th>Source</Th>
-                <Th>People</Th>
+                <Th numeric>People</Th>
                 <Th numeric>Calls</Th>
                 <Th numeric>Days</Th>
                 <Th numeric>Last seen</Th>
@@ -298,7 +284,7 @@ export default async function GovernancePage({
                       {s.note && <div className="text-xs text-ink-2">{s.note}</div>}
                     </Td>
                     <Td className="text-ink-2">{SOURCE_LABEL[s.source]}</Td>
-                    <Td className="text-ink-2">{s.users.map((u) => u.name ?? 'Removed user').join(', ')}</Td>
+                    <Td numeric>{s.people}</Td>
                     <Td numeric>{s.calls}</Td>
                     <Td numeric>{s.days}</Td>
                     <Td numeric>{s.lastDate}</Td>
@@ -339,42 +325,10 @@ export default async function GovernancePage({
   )
 }
 
-function PeopleRows({ people }: { people: ClaudeAccountPerson[] }) {
-  return people.map((p) => (
-    <Tr key={p.userId}>
-      <Td className="font-medium text-ink">{p.name}</Td>
-      <Td numeric>{p.hashedDays}</Td>
-      <Td className="text-ink-2">{p.accounts.join(', ')}</Td>
-      <Td numeric>{p.outsideOrgDays ?? '—'}</Td>
-      <Td>{p.claudeSeat ? 'yes' : 'no'}</Td>
-      <Td>
-        <span className="flex flex-wrap gap-1">
-          {p.flags.map((f) => (
-            <Badge key={f}>{FLAG_LABEL[f]}</Badge>
-          ))}
-        </span>
-      </Td>
-    </Tr>
-  ))
-}
-
 /** R2 B6. Admins only. Accounts and orgs show as labels; hashes never render. */
 function ClaudeAccountsSection({ data }: { data: Awaited<ReturnType<typeof fetchClaudeAccounts>> | null }) {
-  const flagged = data?.people.filter((p) => p.flags.length > 0) ?? []
-  const quiet = data?.people.filter((p) => p.flags.length === 0) ?? []
+  const flags = data ? (Object.keys(FLAG_LABEL) as ClaudeAccountFlag[]).filter((f) => data.flagCounts[f] > 0) : []
   const onCompany = data?.companyOrgUsers ?? 0
-  const head = (
-    <thead>
-      <tr>
-        <Th>Person</Th>
-        <Th numeric>Days with account data</Th>
-        <Th>Accounts</Th>
-        <Th numeric>Days outside company org</Th>
-        <Th>Claude seat</Th>
-        <Th>Notes</Th>
-      </tr>
-    </thead>
-  )
   return (
     <Section
       title="Claude accounts"
@@ -414,36 +368,30 @@ function ClaudeAccountsSection({ data }: { data: Awaited<ReturnType<typeof fetch
           <div className="mt-4">
             <TableFrame>
               <table className="w-full">
-                {head}
+                <thead>
+                  <tr>
+                    <Th>Note</Th>
+                    <Th numeric>People</Th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {data.people.length === 0 ? (
-                    <EmptyRow colSpan={6}>No account data in this range.</EmptyRow>
-                  ) : flagged.length === 0 ? (
-                    <EmptyRow colSpan={6}>Nothing to note in this range.</EmptyRow>
+                  {data.coverage.hashed === 0 ? (
+                    <EmptyRow colSpan={2}>No account data in this range.</EmptyRow>
+                  ) : flags.length === 0 ? (
+                    <EmptyRow colSpan={2}>Nothing to note in this range.</EmptyRow>
                   ) : (
-                    <PeopleRows people={flagged} />
+                    flags.map((f) => (
+                      <Tr key={f}>
+                        <Td>{FLAG_LABEL[f]}</Td>
+                        <Td numeric>{data.flagCounts[f]}</Td>
+                      </Tr>
+                    ))
                   )}
                 </tbody>
               </table>
             </TableFrame>
           </div>
-          {quiet.length > 0 && (
-            <details className="mt-4">
-              <summary className="cursor-pointer text-sm font-medium text-ink">
-                Show all ({quiet.length} more)
-              </summary>
-              <div className="mt-3">
-                <TableFrame>
-                  <table className="w-full">
-                    {head}
-                    <tbody>
-                      <PeopleRows people={quiet} />
-                    </tbody>
-                  </table>
-                </TableFrame>
-              </div>
-            </details>
-          )}
+          <p className="mt-3 text-xs text-ink-2">Each person sees their own notes on My usage.</p>
         </>
       )}
     </Section>

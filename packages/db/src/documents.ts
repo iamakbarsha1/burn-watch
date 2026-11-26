@@ -4,7 +4,6 @@ import type {
   AgentName,
   AuditAction,
   AuditTarget,
-  LeaderboardSettings,
   ProjectEntry,
   SessionEntry,
 } from '@burn-watch/shared'
@@ -29,8 +28,6 @@ export interface OrganizationDoc {
   slug: string
   githubOrg: string | null
   createdAt: Date
-  /** R1 A8. Absent = developerView own, showNames true, showOthersCost false. */
-  leaderboard?: LeaderboardSettings
   /** R2 B5. Absent = no minimum, nothing flagged for Claude Code. */
   minClaudeVersion?: string
   /** R2 B6. Claude org hashes that are the company's. Absent = not set, no outside-org flags. */
@@ -48,8 +45,8 @@ export interface UserDoc {
   role: 'admin' | 'manager' | 'developer'
   isActive: boolean
   createdAt: Date
-  /** R1 A8. Shows as "Anonymous" on the leaderboard to everyone but admins and themselves. */
-  hideOnLeaderboard?: boolean
+  /** v2 Phase 2. Set only by the person: listed on Adoption as happy to help. Absent = false. */
+  helpVolunteer?: boolean
 }
 
 export interface DeviceDoc {
@@ -165,7 +162,7 @@ export interface McpApprovalDoc {
 
 /**
  * The org's rule for one agent (R1 B2). No doc means "not set", which the
- * violation list flags. `models` holds exact model names, used only when
+ * setup-check list flags. `models` holds exact model names, used only when
  * `rule` is 'models'.
  */
 export interface AgentPolicyDoc {
@@ -185,7 +182,7 @@ export interface BudgetAlertDoc {
   _id: string
   orgId: OrgId
   type: BudgetAlertType
-  /** Null means the alert covers the whole org. */
+  /** Always null since v2 (0006 deleted per-person alerts): the alert covers the whole org. */
   userId: UserId | null
   /** Null means the alert covers every agent. */
   agent: AgentName | null

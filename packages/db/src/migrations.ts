@@ -127,4 +127,22 @@ export const MIGRATIONS: readonly Migration[] = [
       if (ops.length > 0) await coll.bulkWrite(ops)
     },
   },
+  {
+    id: '0005_drop_leaderboard_settings',
+    description: 'v2: unset leaderboard on organizations and hideOnLeaderboard on users',
+    // The leaderboard is gone; nothing reads either field. Matching on $exists makes a re-run a no-op.
+    async run(db) {
+      await db.collection('organizations').updateMany({ leaderboard: { $exists: true } }, { $unset: { leaderboard: '' } })
+      await db.collection('users').updateMany({ hideOnLeaderboard: { $exists: true } }, { $unset: { hideOnLeaderboard: '' } })
+    },
+  },
+  {
+    id: '0006_drop_per_person_alerts',
+    description: 'v2: delete budget alerts set on one person',
+    // Alerts are org-wide or per agent now. Turning a per-person limit into an
+    // org-wide one would change what it means, so it goes. A re-run matches nothing.
+    async run(db) {
+      await db.collection('budgetAlerts').deleteMany({ userId: { $ne: null } })
+    },
+  },
 ]

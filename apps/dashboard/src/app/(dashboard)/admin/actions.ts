@@ -19,11 +19,10 @@ import {
   setSeat,
   removeSeat,
   assignSeatToAll,
-  saveLeaderboardSettings,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
 import { parseInviteCsv } from '@/lib/csv'
-import type { AgentName, CopilotSeatsResponse, CopilotSyncResult, LeaderboardSettings } from '@burn-watch/shared'
+import type { AgentName, CopilotSeatsResponse, CopilotSyncResult } from '@burn-watch/shared'
 
 export interface InviteState {
   ok: boolean
@@ -125,13 +124,12 @@ function wholeNumber(formData: FormData, name: string, min: number, max: number,
 /**
  * Shared by create and update: a threshold typed as a whole percent (the UI
  * never shows a bare fraction) parsed down to what the API stores, and the
- * optional scoping fields collapsed from "" to null rather than left as an
+ * optional agent collapsed from "" to null rather than left as an
  * empty string the API would reject. Only the fields of the chosen type are
  * sent; the API stores the others as null.
  */
 function parseBudgetAlertForm(formData: FormData) {
   const rawType = String(formData.get('type') ?? '').trim() || 'api-spend'
-  const userId = String(formData.get('userId') ?? '').trim() || null
   const rawAgent = String(formData.get('agent') ?? '').trim()
 
   if (!(ALERT_TYPES as readonly string[]).includes(rawType)) {
@@ -144,12 +142,12 @@ function parseBudgetAlertForm(formData: FormData) {
   const agent: AgentName | null = rawAgent && isAgentName(rawAgent) ? rawAgent : null
 
   if (type === 'idle-seat') {
-    const idleDays = wholeNumber(formData, 'idleDays', 1, 365, 'Enter idle days between 1 and 365')
-    return { type, idleDays, userId, agent }
+    const idleDays = wholeNumber(formData, 'idleDays', 1, 365, 'Enter unused days between 1 and 365')
+    return { type, idleDays, agent }
   }
   if (type === 'limit-hit') {
     const limitHits = wholeNumber(formData, 'limitHits', 1, 100000, 'Enter limit hits of 1 or more')
-    return { type, limitHits, userId, agent }
+    return { type, limitHits, agent }
   }
 
   const monthlyLimitUsd = Number(formData.get('monthlyLimitUsd'))
@@ -160,7 +158,7 @@ function parseBudgetAlertForm(formData: FormData) {
   if (!Number.isFinite(thresholdPct) || thresholdPct <= 0 || thresholdPct > 100) {
     throw new Error('Enter a threshold between 1 and 100')
   }
-  return { type, monthlyLimitUsd, threshold: thresholdPct / 100, userId, agent }
+  return { type, monthlyLimitUsd, threshold: thresholdPct / 100, agent }
 }
 
 export async function createBudgetAlertAction(
@@ -513,30 +511,5 @@ export async function assignSeatToAllAction(
       created === 0
         ? `Everyone already has a ${input.agent} seat. Nothing changed.`
         : `Added ${created} ${input.agent} seat${created === 1 ? '' : 's'}. Existing seats were left as they were.`,
-  }
-}
-
-const DEVELOPER_VIEWS: LeaderboardSettings['developerView'][] = ['own', 'rank', 'full']
-
-/** Save the three org leaderboard settings at once. Admin only; the API checks again. */
-export async function leaderboardSettingsAction(
-  _prev: { ok: boolean; message: string } | null,
-  formData: FormData,
-): Promise<{ ok: boolean; message: string }> {
-  if ((await getUserRole()) !== 'admin') return { ok: false, message: 'Admin role required' }
-  const developerView = String(formData.get('developerView') ?? '') as LeaderboardSettings['developerView']
-  if (!DEVELOPER_VIEWS.includes(developerView)) return { ok: false, message: 'Pick what developers see' }
-  try {
-    await saveLeaderboardSettings({
-      developerView,
-      // An unchecked checkbox sends nothing.
-      showNames: formData.get('showNames') === 'on',
-      showOthersCost: formData.get('showOthersCost') === 'on',
-    })
-    revalidatePath('/users')
-    revalidatePath('/admin')
-    return { ok: true, message: 'Leaderboard settings saved.' }
-  } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : 'Failed to save leaderboard settings' }
   }
 }

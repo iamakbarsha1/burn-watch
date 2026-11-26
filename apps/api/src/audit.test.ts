@@ -61,7 +61,7 @@ describe('audit', () => {
   it('labels an org target with the org name, and still writes when that read fails', async () => {
     state.docs.organizations = [{ _id: ORG, name: 'Acme' }]
     const { request } = req()
-    await audit(request, { action: 'org.leaderboard_settings', target: { type: 'org', id: ORG, label: null } })
+    await audit(request, { action: 'org.min_claude_version', target: { type: 'org', id: ORG, label: null } })
     state.failOn = 'organizations.findOne'
     await audit(request, { action: 'seat.assign_all', target: { type: 'org', id: ORG, label: null } })
 
@@ -90,7 +90,7 @@ describe('audit', () => {
 describe('auditView', () => {
   it('writes nothing for a scope of only the viewer', async () => {
     const { request } = req('developer')
-    await auditView(request, 'leaderboard', [ME])
+    await auditView(request, 'usage_distribution', [ME])
     expect(state.calls).toEqual([])
   })
 
@@ -141,8 +141,8 @@ describe('auditView', () => {
   it('swallows a failed upsert and logs audit_write_failed', async () => {
     state.failOn = 'auditEvents.updateOne'
     const { request, error } = req('admin')
-    await expect(auditView(request, 'leaderboard', undefined)).resolves.toBeUndefined()
+    await expect(auditView(request, 'usage_distribution', undefined)).resolves.toBeUndefined()
     expect(error.mock.calls[0][1]).toBe('audit_write_failed')
-    expect(error.mock.calls[0][0].event).toMatchObject({ action: 'view.leaderboard' })
+    expect(error.mock.calls[0][0].event).toMatchObject({ action: 'view.usage_distribution' })
   })
 })

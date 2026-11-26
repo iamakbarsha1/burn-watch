@@ -1,6 +1,7 @@
 import {
+  MIN_GROUP_SIZE,
   PRACTICE_FEATURES,
-  type ChampionReason,
+  type HelpVolunteer,
   type FeatureKey,
   type PracticeFeature,
   type PracticeGroup,
@@ -11,10 +12,11 @@ import {
 import { mcpSource } from './governance.js'
 
 /**
- * R2 A6 Decision 2: below this many people there is no comparison. At 4 to 7
- * the top group is one person; the owner chose that knowingly.
+ * Below this many people there is no comparison. v2 rule 2 replaces R2 A6
+ * Decision 2 (a floor of 4, where the top group could be one person): the top
+ * group, ceil(n / 4) people, must itself reach MIN_GROUP_SIZE, so n >= 17.
  */
-export const MIN_QUARTILE_PEOPLE = 4
+export const MIN_QUARTILE_PEOPLE = 4 * (MIN_GROUP_SIZE - 1) + 1
 
 /** What the split needs from a person. `rank` is the measure picked by `rankBy`. */
 export interface Ranked {
@@ -85,33 +87,20 @@ export function practiceTips(top: PracticeGroup, rest: PracticeGroup): PracticeT
     .slice(0, 3)
 }
 
-/** R2 A7 Decision 2: a team of 2 has no champion, just "the other person". */
-export const MIN_CHAMPION_TEAM = 3
-
-export interface ChampionCandidate extends Ranked {
-  days: Record<FeatureKey, number | null>
-  hidden: boolean
-}
-
 /**
- * R2 A7 Decision 1: the top 2 of a team by the picked ranking, no feature
- * floor. Decision 3: `skipHidden` (a manager viewing) leaves out people who
- * hid their name, and the next one takes the slot.
+ * v2 Phase 2: the people in a team who set "happy to help" themselves, by
+ * name, with the features they used that fewer than half of the team used.
+ * Nobody is picked by usage.
  */
-export function suggestChampions<T extends ChampionCandidate>(
+export function teamVolunteers<T extends { userId: string; name: string; helpVolunteer: boolean; days: Record<FeatureKey, number | null> }>(
   members: T[],
-  skipHidden: boolean,
-): { reason: ChampionReason; champions: { person: T; uses: PracticeFeature[]; canHelpWith: PracticeFeature[] }[] } {
-  if (members.length < MIN_CHAMPION_TEAM) return { reason: 'tooFew', champions: [] }
+): HelpVolunteer[] {
   const used = (p: T) => PRACTICE_FEATURES.filter((k) => (p.days[k] ?? 0) > 0)
-  // Features fewer than half the team uses.
   const rare = PRACTICE_FEATURES.filter((k) => members.filter((p) => (p.days[k] ?? 0) > 0).length * 2 < members.length)
-  const champions = members
-    .filter((p) => !(skipHidden && p.hidden))
-    .sort(byRank)
-    .slice(0, 2)
-    .map((person) => ({ person, uses: used(person), canHelpWith: used(person).filter((k) => rare.includes(k)) }))
-  return { reason: champions.length ? 'ok' : 'noneEligible', champions }
+  return members
+    .filter((p) => p.helpVolunteer)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((p) => ({ userId: p.userId, name: p.name, canHelpWith: used(p).filter((k) => rare.includes(k)) }))
 }
 
 /** R2 D5 Decision 5: an item needs 2 people, so a one-person tool never shows. */

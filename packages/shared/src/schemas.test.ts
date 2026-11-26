@@ -249,7 +249,6 @@ describe('BudgetAlertInputSchema', () => {
   it('fills in an org-wide, all-agent alert from the limit alone', () => {
     expect(BudgetAlertInputSchema.parse({ monthlyLimitUsd: 500 })).toEqual({
       type: 'api-spend',
-      userId: null,
       agent: null,
       monthlyLimitUsd: 500,
       threshold: 0.8,
@@ -284,6 +283,12 @@ describe('BudgetAlertInputSchema', () => {
     const parsed = BudgetAlertInputSchema.parse({ monthlyLimitUsd: 500, userId, orgId: 'somebody-elses-org' })
     expect(parsed).not.toHaveProperty('orgId')
   })
+
+  // Alerts are org or team wide only. A per-person alert is a quiet way to
+  // watch one developer, so a userId in the body is dropped.
+  it('drops a userId supplied in the body', () => {
+    expect(BudgetAlertInputSchema.parse({ monthlyLimitUsd: 500, userId })).not.toHaveProperty('userId')
+  })
 })
 
 describe('BudgetAlertPatchSchema', () => {
@@ -300,5 +305,9 @@ describe('BudgetAlertPatchSchema', () => {
 
   it('still enforces the threshold cap it inherited', () => {
     expect(BudgetAlertPatchSchema.safeParse({ threshold: 2 }).success).toBe(false)
+  })
+
+  it('cannot point an alert at one person', () => {
+    expect(BudgetAlertPatchSchema.parse({ monthlyLimitUsd: 900, userId: '3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d' })).toEqual({ monthlyLimitUsd: 900 })
   })
 })

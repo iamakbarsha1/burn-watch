@@ -152,7 +152,6 @@ export const BudgetAlertTypeSchema = z.enum(['api-spend', 'idle-seat', 'limit-hi
 
 export const BudgetAlertInputSchema = z.object({
   type: BudgetAlertTypeSchema.default('api-spend'),
-  userId: z.string().uuid().nullable().default(null),
   agent: AgentNameSchema.nullable().default(null),
   monthlyLimitUsd: z.number().positive().max(99999999.99).optional(),
   threshold: z.number().positive().max(1).default(0.8),
@@ -196,17 +195,11 @@ export const McpApprovalInputSchema = z.object({
 })
 
 // R1 A1. Query strings arrive as text, so coerce; nothing is stored.
-export const IdleSeatsQuerySchema = z.object({
+export const UnusedSeatsQuerySchema = z.object({
   teamId: z.string().uuid().optional(),
   idleDays: z.coerce.number().int().min(1).max(365).default(14),
 })
 
-// R1 A8. Admin writes all three at once; a person sets only their own flag.
-export const LeaderboardSettingsSchema = z.object({
-  developerView: z.enum(['own', 'rank', 'full']),
-  showNames: z.boolean(),
-  showOthersCost: z.boolean(),
-})
 // R2 B5. Plain X.Y.Z only; null clears the minimum.
 export const DeviceSettingsSchema = z.object({
   minClaudeVersion: z.string().max(20).regex(/^\d+\.\d+\.\d+$/).nullable(),
@@ -219,7 +212,9 @@ export const ClaudeOrgsInputSchema = z.object({
 export const TicketPrefixesSchema = z.object({
   prefixes: z.array(z.string().regex(/^[A-Z][A-Z0-9]{1,9}$/)).max(50),
 })
-export const HideOnLeaderboardSchema = z.object({ hideOnLeaderboard: z.boolean() })
+
+// v2 Phase 2. Only the person sets their own flag.
+export const HelpVolunteerSchema = z.object({ helpVolunteer: z.boolean() })
 
 // R1 B8. The audit log's `action` filter is a prefix from this closed list.
 export const AUDIT_ACTION_PREFIXES = [

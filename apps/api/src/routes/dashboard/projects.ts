@@ -3,8 +3,8 @@ import type { Document } from 'mongodb'
 import { getStore, type IsoDate, type OrgId } from '@burn-watch/db'
 import type { OrgProjectSummary } from '@burn-watch/shared'
 import { enrichmentMatch, type EnrichmentRange } from './enrichment.js'
-import { dateQuerySchema as QuerySchema } from './query-schema.js'
-import { viewerScope } from '../../plugins/jwt.js'
+import { dateQuerySchema as QuerySchema, isRefusal, refuse } from './query-schema.js'
+import { readScope } from '../../plugins/jwt.js'
 
 /** One project, already folded across every user and day in range. */
 export type ProjectTotals = Omit<OrgProjectSummary, 'avgCostPerSession'>
@@ -72,9 +72,11 @@ export async function projectsRoutes(fastify: FastifyInstance) {
       }
       const from = (parsed.data.date ?? parsed.data.from!) as IsoDate
       const to = (parsed.data.date ?? parsed.data.to!) as IsoDate
+      const scope = await readScope(request.user)
+      if (isRefusal(scope)) return refuse(reply, scope)
 
       const rows = await getStore().claudeEnrichment.aggregate<ProjectTotals>(
-        projectTotals({ orgId, userIds: await viewerScope(request.user), from, to }),
+        projectTotals({ orgId, userIds: scope, from, to }),
       )
 
       // The one derived field, left in node because the guard is the point: a
