@@ -2,7 +2,7 @@
 
 ## What is BurnWatch?
 
-BurnWatch is an AI token usage dashboard for engineering organizations. It tracks per-developer spend across multiple AI agents (Claude, Qwen, Gemini, Codex, Copilot) and surfaces cost visibility for management.
+BurnWatch shows team-level Claude Code cost and adoption, with a private view for each person. It collects usage across several AI agents (Claude, Qwen, Gemini, Codex, Copilot). Managers and admins see groups of 5 or more; each person sees their own numbers on My usage.
 
 Target: companies with 50+ developers using AI coding assistants.
 
@@ -14,10 +14,10 @@ BurnWatch v2 is built so it cannot be used to watch individual people. Every rou
 2. **Minimum group size of 5.** `MIN_GROUP_SIZE` in `packages/shared`. `readScope` (`apps/api/src/plugins/jwt.ts`) refuses a read that covers other people but fewer than 5 of them, and the route answers 403 `group_too_small`. Team compare leaves such teams out. The top-vs-rest split needs 17 people so the top quarter is itself 5.
 3. **No ranking, scoring or streaks** shown to anyone but the person.
 4. **Named lists only for admin operations, with symmetry.** Unused seats and setup checks may name a person to an admin. The person sees the same fact about themselves.
-5. **People can see who looked** at data that covered them.
+5. **People can see who looked** at data that covered them: `GET /v1/dashboard/audit/me`, shown as "Who viewed my data" on My usage.
 6. **Plain, neutral words.** No "score", "streak", "stuck", "missed", "violations", "leaderboard".
 
-`npm run no-individuals -w @burn-watch/api` checks rules 1, 2 and 4 against a real MongoDB in CI. It calls every dashboard GET as admin, manager and developer and fails on any other person's id, name or email outside its allowlist. Its `KNOWN_LEAKS` list holds the routes that still break rule 1, and each phase removes its entries.
+`npm run no-individuals -w @burn-watch/api` checks rules 1, 2 and 4 against a real MongoDB in CI. It calls every dashboard GET as admin, manager and developer and fails on any other person's id, name or email outside its allowlist. Its `KNOWN_LEAKS` list is empty since Phase 3; a new leak fails CI. `scripts/check-words.sh` checks rule 6 in the dashboard source, with a short allowlist.
 
 ## System Overview
 

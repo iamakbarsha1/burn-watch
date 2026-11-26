@@ -706,7 +706,7 @@ export const ACTIVE_DAYS_PER_WEEK = 2
 /** Decision 2: any 2 of A5's five features, each on 1+ day. */
 export const MIN_FEATURES = 2
 
-export type OnboardingState = 'onboarded' | 'missed' | 'inProgress' | 'noFeatureData'
+export type OnboardingState = 'onboarded' | 'windowEnded' | 'inProgress' | 'noFeatureData'
 
 export interface OnboardingResult {
   state: OnboardingState
@@ -723,7 +723,7 @@ export interface OnboardingCounts {
   /** People whose first sync is in range. */
   cohort: number
   onboarded: number
-  missed: number
+  windowEnded: number
   inProgress: number
   noFeatureData: number
 }
@@ -890,6 +890,31 @@ export interface AuditTarget {
   type: AuditTargetType
   id: string | null
   label: string | null
+}
+
+// GET /v1/dashboard/audit/me (v2 Phase 4). Views whose scope covered the
+// caller: a whole-org view, a view of a team they are in, or a manager's view
+// of their managed teams when the caller is in one. Team membership is read as
+// it is today, not as it was on the day of the view.
+export interface AuditMeRow {
+  /** First view that UTC day. */
+  at: string
+  /** Last view that day. */
+  lastAt: string | null
+  /** Views that day. */
+  count: number
+  surface: AuditSurface
+  /** Name resolved at read time; null when the user row is gone. */
+  viewer: { name: string | null; role: string }
+  /** What was viewed: the whole org, managed teams, or one team by name. */
+  scope: string | null
+}
+
+export interface AuditMeResponse {
+  from: string
+  to: string
+  /** Newest first, at most 200. */
+  rows: AuditMeRow[]
 }
 
 // GET /v1/dashboard/audit. Admin only, newest first.

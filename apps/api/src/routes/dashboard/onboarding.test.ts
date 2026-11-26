@@ -15,13 +15,13 @@ describe('onboardingOf', () => {
   })
 
   it('puts day 7 in week 1 and day 8 in week 2', () => {
-    expect(onboardingOf(START, active(1, 7, 8), [both], DONE)).toMatchObject({ activeWeek1: 2, activeWeek2: 1, state: 'missed' })
+    expect(onboardingOf(START, active(1, 7, 8), [both], DONE)).toMatchObject({ activeWeek1: 2, activeWeek2: 1, state: 'windowEnded' })
     expect(onboardingOf(START, active(1, 7, 8, 14), [both], DONE).state).toBe('onboarded')
   })
 
   it('misses with 1 active day in either week', () => {
-    expect(onboardingOf(START, active(1, 8, 9), [both], DONE).state).toBe('missed')
-    expect(onboardingOf(START, active(1, 2, 9), [both], DONE).state).toBe('missed')
+    expect(onboardingOf(START, active(1, 8, 9), [both], DONE).state).toBe('windowEnded')
+    expect(onboardingOf(START, active(1, 2, 9), [both], DONE).state).toBe('windowEnded')
   })
 
   it('counts day 14 and not day 15 or the day before the first sync', () => {
@@ -31,7 +31,7 @@ describe('onboardingOf', () => {
 
   it('needs 2 features, counts SDK when known, and ignores features outside the window', () => {
     const one = { date: day(1), mcpUsage: { github: 1 } }
-    expect(onboardingOf(START, active(1, 2, 8, 9), [one], DONE).state).toBe('missed')
+    expect(onboardingOf(START, active(1, 2, 8, 9), [one], DONE).state).toBe('windowEnded')
     const sdk = { date: day(3), entrypointCounts: { 'sdk-ts': 1 } }
     expect(onboardingOf(START, active(1, 2, 8, 9), [one, sdk], DONE)).toMatchObject({ state: 'onboarded', features: ['mcp', 'sdk'] })
     const late = { date: day(15), toolUsage: { skill: 1 } }
@@ -42,9 +42,9 @@ describe('onboardingOf', () => {
     expect(onboardingOf(START, active(1, 2, 8, 9), [both], day(9))).toMatchObject({ state: 'onboarded', dayOfWindow: 9 })
   })
 
-  it('is in progress until day 14 is synced, then missed', () => {
+  it('is in progress until day 14 is synced, then the window ends', () => {
     expect(onboardingOf(START, active(1), [both], day(13)).state).toBe('inProgress')
-    expect(onboardingOf(START, active(1), [both], day(14)).state).toBe('missed')
+    expect(onboardingOf(START, active(1), [both], day(14)).state).toBe('windowEnded')
     // First sync today: the last synced day is before it.
     expect(onboardingOf(START, active(1), [both], day(0))).toMatchObject({ state: 'inProgress', dayOfWindow: 1 })
   })
@@ -56,9 +56,9 @@ describe('onboardingOf', () => {
 
 describe('countOnboarding', () => {
   it('counts each state', () => {
-    const states = ['onboarded', 'missed', 'missed', 'inProgress', 'noFeatureData'] as const
+    const states = ['onboarded', 'windowEnded', 'windowEnded', 'inProgress', 'noFeatureData'] as const
     expect(countOnboarding(states.map((state) => ({ state })))).toEqual({
-      cohort: 5, onboarded: 1, missed: 2, inProgress: 1, noFeatureData: 1,
+      cohort: 5, onboarded: 1, windowEnded: 2, inProgress: 1, noFeatureData: 1,
     })
   })
 })

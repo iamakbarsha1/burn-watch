@@ -54,6 +54,8 @@ const ALLOWED: Record<string, { roles: Role[]; why: string }> = {
   '/v1/dashboard/teams': { roles: ['admin', 'manager'], why: 'team roster for the filter: names only, no usage' },
   '/v1/dashboard/adoption/unused-seats': { roles: ['admin'], why: 'unused seats: reclaim a licence' },
   '/v1/dashboard/governance/setup-checks': { roles: ['admin'], why: 'setup checks: fix a security setting' },
+  // v2 rule 5: names the people who viewed the caller's data, never anyone's usage.
+  '/v1/dashboard/audit/me': { roles: ['admin', 'manager', 'developer'], why: 'who viewed my data' },
 }
 
 /**

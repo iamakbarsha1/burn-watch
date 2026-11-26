@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify'
 import type { Filter } from 'mongodb'
-import { AuditQuerySchema, type AuditRow } from '@burn-watch/shared'
-import { getStore, type AuditEventDoc, type IsoDate, type OrgId, type UserId } from '@burn-watch/db'
+import { AuditQuerySchema, type AuditMeResponse, type AuditRow, type AuditSurface } from '@burn-watch/shared'
+import { getStore, type AuditEventDoc, type IsoDate, type OrgId, type TeamId, type UserId } from '@burn-watch/db'
 import { requireAdmin } from '../../plugins/jwt.js'
 import { auditView } from '../../audit.js'
 import { daysBefore, today } from './dates.js'
+import { dateRangeFields } from './query-schema.js'
+import { z } from 'zod'
 
 const startOf = (day: string) => new Date(`${day}T00:00:00.000Z`)
 
@@ -53,5 +55,61 @@ export async function auditRoutes(fastify: FastifyInstance) {
       target: e.target,
       detail: e.detail,
     }))
+  })
+
+  // GET /audit/me — v2 Phase 4, every role. Who viewed data that covered the
+  // caller, for the "Who viewed my data" section on My usage. Not audited: a
+  // person reading about themselves is not a view of anyone.
+  fastify.get('/audit/me', async (request, reply) => {
+    const parsed = z.object(dateRangeFields).safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
+    }
+    const to = (parsed.data.to ?? today()) as IsoDate
+    const from = (parsed.data.from ?? daysBefore(to, 89)) as IsoDate
+    if (from > to) return reply.status(400).send({ error: 'Invalid query', details: 'from is after to' })
+    const orgId = request.user.orgId as OrgId
+    const me = request.user.userId as UserId
+    const store = getStore()
+
+    const mine = await store.teamMembers.find({ orgId, userId: me })
+    const teamIds = [...new Set(mine.map((m) => m.teamId))]
+    const managers = teamIds.length
+      ? await store.teamMembers.find({ orgId, teamId: { $in: teamIds as TeamId[] }, role: 'manager' })
+      : []
+    const managerIds = [...new Set(managers.map((m) => m.userId))]
+
+    const events = await store.auditEvents.find(
+      {
+        orgId,
+        kind: 'view',
+        actorId: { $ne: me },
+        at: { $gte: startOf(from), $lt: new Date(startOf(to).getTime() + 86_400_000) },
+        $or: [
+          { 'target.type': 'scope', 'target.label': 'org' },
+          ...(teamIds.length ? [{ 'target.type': 'team' as const, 'target.id': { $in: teamIds } }] : []),
+          ...(managerIds.length
+            ? [{ 'target.type': 'scope' as const, 'target.label': 'managed teams', actorId: { $in: managerIds } }]
+            : []),
+        ],
+      },
+      { sort: { at: -1 }, limit: 200 },
+    )
+    const ids = [...new Set(events.map((e) => e.actorId))]
+    const users = ids.length ? await store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1 } }) : []
+    const nameOf = new Map(users.map((u) => [u._id, u.name]))
+
+    return {
+      from,
+      to,
+      rows: events.map((e) => ({
+        at: e.at.toISOString(),
+        lastAt: e.lastAt ? e.lastAt.toISOString() : null,
+        count: e.count,
+        surface: e.action.slice('view.'.length) as AuditSurface,
+        viewer: { name: nameOf.get(e.actorId) ?? null, role: e.actorRole },
+        scope: e.target.label,
+      })),
+    } satisfies AuditMeResponse
   })
 }

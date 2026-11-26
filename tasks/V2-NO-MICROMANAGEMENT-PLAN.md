@@ -106,13 +106,17 @@ Known gaps after Phase 3:
 - An admin of an org with fewer than 5 people still sees org totals (unchanged from Phase 0).
 - My usage reads other people's account days to set the "shared" flag. Only days that share the caller's account hash are read, and only the caller's flags come back.
 
-### Phase 4: transparency and words
+### Phase 4: transparency and words (built 2026-11-26)
 
-- [ ] `GET /v1/dashboard/audit/me` and an "Who viewed my data" section on "My usage".
-- [ ] Update `transparency.ts` for every field added, removed or moved. Its test already blocks gaps.
-- [ ] Add "What BurnWatch will never do" to /privacy: rank people, score people, show one person's usage to a manager, read prompts or code.
-- [ ] Word sweep across API, UI, docs and audit sentences. CI check like the old-name guard: fail on `leaderboard|streak|stuck|missed|violation|score` in dashboard UI strings, with an allowlist for code that must keep a word (for example "self streak" on "My usage" if we keep that label).
-- [ ] README, `docs/ARCHITECTURE.md`, `docs/INSTALL.md`, rollout proposal: describe BurnWatch as "team-level Claude Code cost and adoption, with a private view for each person".
+- [x] `GET /v1/dashboard/audit/me`, every role: views whose scope covered the caller (whole org, a team they are in, or a manager's managed teams when they are in one). "Who viewed my data" on My usage. Not audited. Allowed to name viewers in the no-individuals check (rule 5).
+- [x] `transparency.ts` checked: Phase 3 already updated it and its gap test passes. Views of you are not a field, so /privacy points to Who viewed my data instead.
+- [x] "What BurnWatch will never do" on /privacy: rank people, score people, show one person's usage to a manager, read prompts or code.
+- [x] Word sweep: onboarding state `missed` renamed `windowEnded`; code comments say setup check. `scripts/check-words.sh` runs in CI as "Neutral words" and fails on `leaderboard|streak|stuck|missed|violation|score` in non-test dashboard source. Allowlist: the private streak on My usage, historical audit labels.
+- [x] `docs/ARCHITECTURE.md`, `docs/INSTALL.md`: describe BurnWatch as team-level Claude Code cost and adoption, with a private view for each person. The repo has no README. The rollout proposal has a v2 note at the top; its body is the original text.
+
+Known gaps after Phase 4:
+- "Who viewed my data" uses current team membership. Someone who left a team does not see views of it from before; someone who joined sees views of it from before they joined.
+- The word check covers the dashboard only. API field names such as `streak` on `/me/usage` stay.
 
 ### Phase 5: ship
 

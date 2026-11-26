@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { MyUsageResponse } from '@burn-watch/shared'
+import type { AuditMeResponse, MyUsageResponse } from '@burn-watch/shared'
 
 const state = vi.hoisted(() => ({
   usage: null as MyUsageResponse | null,
   asked: [] as string[][],
+  audit: null as AuditMeResponse | null,
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -12,6 +13,10 @@ vi.mock('@/lib/api', () => ({
     state.asked.push([from, to])
     if (!state.usage) throw new Error('down')
     return state.usage
+  },
+  fetchAuditMe: async () => {
+    if (!state.audit) throw new Error('down')
+    return state.audit
   },
 }))
 
@@ -50,6 +55,7 @@ const NOV = { from: '2026-11-01', to: '2026-11-30' }
 beforeEach(() => {
   state.usage = usage()
   state.asked = []
+  state.audit = { from: '2026-08-29', to: '2026-11-26', rows: [] }
 })
 
 describe('MyUsagePage', () => {
@@ -124,7 +130,7 @@ describe('MyUsagePage', () => {
     it('uses neutral words for each state', async () => {
       state.usage = usage({ onboarding: onboarding({ state: 'onboarded', activeWeek2: 2, features: ['mcp', 'plan'], dayOfWindow: 14 }) })
       expect(await render(NOV)).toContain('>Done<')
-      state.usage = usage({ onboarding: onboarding({ state: 'missed', dayOfWindow: 14 }) })
+      state.usage = usage({ onboarding: onboarding({ state: 'windowEnded', dayOfWindow: 14 }) })
       const ended = await render(NOV)
       expect(ended).toContain('Window ended')
       expect(ended).not.toContain('Day 14 of 14')
@@ -175,5 +181,44 @@ describe('Your setup', () => {
     expect(html).toContain('Outside company org')
     expect(html).not.toContain('Nothing to note')
     expect(html).not.toMatch(/violation|idle/i)
+  })
+})
+
+describe('Who viewed my data', () => {
+  const at = '2026-11-05T09:12:00.000Z'
+
+  it('lists each view with the viewer, what they opened, what it covered, the day and the count', async () => {
+    state.audit = {
+      from: '2026-08-29',
+      to: '2026-11-26',
+      rows: [
+        { at, lastAt: at, count: 3, surface: 'adoption', viewer: { name: 'Priya', role: 'manager' }, scope: 'managed teams' },
+        { at, lastAt: null, count: 1, surface: 'governance', viewer: { name: 'Sam', role: 'admin' }, scope: 'org' },
+        { at, lastAt: null, count: 2, surface: 'overview', viewer: { name: null, role: 'manager' }, scope: 'Platform' },
+      ],
+    }
+    const html = await render(NOV)
+    expect(html).toContain('Who viewed my data')
+    expect(html).toContain('Teams are the ones you are in today.')
+    expect(html).toContain('Priya <span class="text-ink-2">(manager)</span>')
+    expect(html).toContain('Teams they manage')
+    expect(html).toContain('Governance')
+    expect(html).toContain('Whole org')
+    expect(html).toContain('A removed user')
+    expect(html).toContain('Platform')
+    expect(html).toContain('2026-11-05')
+    expect(html).not.toContain('No one has viewed')
+  })
+
+  it('says so when no one has viewed data that includes you', async () => {
+    expect(await render(NOV)).toContain('No one has viewed data that includes you in the last 90 days.')
+  })
+
+  it('shows the rest of the page when the read fails', async () => {
+    state.audit = null
+    const html = await render(NOV)
+    expect(html).toContain('Could not read who viewed your data.')
+    expect(html).toContain('Your setup')
+    expect(html).toContain('$19.00')
   })
 })

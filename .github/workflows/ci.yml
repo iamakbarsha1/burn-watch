@@ -62,6 +62,10 @@ jobs:
       - name: No previous collector name
         run: "! git grep -il 'cc''usage'"
 
+      # v2 rule 6: no ranking or blame words in the dashboard. Allowlist in the script.
+      - name: Neutral words
+        run: ./scripts/check-words.sh
+
       - name: Typecheck and test
         run: npx turbo run typecheck test
 

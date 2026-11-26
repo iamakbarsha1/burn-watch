@@ -432,8 +432,8 @@ describe('AdoptionPage funnel', () => {
   })
 
   describe('Onboarding', () => {
-    const c = (cohort: number, onboarded: number, missed: number, inProgress = 0, noFeatureData = 0): OnboardingCounts =>
-      ({ cohort, onboarded, missed, inProgress, noFeatureData })
+    const c = (cohort: number, onboarded: number, windowEnded: number, inProgress = 0, noFeatureData = 0): OnboardingCounts =>
+      ({ cohort, onboarded, windowEnded, inProgress, noFeatureData })
     const onboarding = (over: Partial<OnboardingResponse> = {}): OnboardingResponse => ({
       from: '2026-11-01',
       to: '2026-11-30',

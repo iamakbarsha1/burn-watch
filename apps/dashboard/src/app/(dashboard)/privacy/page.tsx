@@ -10,6 +10,13 @@ const NEVER = [
   'Your raw Claude account ID. It is hashed on your laptop before it is sent',
 ]
 
+const WONT = [
+  'Rank people against each other.',
+  'Give anyone a number that rates them.',
+  'Show one person\'s usage to a manager.',
+  'Read your prompts or your code.',
+]
+
 const SEES: Record<Audience, [boolean, boolean, boolean]> = {
   scoped: [true, true, true],
   self: [true, false, false],
@@ -38,6 +45,14 @@ export default function PrivacyPage() {
         </ul>
       </Section>
 
+      <Section title="What BurnWatch will never do">
+        <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
+          {WONT.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      </Section>
+
       <p className="text-sm text-ink-2">
         <strong className="text-ink">Your manager</strong> means a manager of a team you are in.
         Fields marked <em>stored, not shown</em> are kept but no page or API route returns them
@@ -45,7 +60,8 @@ export default function PrivacyPage() {
       </p>
 
       <p className="text-sm text-ink-2">
-        Admins can see a log of who opened views that include team or person data.
+        Admins can see a log of who opened views that include team or person data. You can see who
+        viewed data that includes you under Who viewed my data on My usage.
       </p>
 
       <p className="text-sm text-ink-2">

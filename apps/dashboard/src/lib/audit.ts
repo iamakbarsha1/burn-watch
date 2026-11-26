@@ -2,7 +2,7 @@ import type { AuditRow, AuditSurface } from '@burn-watch/shared'
 import { agentById } from './agents'
 import { formatCost } from './format'
 
-const SURFACES: Record<AuditSurface, string> = {
+export const SURFACES: Record<AuditSurface, string> = {
   // Removed in v2; kept so audit rows written before then still read.
   leaderboard: 'Leaderboard',
   usage_distribution: 'Usage distribution',
