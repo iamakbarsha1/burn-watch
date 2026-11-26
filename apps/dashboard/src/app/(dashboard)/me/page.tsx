@@ -1,5 +1,6 @@
 import {
   ACTIVE_DAYS_PER_WEEK,
+  type AuditMeResponse,
   MIN_FEATURES,
   type FeatureKey,
   type FreeTierReason,
@@ -8,7 +9,8 @@ import {
   type OnboardingState,
   type SetupCheckReason,
 } from '@burn-watch/shared'
-import { fetchMyUsage } from '@/lib/api'
+import { fetchAuditMe, fetchMyUsage } from '@/lib/api'
+import { SURFACES } from '@/lib/audit'
 import { agentById } from '@/lib/agents'
 import { FLAG_LABEL } from '@/lib/account-flags'
 import { formatCost, formatCount, formatRange, formatTokens, resolveRange } from '@/lib/format'
@@ -35,7 +37,7 @@ const FEATURES: Record<FeatureKey, string> = {
 const STATES: Record<OnboardingState, string> = {
   onboarded: 'Done',
   inProgress: 'In progress',
-  missed: 'Window ended',
+  windowEnded: 'Window ended',
   noFeatureData: 'No Claude Code use',
 }
 
@@ -129,11 +131,62 @@ function YourSetup({ u }: { u: MyUsageResponse }) {
   )
 }
 
+const scopeLabel = (scope: string | null) =>
+  scope === 'org' ? 'Whole org' : scope === 'managed teams' ? 'Teams they manage' : (scope ?? 'A deleted team')
+
+/** v2 Phase 4: views of groups the caller is in. null: the read failed. */
+function WhoViewed({ audit }: { audit: AuditMeResponse | null }) {
+  return (
+    <Section
+      title="Who viewed my data"
+      description="Views that included you: the whole org, a team you are in, or the teams your manager runs. Teams are the ones you are in today."
+    >
+      {audit === null ? (
+        <p className="text-sm text-ink-2">Could not read who viewed your data. Try again in a moment.</p>
+      ) : (
+        <TableFrame>
+          <table className="w-full">
+            <thead>
+              <tr>
+                <Th>Who</Th>
+                <Th>What they opened</Th>
+                <Th>Covering</Th>
+                <Th>Day</Th>
+                <Th numeric>Views</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {audit.rows.length === 0 ? (
+                <EmptyRow colSpan={5}>No one has viewed data that includes you in the last 90 days.</EmptyRow>
+              ) : (
+                audit.rows.map((r, i) => (
+                  <Tr key={i}>
+                    <Td className="text-ink">
+                      {r.viewer.name ?? 'A removed user'} <span className="text-ink-2">{`(${r.viewer.role})`}</span>
+                    </Td>
+                    <Td>{SURFACES[r.surface] ?? r.surface}</Td>
+                    <Td>{scopeLabel(r.scope)}</Td>
+                    <Td>{r.at.slice(0, 10)}</Td>
+                    <Td numeric>{formatCount(r.count)}</Td>
+                  </Tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </TableFrame>
+      )}
+    </Section>
+  )
+}
+
 /** v2 Phase 1: the caller's own numbers. Any role; nobody else can read them. */
 export default async function MyUsagePage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams
   const { from, to } = resolveRange(params)
-  const usage = await fetchMyUsage(from, to).catch(() => null)
+  const [usage, audit] = await Promise.all([
+    fetchMyUsage(from, to).catch(() => null),
+    fetchAuditMe().catch(() => null),
+  ])
 
   return (
     <div className="space-y-6">
@@ -213,6 +266,8 @@ export default async function MyUsagePage({ searchParams }: { searchParams: Prom
           </p>
         </>
       )}
+
+      <WhoViewed audit={audit} />
     </div>
   )
 }

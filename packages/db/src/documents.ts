@@ -162,7 +162,7 @@ export interface McpApprovalDoc {
 
 /**
  * The org's rule for one agent (R1 B2). No doc means "not set", which the
- * violation list flags. `models` holds exact model names, used only when
+ * setup-check list flags. `models` holds exact model names, used only when
  * `rule` is 'models'.
  */
 export interface AgentPolicyDoc {

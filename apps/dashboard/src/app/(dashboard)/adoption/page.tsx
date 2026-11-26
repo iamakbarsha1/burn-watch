@@ -313,7 +313,7 @@ function FunnelSection({ data }: { data: FunnelResponse | null }) {
 
 /** "n of m" for people whose window is over, with a % from `min` finished windows (D6 Decision 5). */
 function onboardedOf(c: OnboardingCounts, min: number) {
-  const done = c.onboarded + c.missed
+  const done = c.onboarded + c.windowEnded
   if (done === 0) return '—'
   return `${c.onboarded} of ${done}${done >= min ? ` (${Math.round((c.onboarded / done) * 100)}%)` : ''}`
 }
@@ -324,7 +324,7 @@ function OnboardingRow({ name, c, min }: { name: string; c: OnboardingCounts; mi
       <Td className="font-medium text-ink">{name}</Td>
       <Td numeric>{c.cohort}</Td>
       <Td numeric>{onboardedOf(c, min)}</Td>
-      <Td numeric>{c.missed}</Td>
+      <Td numeric>{c.windowEnded}</Td>
       <Td numeric>{c.inProgress}</Td>
       <Td numeric>{c.noFeatureData}</Td>
     </Tr>

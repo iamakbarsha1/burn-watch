@@ -38,11 +38,11 @@ export function onboardingOf(
   const onboarded =
     activeWeek1 >= ACTIVE_DAYS_PER_WEEK && activeWeek2 >= ACTIVE_DAYS_PER_WEEK && features.length >= MIN_FEATURES
   if (onboarded) return { state: 'onboarded', ...base }
-  return { state: addDays(firstSync, WINDOW_DAYS - 1) > lastSynced ? 'inProgress' : 'missed', ...base }
+  return { state: addDays(firstSync, WINDOW_DAYS - 1) > lastSynced ? 'inProgress' : 'windowEnded', ...base }
 }
 
 export function countOnboarding(results: Pick<OnboardingResult, 'state'>[]): OnboardingCounts {
-  const c: OnboardingCounts = { cohort: results.length, onboarded: 0, missed: 0, inProgress: 0, noFeatureData: 0 }
+  const c: OnboardingCounts = { cohort: results.length, onboarded: 0, windowEnded: 0, inProgress: 0, noFeatureData: 0 }
   for (const r of results) c[r.state]++
   return c
 }

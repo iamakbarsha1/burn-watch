@@ -4173,8 +4173,8 @@ describe('GET /v1/dashboard/adoption/onboarding', () => {
   const row = (userId: string, name: string, firstSync: string | null) => ({
     userId, name, createdAt: new Date(`${daysBefore(t, 50)}T09:00:00Z`), hasDevice: true, firstSync, lastSync: t, activeDays: 1,
   })
-  const counts = (cohort: number, onboarded: number, missed: number, inProgress: number, noFeatureData: number) =>
-    ({ cohort, onboarded, missed, inProgress, noFeatureData })
+  const counts = (cohort: number, onboarded: number, windowEnded: number, inProgress: number, noFeatureData: number) =>
+    ({ cohort, onboarded, windowEnded, inProgress, noFeatureData })
   const U3 = 'u3-onboarding'
   const U4 = 'u4-onboarding'
   const U5 = 'u5-onboarding'
@@ -4183,7 +4183,7 @@ describe('GET /v1/dashboard/adoption/onboarding', () => {
   const seed = () => {
     mongoState.aggregates.users = [
       row(USER_A, 'Ada', daysBefore(t, 25)), // onboarded
-      row(USER_B, 'Bo', daysBefore(t, 20)), // missed: one day only
+      row(USER_B, 'Bo', daysBefore(t, 20)), // window ended: one day only
       row(U3, 'Cy', daysBefore(t, 3)), // in progress
       row(U4, 'Dee', daysBefore(t, 40)), // started before the range
       row(U5, 'Eve', daysBefore(t, 22)), // tokens, no Claude Code day
@@ -5010,6 +5010,93 @@ describe('audit log (R1 B8)', () => {
         detail: null,
       })
       expect(views().map((v) => v.action)).toEqual(['view.audit'])
+    })
+  })
+
+  describe('GET /v1/dashboard/audit/me', () => {
+    const range = { $gte: expect.any(Date), $lt: expect.any(Date) }
+
+    it.each(['developer', 'manager', 'admin'] as const)(
+      'answers a %s with views that covered them, and writes no audit event',
+      async (role) => {
+        // The fake store ignores filters: this one row serves both teamMembers
+        // reads, giving teamIds [TEAM_A] and managerIds [USER_B].
+        mongoState.docs.teamMembers = [{ _id: `${TEAM_A}:${USER_B}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'manager' }]
+        const at = new Date('2026-11-05T09:12:00.000Z')
+        mongoState.docs.auditEvents = [
+          { _id: 'e1', orgId: ORG_A, kind: 'view', action: 'view.team', actorId: USER_B, actorRole: 'manager', target: { type: 'team', id: TEAM_A, label: 'Platform' }, detail: { people: 7 }, at, lastAt: at, count: 3, expiresAt: at },
+          { _id: 'e2', orgId: ORG_A, kind: 'view', action: 'view.governance', actorId: 'gone', actorRole: 'admin', target: { type: 'scope', id: null, label: 'org' }, detail: null, at, lastAt: null, count: 1, expiresAt: at },
+        ]
+        mongoState.docs.users = [{ _id: USER_B, name: 'Priya' }]
+        const res = await call('GET', '/v1/dashboard/audit/me', undefined, role)
+        expect(res.statusCode).toBe(200)
+        expect(mongoCalls('teamMembers', 'find').map(([f]) => f)).toEqual([
+          { orgId: ORG_A, userId: USER_A },
+          { orgId: ORG_A, teamId: { $in: [TEAM_A] }, role: 'manager' },
+        ])
+        expect(mongoCalls('auditEvents', 'find')).toEqual([
+          [
+            {
+              orgId: ORG_A,
+              kind: 'view',
+              actorId: { $ne: USER_A },
+              at: range,
+              $or: [
+                { 'target.type': 'scope', 'target.label': 'org' },
+                { 'target.type': 'team', 'target.id': { $in: [TEAM_A] } },
+                { 'target.type': 'scope', 'target.label': 'managed teams', actorId: { $in: [USER_B] } },
+              ],
+            },
+            { sort: { at: -1 }, limit: 200 },
+          ],
+        ])
+        expect(mongoCalls('users', 'find')).toEqual([[{ _id: { $in: [USER_B, 'gone'] }, orgId: ORG_A }, { projection: { name: 1 } }]])
+        const body = res.json()
+        expect(body.rows).toEqual([
+          { at: at.toISOString(), lastAt: at.toISOString(), count: 3, surface: 'team', viewer: { name: 'Priya', role: 'manager' }, scope: 'Platform' },
+          { at: at.toISOString(), lastAt: null, count: 1, surface: 'governance', viewer: { name: null, role: 'admin' }, scope: 'org' },
+        ])
+        const text = JSON.stringify(body)
+        for (const leak of ['detail', 'people', TEAM_A, USER_B, 'actorId']) expect(text).not.toContain(leak)
+        expect(views()).toEqual([])
+        expect(actions()).toEqual([])
+      },
+    )
+
+    it('drops the team and manager branches when the caller is in no team', async () => {
+      const res = await call('GET', '/v1/dashboard/audit/me', undefined, 'developer')
+      expect(res.statusCode).toBe(200)
+      expect(mongoCalls('teamMembers', 'find')).toHaveLength(1)
+      expect((mongoCalls('auditEvents', 'find')[0][0] as { $or: unknown }).$or).toEqual([
+        { 'target.type': 'scope', 'target.label': 'org' },
+      ])
+      expect(mongoCalls('users', 'find')).toEqual([])
+      expect(res.json().rows).toEqual([])
+    })
+
+    it('drops the manager branch when no team of the caller has a manager', async () => {
+      const row = { _id: `${TEAM_A}:${USER_A}`, teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }
+      // The fake store ignores filters, so the manager read is emptied by hand.
+      vi.spyOn(getStore().teamMembers, 'find').mockResolvedValueOnce([row] as never).mockResolvedValueOnce([])
+      await call('GET', '/v1/dashboard/audit/me', undefined, 'developer')
+      expect((mongoCalls('auditEvents', 'find')[0][0] as { $or: unknown }).$or).toEqual([
+        { 'target.type': 'scope', 'target.label': 'org' },
+        { 'target.type': 'team', 'target.id': { $in: [TEAM_A] } },
+      ])
+    })
+
+    it('uses the last 90 days by default and the given range otherwise', async () => {
+      await call('GET', '/v1/dashboard/audit/me', undefined, 'developer')
+      await call('GET', '/v1/dashboard/audit/me?from=2026-11-01&to=2026-11-05', undefined, 'developer')
+      const [[a], [b]] = mongoCalls('auditEvents', 'find') as [[{ at: unknown }], [{ at: unknown }]]
+      expect(a.at).toEqual({ $gte: new Date(`${daysBefore(today(), 89)}T00:00:00.000Z`), $lt: expect.any(Date) })
+      expect(b.at).toEqual({ $gte: new Date('2026-11-01T00:00:00.000Z'), $lt: new Date('2026-11-06T00:00:00.000Z') })
+    })
+
+    it('answers 400 when from is after to, and reads nothing', async () => {
+      const res = await call('GET', '/v1/dashboard/audit/me?from=2026-11-05&to=2026-11-01', undefined, 'developer')
+      expect(res.statusCode).toBe(400)
+      expect(mongoState.calls).toEqual([])
     })
   })
 })

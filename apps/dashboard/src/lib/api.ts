@@ -38,6 +38,7 @@ import type {
   FunnelResponse,
   AuditRow,
   AuditQuery,
+  AuditMeResponse,
 } from '@burn-watch/shared'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -375,6 +376,14 @@ export async function fetchAuditLog(q: AuditQuery): Promise<AuditRow[]> {
   const params = new URLSearchParams()
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') params.set(k, String(v))
   return apiFetch(`/v1/dashboard/audit?${params}`)
+}
+
+// v2 Phase 4. Any role: who viewed data that covered the caller. Defaults to the last 90 days.
+export async function fetchAuditMe(from?: string, to?: string): Promise<AuditMeResponse> {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  return apiFetch(`/v1/dashboard/audit/me?${params}`)
 }
 
 // The key goes in the body or query, never the path: it comes from a

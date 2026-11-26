@@ -1,5 +1,9 @@
 # Installing BurnWatch
 
+BurnWatch shows team-level Claude Code cost and adoption, with a private view
+for each person. Managers see groups of 5 or more; each person sees their own
+numbers, and who viewed data that included them, on My usage.
+
 Two audiences. Developers set up the agent on one laptop; admins onboard the
 team, cut releases and read the numbers.
 

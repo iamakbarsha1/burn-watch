@@ -1,5 +1,13 @@
 # BurnWatch Rollout Proposal
 
+> **v2 note (2026-11-26):** BurnWatch is now team-level Claude Code cost and
+> adoption, with a private view for each person. Several features below were
+> removed or changed in v2: the leaderboard and scores, per-person stuck and
+> onboarding lists, auto-picked champions, and named free-tier, MCP and
+> account lists. Unused seats and setup checks stay named for admins only.
+> See `tasks/V2-NO-MICROMANAGEMENT-PLAN.md` for what changed and why. The
+> text below is the original proposal.
+
 > **Focus:** Seat billing, adoption, and governance\
 > **Purpose:** Reframe usage metrics for seat-based subscriptions and
 > define the rollout features that help teams adopt AI tools
