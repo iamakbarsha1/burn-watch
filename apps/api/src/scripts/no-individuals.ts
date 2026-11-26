@@ -52,26 +52,15 @@ const ALLOWED: Record<string, { roles: Role[]; why: string }> = {
   '/v1/auth/admin/devices': { roles: ['admin'], why: 'device admin: revoke a laptop' },
   '/v1/dashboard/seats': { roles: ['admin'], why: 'seat admin: who holds a paid seat' },
   '/v1/dashboard/teams': { roles: ['admin', 'manager'], why: 'team roster for the filter: names only, no usage' },
-  '/v1/dashboard/adoption/idle-seats': { roles: ['admin'], why: 'unused seats: reclaim a licence' },
-  '/v1/dashboard/governance/violations': { roles: ['admin'], why: 'setup checks: fix a security setting' },
+  '/v1/dashboard/adoption/unused-seats': { roles: ['admin'], why: 'unused seats: reclaim a licence' },
+  '/v1/dashboard/governance/setup-checks': { roles: ['admin'], why: 'setup checks: fix a security setting' },
 }
 
 /**
  * Routes that name people today, with the phase that fixes them. Keys are
  * `route role`. Emptied by Phases 1 to 3.
  */
-const KNOWN_LEAKS: Record<string, string> = {
-  // Phase 3: governance and alerts.
-  '/v1/dashboard/adoption/idle-seats manager of 6': 'P3',
-  '/v1/dashboard/budget-alerts admin': 'P3',
-  '/v1/dashboard/budget-alerts manager of 6': 'P3',
-  '/v1/dashboard/governance/accounts admin': 'P3',
-  '/v1/dashboard/governance/free-tier admin': 'P3',
-  '/v1/dashboard/governance/free-tier manager of 6': 'P3',
-  '/v1/dashboard/governance/mcp admin': 'P3',
-  '/v1/dashboard/governance/mcp manager of 6': 'P3',
-  '/v1/dashboard/governance/violations manager of 6': 'P3',
-}
+const KNOWN_LEAKS: Record<string, string> = {}
 
 /** Routes that take `teamId` and report numbers over the scope. */
 const TEAM_FILTERED = [
@@ -82,16 +71,16 @@ const TEAM_FILTERED = [
   '/v1/dashboard/adoption/features',
   '/v1/dashboard/adoption/onboarding',
   '/v1/dashboard/adoption/practices',
-  '/v1/dashboard/adoption/idle-seats',
+  '/v1/dashboard/adoption/unused-seats',
   '/v1/dashboard/governance/free-tier',
   '/v1/dashboard/governance/mcp',
-  '/v1/dashboard/governance/violations',
+  '/v1/dashboard/governance/setup-checks',
   '/v1/dashboard/governance/accounts',
 ]
 /** Routes with no team filter that report numbers over the viewer's scope. */
 const VIEWER_SCOPED = ['/v1/dashboard/activity', '/v1/dashboard/projects', '/v1/dashboard/tickets']
 /** Admin-only among the above: a manager's 403 there is the role check, not k. */
-const ADMIN_ONLY = new Set(['/v1/dashboard/governance/accounts'])
+const ADMIN_ONLY = new Set(['/v1/dashboard/governance/accounts', '/v1/dashboard/adoption/unused-seats'])
 
 const today = new Date().toISOString().slice(0, 10) as IsoDate
 const dayOffset = (n: number) => new Date(Date.parse(`${today}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10) as IsoDate
@@ -481,7 +470,7 @@ async function main() {
     process.exit(1)
   }
   console.log(`PASS: ${statuses.size} routes, ${results.length} calls, no one named outside the allowlist`)
-  console.log(`  ${Object.keys(KNOWN_LEAKS).length} known leaks left for Phases 1 to 3`)
+  console.log(`  ${Object.keys(KNOWN_LEAKS).length} known leaks left`)
 }
 
 main().catch((error) => {

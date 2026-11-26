@@ -25,10 +25,10 @@ import type {
   SeatAssignAll,
   AgentName,
   FreeTierResponse,
-  ViolationsResponse,
+  SetupChecksResponse,
   AgentPolicyInput,
   McpInventoryResponse,
-  IdleSeatsResponse,
+  UnusedSeatsResponse,
   FeatureMatrixResponse,
   OnboardingResponse,
   PracticeRank,
@@ -306,16 +306,16 @@ export async function fetchFreeTier(from: string, to: string, teamId?: string): 
   return apiFetch(`/v1/dashboard/governance/free-tier?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
-export async function fetchViolations(from: string, to: string, teamId?: string): Promise<ViolationsResponse> {
-  return apiFetch(`/v1/dashboard/governance/violations?from=${from}&to=${to}${teamQuery(teamId)}`)
+export async function fetchSetupChecks(from: string, to: string, teamId?: string): Promise<SetupChecksResponse> {
+  return apiFetch(`/v1/dashboard/governance/setup-checks?from=${from}&to=${to}${teamQuery(teamId)}`)
 }
 
 /**
- * Policy violations in the last 30 days, admins only. Cached per request: the
+ * Setup checks (use outside the agent rules) in the last 30 days, admins only. Cached per request: the
  * layout's nav count and a page's banner share one call.
  */
-export const fetchViolationCount = cache(async (): Promise<number> => {
-  return (await apiFetch<{ count: number }>('/v1/dashboard/governance/violations/count')).count
+export const fetchSetupCheckCount = cache(async (): Promise<number> => {
+  return (await apiFetch<{ count: number }>('/v1/dashboard/governance/setup-checks/count')).count
 })
 
 export async function setAgentPolicy(agent: AgentName, input: AgentPolicyInput): Promise<{ agent: AgentName }> {
@@ -346,8 +346,9 @@ export async function setCompanyClaudeOrgs(ids: string[]): Promise<{ count: numb
   return apiMutate('PUT', '/v1/dashboard/governance/claude-orgs', { ids })
 }
 
-export async function fetchIdleSeats(idleDays: number, teamId?: string): Promise<IdleSeatsResponse> {
-  return apiFetch(`/v1/dashboard/adoption/idle-seats?idleDays=${idleDays}${teamQuery(teamId)}`)
+// Admins only; a manager gets 403.
+export async function fetchUnusedSeats(idleDays: number, teamId?: string): Promise<UnusedSeatsResponse> {
+  return apiFetch(`/v1/dashboard/adoption/unused-seats?idleDays=${idleDays}${teamQuery(teamId)}`)
 }
 
 export async function fetchFunnel(from: string, to: string, teamId?: string): Promise<FunnelResponse> {

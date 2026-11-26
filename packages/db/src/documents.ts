@@ -182,7 +182,7 @@ export interface BudgetAlertDoc {
   _id: string
   orgId: OrgId
   type: BudgetAlertType
-  /** Null means the alert covers the whole org. */
+  /** Always null since v2 (0006 deleted per-person alerts): the alert covers the whole org. */
   userId: UserId | null
   /** Null means the alert covers every agent. */
   agent: AgentName | null

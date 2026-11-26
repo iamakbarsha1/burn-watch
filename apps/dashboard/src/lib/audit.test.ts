@@ -35,7 +35,7 @@ describe('auditSentence', () => {
     ['seat.remove', { detail: { userId: 'u2', agent: 'claude' } }, "Removed Priya's Claude seat"],
     ['seat.assign_all', { detail: { agent: 'claude', monthlyPriceUsd: 20, created: 3 } }, 'Gave 3 people a Claude seat at $20.00/month'],
     ['alert.create', { target: { type: 'alert', id: 'a', label: 'api-spend' } }, 'Created an API spend alert'],
-    ['alert.update', { target: { type: 'alert', id: 'a', label: 'idle-seat' } }, 'Changed an idle seat alert'],
+    ['alert.update', { target: { type: 'alert', id: 'a', label: 'idle-seat' } }, 'Changed an unused seat alert'],
     ['alert.delete', {}, 'Deleted a budget alert'],
     ['policy.set', { detail: { agent: 'claude', rule: 'models', models: ['opus', 'sonnet'], note: null } }, 'Allowed only opus, sonnet on Claude'],
     ['policy.set', { detail: { agent: 'qwen', rule: 'blocked', models: [], note: null } }, 'Set Qwen to blocked'],

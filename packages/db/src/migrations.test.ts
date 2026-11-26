@@ -57,3 +57,35 @@ describe('0005_drop_leaderboard_settings', () => {
     expect(modified).toEqual({ organizations: 1, users: 2 })
   })
 })
+
+describe('0006_drop_per_person_alerts', () => {
+  it('deletes only alerts set on one person, and a re-run is a no-op', async () => {
+    const migration = MIGRATIONS.find((m) => m.id === '0006_drop_per_person_alerts')!
+    let alerts: Document[] = [
+      { _id: 'a1', orgId: 'o1', userId: null, agent: null },
+      { _id: 'a2', orgId: 'o1', userId: 'u1', agent: 'claude' },
+      { _id: 'a3', orgId: 'o2', userId: null, agent: 'codex' },
+      { _id: 'a4', orgId: 'o2', userId: 'u2', agent: null },
+    ]
+    const calls: [string, Document][] = []
+    const db = {
+      collection: (name: string) => ({
+        // Honours only `{ userId: { $ne: null } }`, the one shape 0006 sends.
+        deleteMany: async (filter: Document) => {
+          calls.push([name, filter])
+          if (JSON.stringify(filter) !== '{"userId":{"$ne":null}}') throw new Error(`unsupported filter: ${JSON.stringify(filter)}`)
+          const before = alerts.length
+          alerts = alerts.filter((a) => a.userId === null)
+          return { deletedCount: before - alerts.length }
+        },
+      }),
+    } as unknown as Db
+
+    await migration.run(db)
+    expect(calls).toEqual([['budgetAlerts', { userId: { $ne: null } }]])
+    expect(alerts.map((a) => a._id)).toEqual(['a1', 'a3'])
+
+    await migration.run(db)
+    expect(alerts.map((a) => a._id)).toEqual(['a1', 'a3'])
+  })
+})

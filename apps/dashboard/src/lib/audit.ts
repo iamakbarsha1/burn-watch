@@ -15,7 +15,7 @@ const SURFACES: Record<AuditSurface, string> = {
   audit: 'the audit log',
 }
 
-const ALERTS: Record<string, string> = { 'api-spend': 'an API spend', 'idle-seat': 'an idle seat', 'limit-hit': 'a limit-hit' }
+const ALERTS: Record<string, string> = { 'api-spend': 'an API spend', 'idle-seat': 'an unused seat', 'limit-hit': 'a limit-hit' }
 
 const agent = (id: unknown) => agentById(String(id))?.label ?? String(id)
 

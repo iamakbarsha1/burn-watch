@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Document } from 'mongodb'
 import type { IsoDate, OrgId, UserId } from '@burn-watch/db'
-import { countFunnel, funnelThresholds, funnelUsersPipeline, stageOf, type FunnelPerson } from './adoption.js'
+import { countFunnel, daysUnused, funnelThresholds, funnelUsersPipeline, stageOf, type FunnelPerson } from './adoption.js'
 import { daysBefore } from './dates.js'
 
 /**
@@ -106,5 +106,28 @@ describe('funnelUsersPipeline', () => {
     expect(usage[1].$group.activeDays).toEqual({
       $sum: { $cond: [{ $and: [{ $gte: ['$date', '2026-11-16'] }, { $lte: ['$date', TODAY] }] }, 1, 0] },
     })
+  })
+})
+
+describe('daysUnused', () => {
+  const seat = { startDate: '2026-11-01' }
+
+  it('is 0 for a seat used today', () => {
+    expect(daysUnused(seat, TODAY, TODAY)).toBe(0)
+  })
+
+  it('counts the days after the last use, today included', () => {
+    expect(daysUnused(seat, '2026-11-20', TODAY)).toBe(2)
+  })
+
+  it('counts a never-used seat from its start date, today included', () => {
+    expect(daysUnused(seat, null, TODAY)).toBe(22)
+    expect(daysUnused({ startDate: TODAY }, null, TODAY)).toBe(1)
+  })
+
+  it('ignores use before the seat started', () => {
+    expect(daysUnused(seat, '2026-10-15', TODAY)).toBe(22)
+    // The day before the start counts the same as never used.
+    expect(daysUnused(seat, '2026-10-31', TODAY)).toBe(22)
   })
 })

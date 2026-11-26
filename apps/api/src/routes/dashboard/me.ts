@@ -1,13 +1,72 @@
 import type { FastifyInstance } from 'fastify'
-import { addDays, getStore, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
+import { addDays, getStore, seatLastUsed, usdFromMicros, type IsoDate, type Micros, type OrgId, type UserId } from '@burn-watch/db'
 import { HelpVolunteerSchema, type AgentName, type MyUsageResponse } from '@burn-watch/shared'
 import { dateQuerySchema } from './query-schema.js'
 import { today } from './dates.js'
 import { mcpServersPipeline } from './features.js'
 import { streaks } from './streaks.js'
 import { WINDOW_DAYS, onboardingOf } from './onboarding.js'
+import { freeTierPipeline, freeTierRows, setupCheckGroups, setupCheckReason, type ModelGroup } from './governance.js'
+import { groupAccounts } from './accounts.js'
+import { daysUnused } from './adoption.js'
 
 const DAY_MS = 86_400_000
+
+/**
+ * v2 Phase 3 symmetry: the facts an admin sees about this person, shown to the
+ * person. Seats, free-tier use, use outside the agent rules, account flags.
+ */
+async function ownStatus(
+  orgId: OrgId,
+  userId: UserId,
+  from: IsoDate,
+  to: IsoDate,
+): Promise<Pick<MyUsageResponse, 'seats' | 'freeTier' | 'setupChecks' | 'accountFlags'>> {
+  const store = getStore()
+  const date = today()
+  const [seats, lastUsed, free, checks, mine, org, anyClaudeSeat] = await Promise.all([
+    store.seats.find({ orgId, userId }),
+    seatLastUsed(store, orgId, [userId]),
+    store.usageEvents.aggregate<ModelGroup>(freeTierPipeline(orgId, from, to, [userId])),
+    setupCheckGroups(orgId, { date: { $gte: from, $lte: to }, userId }),
+    store.claudeEnrichment.find(
+      { orgId, userId, date: { $gte: from, $lte: to } },
+      { projection: { userId: 1, date: 1, accountHashes: 1, claudeOrgHashes: 1 } },
+    ),
+    store.organizations.findOne({ _id: orgId }, { projection: { ownClaudeOrgHashes: 1 } }),
+    // Whether the org entered any Claude seat at all: the seat flags only apply then. No ids.
+    store.seats.findOne({ orgId, agent: 'claude' }, { projection: { _id: 1 } }),
+  ])
+  // "shared" needs the other people on the same account; only those days are read, and only flags come back.
+  const hashes = [...new Set(mine.flatMap((d) => d.accountHashes ?? []))]
+  const others = hashes.length
+    ? await store.claudeEnrichment.find(
+        { orgId, userId: { $ne: userId }, date: { $gte: from, $lte: to }, accountHashes: { $in: hashes } },
+        { projection: { userId: 1, date: 1, accountHashes: 1 } },
+      )
+    : []
+  const accounts = groupAccounts([...mine, ...others], {
+    own: org?.ownClaudeOrgHashes ?? [],
+    seated: new Set(seats.some((s) => s.agent === 'claude') ? [userId] : []),
+    seatsEntered: anyClaudeSeat ? 1 : 0,
+    viewerId: userId,
+  })
+
+  return {
+    seats: seats
+      .map((s) => ({ agent: s.agent, daysUnused: daysUnused(s, lastUsed.get(s._id) ?? null, date) }))
+      .sort((a, b) => (a.agent < b.agent ? -1 : 1)),
+    freeTier: freeTierRows(free).rows,
+    setupChecks: checks.groups.map((g) => ({
+      agent: g._id.agent,
+      modelName: g._id.modelName,
+      reason: setupCheckReason(checks.byAgent, g._id.agent),
+      days: g.days,
+      tokens: g.tokens,
+    })),
+    accountFlags: accounts.people.find((p) => p.userId === userId)?.flags ?? [],
+  }
+}
 
 /**
  * v2 Phase 1: the caller's own usage. Every read is filtered to the caller's
@@ -77,6 +136,7 @@ export async function meRoutes(fastify: FastifyInstance) {
       // Today's data is not synced yet, as in the streak rule.
       onboarding = { firstSync, ...onboardingOf(firstSync, dates, docs, addDays(today(), -1)) }
     }
+    const status = await ownStatus(orgId, userId, from, to)
     // "12 of 30": count from the first day ever used, so "All time" does not read "of ~2,500".
     const first = dates.reduce<string>((min, d) => (d < min ? d : min), to)
     const start = first > from ? first : from
@@ -93,6 +153,7 @@ export async function meRoutes(fastify: FastifyInstance) {
       features: { agents: agents.map((a) => a.agent), mcpServers: [...(mcpRows[0]?.servers ?? [])].sort() },
       onboarding,
       helpVolunteer: !!me?.helpVolunteer,
+      ...status,
     } satisfies MyUsageResponse
   })
 

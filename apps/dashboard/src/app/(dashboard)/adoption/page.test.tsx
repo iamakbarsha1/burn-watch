@@ -4,7 +4,7 @@ import type {
   FeatureMatrixResponse,
   FunnelCounts,
   FunnelResponse,
-  IdleSeatsResponse,
+  UnusedSeatsResponse,
   OnboardingCounts,
   OnboardingResponse,
   PracticeGroup,
@@ -15,7 +15,7 @@ import type {
 
 const state = vi.hoisted(() => ({
   role: 'admin' as string | null,
-  data: null as IdleSeatsResponse | null,
+  data: null as UnusedSeatsResponse | null,
   asked: [] as number[],
   funnel: null as FunnelResponse | null,
   funnelAsked: [] as string[][],
@@ -36,7 +36,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/session', () => ({ getUserRole: async () => state.role }))
 vi.mock('@/lib/api', () => ({
   fetchTeams: async () => state.teams,
-  fetchIdleSeats: async (idleDays: number) => {
+  fetchUnusedSeats: async (idleDays: number) => {
     state.asked.push(idleDays)
     if (!state.data) throw new Error('down')
     return state.data
@@ -75,11 +75,10 @@ const { default: AdoptionPage } = await import('./page')
 const render = async (params: Record<string, string> = {}) =>
   renderToStaticMarkup(await AdoptionPage({ searchParams: Promise.resolve(params) }))
 
-const empty = (orgSeats: number | null): IdleSeatsResponse => ({
+const empty = (orgSeats: number): UnusedSeatsResponse => ({
   idleDays: 14,
   rows: [],
   byAgent: [],
-  byTeam: [],
   totalMonthlyUsd: 0,
   orgSeats,
 })
@@ -111,11 +110,11 @@ describe('AdoptionPage', () => {
     expect(html).toContain('href="/admin"')
   })
 
-  it('says nothing is idle when seats exist, using the chosen idleDays', async () => {
+  it('says nothing is unused when seats exist, using the chosen idleDays', async () => {
     state.data = empty(3)
     const html = await render({ idleDays: '30', from: '2026-11-01' })
     expect(state.asked).toEqual([30])
-    expect(html).toContain('No seats idle for 30+ days.')
+    expect(html).toContain('No seats unused for 30+ days.')
     // The form keeps other params when idleDays changes.
     expect(html).toContain('name="from" value="2026-11-01"')
   })
@@ -126,60 +125,38 @@ describe('AdoptionPage', () => {
     expect(state.asked).toEqual([14, 14])
   })
 
-  it('shows a manager the idle empty state, not the admin one', async () => {
+  it('hides unused seats from a manager and never asks for them', async () => {
     state.role = 'manager'
-    state.data = empty(null)
     const html = await render()
-    expect(html).toContain('No seats idle for 14+ days.')
+    expect(state.asked).toEqual([])
+    expect(html).not.toContain('Unused seats')
     expect(html).not.toContain('No seats entered yet.')
   })
 
-  it('renders rows in API order with the summary and a "never" label', async () => {
+  it('renders named rows for an admin in API order with the summary', async () => {
     state.data = {
       idleDays: 14,
       rows: [
-        {
-          userId: 'u2',
-          userName: 'Bo',
-          teams: [],
-          agent: 'copilot',
-          startDate: '2026-10-01',
-          lastUsed: null,
-          daysIdle: 41,
-          monthlyPriceUsd: 19,
-          costSinceUsedUsd: 25.6,
-        },
-        {
-          userId: 'u1',
-          userName: 'Ada',
-          teams: ['Platform'],
-          agent: 'claude',
-          startDate: '2026-08-01',
-          lastUsed: '2026-11-02',
-          daysIdle: 20,
-          monthlyPriceUsd: 30,
-          costSinceUsedUsd: 19.73,
-        },
+        { userId: 'u2', userName: 'Bo', agent: 'copilot', daysUnused: 41 },
+        { userId: 'u1', userName: 'Ada', agent: 'claude', daysUnused: 20 },
       ],
       byAgent: [
         { agent: 'claude', seats: 1, monthlyUsd: 30 },
         { agent: 'copilot', seats: 1, monthlyUsd: 19 },
       ],
-      byTeam: [{ teamId: 't1', teamName: 'Platform', seats: 1, monthlyUsd: 30 }],
       totalMonthlyUsd: 49,
       orgSeats: 2,
     }
     const html = await render()
-    expect(html).toContain('2 idle seats, $49.00/month')
-    expect(html).toContain('never')
-    expect(html).toContain('2026-11-02')
-    expect(html).toContain('Platform')
+    expect(html).toContain('Unused seats')
+    expect(html).toContain('2 unused seats, $49.00/month')
+    expect(html).toContain('41')
     expect(html.indexOf('Bo')).toBeLessThan(html.indexOf('Ada'))
   })
 
   it('says so when the API is down', async () => {
     state.data = null
-    expect(await render()).toContain('Could not read idle seats')
+    expect(await render()).toContain('Could not read unused seats')
   })
 })
 
@@ -276,7 +253,7 @@ describe('AdoptionPage funnel', () => {
       state.distribution = 'tooSmall'
       const html = await render()
       expect(html).toContain('fewer than 5 people')
-      expect(html).toContain('Idle seats')
+      expect(html).toContain('Unused seats')
     })
 
     it('says so when it cannot be read', async () => {

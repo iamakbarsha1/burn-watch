@@ -152,7 +152,6 @@ export const BudgetAlertTypeSchema = z.enum(['api-spend', 'idle-seat', 'limit-hi
 
 export const BudgetAlertInputSchema = z.object({
   type: BudgetAlertTypeSchema.default('api-spend'),
-  userId: z.string().uuid().nullable().default(null),
   agent: AgentNameSchema.nullable().default(null),
   monthlyLimitUsd: z.number().positive().max(99999999.99).optional(),
   threshold: z.number().positive().max(1).default(0.8),
@@ -196,7 +195,7 @@ export const McpApprovalInputSchema = z.object({
 })
 
 // R1 A1. Query strings arrive as text, so coerce; nothing is stored.
-export const IdleSeatsQuerySchema = z.object({
+export const UnusedSeatsQuerySchema = z.object({
   teamId: z.string().uuid().optional(),
   idleDays: z.coerce.number().int().min(1).max(365).default(14),
 })

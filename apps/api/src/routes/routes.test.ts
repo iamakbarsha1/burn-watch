@@ -211,7 +211,7 @@ describe('dashboard routes — authentication', () => {
 })
 
 describe('dashboard routes — viewer scoping', () => {
-  const SCOPED_URLS = [...DASHBOARD_ROUTES.map(range), '/v1/dashboard/budget-alerts']
+  const SCOPED_URLS = DASHBOARD_ROUTES.map(range)
 
   // A manager of TEAM_A, which also holds USER_B and PEERS.
   const managerOfTeam = () => {
@@ -290,7 +290,8 @@ describe('dashboard routes — viewer scoping', () => {
     )
   })
 
-  it.each(SCOPED_URLS)('lets an admin read the whole org on %s', async (url) => {
+  // budget-alerts is admin only (v2 Phase 3), so it is only in the admin case.
+  it.each([...SCOPED_URLS, '/v1/dashboard/budget-alerts'])('lets an admin read the whole org on %s', async (url) => {
     managerOfTeam()
     await expectScope(url, 'admin', undefined)
     // The audit event names the viewer as actor by design; no data read may.
@@ -1029,8 +1030,16 @@ describe('GET /v1/dashboard/budget-alerts', () => {
     expect(res.statusCode).toBe(403)
   })
 
+  // Every alert carries org spend, so only an admin reads them (v2 Phase 3).
+  it.each(['manager', 'developer'] as const)('returns 403 for a %s, before reading alerts', async (role) => {
+    mongoState.docs.budgetAlerts = [alertDoc()]
+    const res = await get(auth(token({ role })))
+    expect(res.statusCode).toBe(403)
+    expect(mongoCalls('budgetAlerts', 'find')).toEqual([])
+  })
+
   it('returns an empty array when the org has no alerts', async () => {
-    const res = await get(auth(token()))
+    const res = await get(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([])
   })
@@ -1059,7 +1068,7 @@ describe('GET /v1/dashboard/budget-alerts', () => {
     ]
     spend(90 * USD)
 
-    const res = await get(auth(token()))
+    const res = await get(auth(token({ role: 'admin' })))
     const body = res.json() as Array<Record<string, unknown>>
 
     expect(body.find((a) => a.id === 'alert-1')).toMatchObject({ tripped: true })
@@ -1076,54 +1085,76 @@ describe('GET /v1/dashboard/budget-alerts', () => {
     mongoState.docs.budgetAlerts = [alertDoc({ monthlyLimitMicros: 100 * USD })]
     spend(554_220_000)
 
-    const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
+    const [row] = (await get(auth(token({ role: 'admin' })))).json() as Array<Record<string, unknown>>
     expect(row).toMatchObject({ monthlyLimitUsd: 100, monthToDateSpendUsd: 554.22, threshold: 0.8 })
   })
 
-  it('names the user a scoped alert belongs to', async () => {
-    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A })]
-    mongoState.docs.users = [{ _id: USER_A, name: 'Alice Smith' }]
+  // No names anywhere: not the alert's scope, not the idle seats, not who hit a limit.
+  it('answers counts only, with no user ids or names', async () => {
+    mongoState.docs.budgetAlerts = [
+      alertDoc({ _id: 'alert-1' }),
+      alertDoc({ _id: 'alert-2', type: 'idle-seat', idleDays: 14 }),
+      alertDoc({ _id: 'alert-3', type: 'limit-hit', limitHits: 3 }),
+    ]
+    mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A, name: 'Bo Otherperson', email: 'bo@example.com' }]
+    mongoState.docs.seats = [
+      { _id: `${USER_B}:claude`, orgId: ORG_A, userId: USER_B, agent: 'claude', startDate: '2026-01-01', monthlyPriceMicros: 20 * USD },
+    ]
+    mongoState.aggregates.claudeEnrichment = [{ n: 2 }]
     spend(0)
 
-    const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
-    expect(row).toMatchObject({ userId: USER_A, userName: 'Alice Smith' })
+    const res = await get(auth(token({ role: 'admin' })))
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as Array<Record<string, unknown>>
+    for (const row of body) {
+      expect(row).not.toHaveProperty('userId')
+      expect(row).not.toHaveProperty('userName')
+      expect(row).not.toHaveProperty('idleSeats')
+    }
+    for (const leak of [USER_A, USER_B, 'Bo Otherperson', 'bo@example.com']) expect(res.body).not.toContain(leak)
+    expect(body.find((a) => a.id === 'alert-1')).toMatchObject({ type: 'api-spend', idleSeatCount: null, people: null })
+    expect(body.find((a) => a.id === 'alert-2')).toMatchObject({ type: 'idle-seat', idleSeatCount: 1, people: null })
+    expect(body.find((a) => a.id === 'alert-3')).toMatchObject({ type: 'limit-hit', idleSeatCount: null, people: 2 })
+    // No name lookup at all.
+    expect(mongoCalls('users', 'find')).toEqual([])
   })
 
-  // What the left join gave. A limit set against a user who has since been
-  // removed still has to render, or the alert disappears from the panel that
-  // is the only place it can be deleted.
-  it('still renders a scoped alert whose user no longer exists', async () => {
-    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A })]
-    mongoState.docs.users = []
+  it('counts distinct people with a limit hit this month, in the caller org', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ type: 'limit-hit', limitHits: 3 })]
     spend(0)
 
-    const [row] = (await get(auth(token()))).json() as Array<Record<string, unknown>>
-    expect(row).toMatchObject({ userId: USER_A, userName: null })
+    await get(auth(token({ role: 'admin', orgId: ORG_A })))
+
+    const [pipeline] = mongoCalls('claudeEnrichment', 'aggregate')[0] as [Document[]]
+    const t = today()
+    expect(pipeline).toEqual([
+      { $match: { orgId: ORG_A, date: { $gte: `${t.slice(0, 7)}-01`, $lte: t }, limitHitCount: { $gt: 0 } } },
+      { $group: { _id: '$userId' } },
+      { $count: 'n' },
+    ])
   })
 
-  /**
-   * PATCH accepts a userId without checking its org, where POST checks, so an
-   * alert in this org can carry another org's user id. The name lookup must
-   * not resolve it. Asserted on the filter because the fake answers every read
-   * from what the test seeded, so the response alone cannot show the scope.
-   */
-  it('scopes the user name lookup to the caller org', async () => {
-    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A })]
+  it('reports 0 people when nobody hit a limit, and skips the read with no limit-hit alert', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ type: 'limit-hit', limitHits: 3 })]
     spend(0)
+    const [row] = (await get(auth(token({ role: 'admin' })))).json() as Array<Record<string, unknown>>
+    expect(row.people).toBe(0)
 
-    await get(auth(token({ orgId: ORG_A })))
-
-    expect(mongoCalls('users', 'find')[0][0]).toEqual({ _id: { $in: [USER_A] }, orgId: ORG_A })
+    mongoState.calls.length = 0
+    mongoState.docs.budgetAlerts = [alertDoc()]
+    await get(auth(token({ role: 'admin' })))
+    expect(mongoCalls('claudeEnrichment', 'aggregate')).toEqual([])
   })
 
   it('reads month-to-date spend for the caller org and the alert scope only', async () => {
-    mongoState.docs.budgetAlerts = [alertDoc({ userId: USER_A, agent: 'claude' })]
+    mongoState.docs.budgetAlerts = [alertDoc({ agent: 'claude' })]
     spend(0)
 
-    await get(auth(token({ orgId: ORG_A })))
+    await get(auth(token({ role: 'admin', orgId: ORG_A })))
 
-    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [{ $match?: unknown }[]]
-    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, userId: USER_A })
+    const [pipeline] = mongoCalls('dailySnapshots', 'aggregate')[0] as [{ $match?: Record<string, unknown> }[]]
+    expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A })
+    expect(pipeline[0].$match).not.toHaveProperty('userId')
   })
 })
 
@@ -1180,20 +1211,16 @@ describe('POST /v1/dashboard/budget-alerts', () => {
     expect(update.$set.trippedAt).toBeInstanceOf(Date)
   })
 
-  it('refuses a userId belonging to another organization, and writes nothing', async () => {
-    mongoState.docs.users = [] // the ownership lookup matches nothing in this org
-    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_A })
-    expect(res.statusCode).toBe(400)
-    expect(mongoCalls('budgetAlerts', 'insertOne')).toHaveLength(0)
-    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_A, orgId: ORG_A })
-  })
-
-  it('creates a per-user alert once the user is confirmed in the caller org', async () => {
-    mongoState.docs.users = [{ _id: USER_A }]
-    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_A })
+  // v2 Phase 3: no per-person alerts. A userId in the body is dropped by the
+  // schema and the alert is stored org-wide, without even a user lookup.
+  it('ignores a userId in the body and stores the alert org-wide', async () => {
+    mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A }]
+    const res = await post(auth(token({ role: 'admin' })), { monthlyLimitUsd: 500, userId: USER_B })
     expect(res.statusCode).toBe(201)
     const [written] = mongoCalls('budgetAlerts', 'insertOne')[0] as [Record<string, unknown>]
-    expect(written.userId).toBe(USER_A)
+    expect(written.userId).toBeNull()
+    expect(inspect(written, { depth: null })).not.toContain(USER_B)
+    expect(mongoCalls('users', 'findOne')).toHaveLength(0)
   })
 })
 
@@ -1240,6 +1267,15 @@ describe('PATCH /v1/dashboard/budget-alerts/:id', () => {
     const res = await patch(auth(token({ role: 'admin' })))
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ id: ALERT_A })
+    const [, update] = mongoCalls('budgetAlerts', 'findOneAndUpdate')[0] as [unknown, { $set: Record<string, unknown> }]
+    expect(update.$set).toEqual({ monthlyLimitMicros: 250 * USD })
+  })
+
+  it('cannot point an alert at one person', async () => {
+    mongoState.docs.budgetAlerts = [alertDoc({ _id: ALERT_A })]
+    spend(0)
+    const res = await patch(auth(token({ role: 'admin' })), { monthlyLimitUsd: 250, userId: USER_B })
+    expect(res.statusCode).toBe(200)
     const [, update] = mongoCalls('budgetAlerts', 'findOneAndUpdate')[0] as [unknown, { $set: Record<string, unknown> }]
     expect(update.$set).toEqual({ monthlyLimitMicros: 250 * USD })
   })
@@ -1469,6 +1505,10 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
         dayOfWindow: 1,
       },
       helpVolunteer: false,
+      seats: [],
+      freeTier: [],
+      setupChecks: [],
+      accountFlags: [],
     })
     // Every data read is pinned to the caller, whatever the role.
     const finds = callsTo(mongoState, 'dailySnapshots', 'find').map(([f]) => f)
@@ -1483,7 +1523,7 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
       ['findOne', { _id: USER_A, orgId: ORG_A }],
     ])
     // No scope lookup, no roster read: nothing that could widen it to a team or the org.
-    for (const c of ['teams', 'teamMembers', 'usageEvents']) {
+    for (const c of ['teams', 'teamMembers']) {
       expect(mongoState.calls.filter((call) => call.collection === c), c).toEqual([])
     }
     const text = res.body
@@ -1502,7 +1542,110 @@ describe('GET /v1/dashboard/me/usage (v2 P1)', () => {
     expect(body).toMatchObject({ activeDays: 0, totalTokens: 0, totalCostUsd: 0, agents: [], streak: { current: 0, longest: 0, lastActive: null } })
     expect(body.onboarding).toBeNull()
     expect(body.helpVolunteer).toBe(false)
-    expect(callsTo(mongoState, 'claudeEnrichment', 'find')).toEqual([])
+    expect(body).toMatchObject({ seats: [], freeTier: [], setupChecks: [], accountFlags: [] })
+    // No onboarding read without a first sync; the one find is the account-flag read over the range.
+    expect(callsTo(mongoState, 'claudeEnrichment', 'find').map(([f]) => f)).toEqual([
+      { orgId: ORG_A, userId: USER_A, date: { $gte: from, $lte: t } },
+    ])
+  })
+
+  // v2 Phase 3 symmetry: what an admin sees about a person, the person sees too.
+  describe('own status (v2 P3)', () => {
+    const seedStatus = () => {
+      seed()
+      mongoState.docs.seats = [
+        { _id: `${USER_A}:claude`, orgId: ORG_A, userId: USER_A, agent: 'claude', startDate: daysBefore(t, 9), monthlyPriceMicros: 20 * USD },
+      ]
+      // seatLastUsed's answer: claude last used today.
+      mongoState.aggregates.dailySnapshots = [{ _id: { userId: USER_A, agent: 'claude' }, lastUsed: t }]
+      // One answer serves both usageEvents reads, so it carries the fields of
+      // a free-tier model group and of a setup-check group.
+      mongoState.aggregates.usageEvents = [
+        {
+          _id: { userId: USER_A, agent: 'gemini', modelName: 'gemini-2.5-pro' },
+          users: [USER_A],
+          days: 2,
+          tokens: 900,
+          firstDate: daysBefore(t, 2),
+          lastDate: t,
+        },
+      ]
+      mongoState.docs.agentPolicies = [{ _id: `${ORG_A}:gemini`, orgId: ORG_A, agent: 'gemini', rule: 'blocked', models: [] }]
+      // The fake answers every find with all of these, so USER_B's day sharing
+      // account h1 comes back as an "other" and USER_A gets the shared flag.
+      mongoState.docs.claudeEnrichment = [
+        { orgId: ORG_A, userId: USER_A, date: daysBefore(t, 1), accountHashes: ['h1'], claudeOrgHashes: ['o1'] },
+        { orgId: ORG_A, userId: USER_B, date: daysBefore(t, 1), accountHashes: ['h1'] },
+      ]
+    }
+
+    it('answers seats, free tier, setup checks and account flags for the caller', async () => {
+      seedStatus()
+      const res = await get('developer')
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.seats).toEqual([{ agent: 'claude', daysUnused: 0 }]) // used today
+      expect(body.freeTier).toEqual([
+        { agent: 'gemini', modelName: 'gemini-2.5-pro', reason: 'unpriced-model', people: 1, days: 2, tokens: 900 },
+      ])
+      expect(body.setupChecks).toEqual([
+        { agent: 'gemini', modelName: 'gemini-2.5-pro', reason: 'agent-blocked', days: 2, tokens: 900 },
+      ])
+      expect(body.accountFlags).toContain('shared')
+    })
+
+    it.each(['admin', 'manager', 'developer'] as const)('filters every read to the caller for a %s', async (role) => {
+      seedStatus()
+      const res = await get(role)
+      expect(res.statusCode).toBe(200)
+
+      const isCaller = (f: unknown) => f === USER_A || JSON.stringify(f) === JSON.stringify({ $in: [USER_A] })
+      for (const c of mongoState.calls) {
+        const [filter] = c.args as [Record<string, unknown>]
+        const where = `${c.collection}.${c.op} ${JSON.stringify(c.args[0])}`
+        // Org settings, not anyone's data.
+        if (c.collection === 'agentPolicies' || c.collection === 'organizations') {
+          expect(filter, where).toEqual(c.collection === 'organizations' ? { _id: ORG_A } : { orgId: ORG_A })
+          continue
+        }
+        if (c.collection === 'users') {
+          expect(filter, where).toEqual({ _id: USER_A, orgId: ORG_A })
+          continue
+        }
+        // Whether the org entered any Claude seat, for the seat flags. Only _id, no one's id.
+        if (c.collection === 'seats' && filter.agent === 'claude' && !('userId' in filter)) {
+          expect(c.args).toEqual([{ orgId: ORG_A, agent: 'claude' }, { projection: { _id: 1 } }])
+          continue
+        }
+        // The account-sharing read: only other people's days on the caller's
+        // own account hashes, and only the fields that make the shared flag.
+        if (c.collection === 'claudeEnrichment' && JSON.stringify(filter.userId) === JSON.stringify({ $ne: USER_A })) {
+          expect(c.args, where).toEqual([
+            { orgId: ORG_A, userId: { $ne: USER_A }, date: { $gte: from, $lte: t }, accountHashes: { $in: ['h1'] } },
+            { projection: { userId: 1, date: 1, accountHashes: 1 } },
+          ])
+          continue
+        }
+        const json = JSON.stringify(c.args)
+        expect(json, where).toContain(ORG_A)
+        const userIds: unknown[] = []
+        const walk = (n: unknown): void => {
+          if (Array.isArray(n)) return n.forEach(walk)
+          if (!n || typeof n !== 'object') return
+          for (const [k, v] of Object.entries(n)) {
+            if (k === 'userId' && !(typeof v === 'string' && v.startsWith('$')) && typeof v !== 'number') userIds.push(v)
+            else walk(v)
+          }
+        }
+        walk(c.args)
+        expect(userIds.length, where).toBeGreaterThan(0)
+        for (const f of userIds) expect(isCaller(f), where).toBe(true)
+      }
+      // The sharing read did run, so the exception above was exercised.
+      expect(callsTo(mongoState, 'claudeEnrichment', 'find').some(([f]) => (f as Record<string, unknown>).accountHashes)).toBe(true)
+
+      for (const leak of [USER_B, ...PEERS, OTHER.name, OTHER.email, 'h1', 'o1']) expect(res.body).not.toContain(leak)
+    })
   })
 
   it('returns the caller\'s own help flag', async () => {
@@ -1671,25 +1814,23 @@ describe('budget alert types', () => {
     expect(mongoCalls('budgetAlerts', 'findOneAndUpdate')).toEqual([])
   })
 
-  it('returns type, idleDays and the idle seats with names', async () => {
+  it('returns type, idleDays and how many seats are idle, without names', async () => {
     mongoState.docs.budgetAlerts = [alertDoc({ type: 'idle-seat', idleDays: 14, limitHits: null })]
     mongoState.docs.seats = [{ _id: `${USER_B}:claude`, orgId: ORG_A, userId: USER_B, agent: 'claude', startDate: '2026-01-01' }]
     mongoState.docs.users = [{ _id: USER_B, name: 'Bo' }]
     mongoState.aggregates.dailySnapshots = [] // no active pairs, and no spend
-    const [row] = (await app.inject({ method: 'GET', url: '/v1/dashboard/budget-alerts', headers: auth(token({ role: 'admin' })) })).json()
-    expect(row).toMatchObject({
-      type: 'idle-seat',
-      idleDays: 14,
-      limitHits: null,
-      idleSeats: [{ userId: USER_B, userName: 'Bo', agent: 'claude' }],
-    })
+    const res = await app.inject({ method: 'GET', url: '/v1/dashboard/budget-alerts', headers: auth(token({ role: 'admin' })) })
+    const [row] = res.json()
+    expect(row).toMatchObject({ type: 'idle-seat', idleDays: 14, limitHits: null, idleSeatCount: 1, people: null })
+    expect(res.body).not.toContain(USER_B)
+    expect(res.body).not.toContain('Bo')
   })
 
-  it('reports idleSeats null for an api-spend alert', async () => {
+  it('reports idleSeatCount null for an api-spend alert', async () => {
     mongoState.docs.budgetAlerts = [alertDoc()]
     spend(0)
     const [row] = (await app.inject({ method: 'GET', url: '/v1/dashboard/budget-alerts', headers: auth(token({ role: 'admin' })) })).json()
-    expect(row).toMatchObject({ type: 'api-spend', idleSeats: null })
+    expect(row).toMatchObject({ type: 'api-spend', idleSeatCount: null, people: null })
   })
 })
 
@@ -3136,22 +3277,11 @@ describe('GET /v1/dashboard/governance/free-tier', () => {
   const match = () =>
     (callsTo(mongoState, 'usageEvents', 'aggregate')[0][0] as Document[])[0].$match as Record<string, unknown>
 
+  // One group per (agent, model), with the people in it for counting.
   const seedGroups = () => {
     mongoState.aggregates.usageEvents = [
-      {
-        _id: { userId: USER_A, agent: 'qwen', modelName: 'coder-model' },
-        days: 3,
-        tokens: 900,
-        firstDate: '2026-11-01',
-        lastDate: '2026-11-05',
-      },
-      {
-        _id: { userId: USER_B, agent: 'claude', modelName: 'claude-new' },
-        days: 1,
-        tokens: 100,
-        firstDate: '2026-11-05',
-        lastDate: '2026-11-05',
-      },
+      { _id: { agent: 'qwen', modelName: 'coder-model' }, users: [USER_A, USER_B], days: 3, tokens: 900 },
+      { _id: { agent: 'claude', modelName: 'claude-new' }, users: [USER_B], days: 1, tokens: 100 },
     ]
     mongoState.docs.users = [
       { _id: USER_A, orgId: ORG_A, name: 'Ada', email: 'ada@x.test' },
@@ -3170,40 +3300,43 @@ describe('GET /v1/dashboard/governance/free-tier', () => {
   })
 
   it('reads only free-tier rows in the caller org and range, org-wide for an admin', async () => {
-    expect((await get('admin')).json()).toEqual({ rows: [], byTeam: [] })
+    expect((await get('admin')).json()).toEqual({ people: 0, rows: [] })
     expect(match()).toEqual({ orgId: ORG_A, isFreeTier: true, date: { $gte: DATE, $lte: DATE } })
-    // Nothing to name, so no user or team reads.
     expect(callsTo(mongoState, 'users', 'find')).toEqual([])
   })
 
-  it('says why each row was flagged and totals per team, with a no-team bucket', async () => {
+  it('groups per agent and model, collecting people to count rather than to name', async () => {
+    await get('admin')
+    const [pipeline] = callsTo(mongoState, 'usageEvents', 'aggregate')[0] as Document[][]
+    expect(pipeline[1]).toEqual({
+      $group: {
+        _id: { agent: '$agent', modelName: '$modelName' },
+        users: { $addToSet: '$userId' },
+        dates: { $addToSet: '$date' },
+        tokens: { $sum: '$totalTokens' },
+      },
+    })
+    expect(pipeline[2]).toEqual({ $project: { users: 1, days: { $size: '$dates' }, tokens: 1 } })
+  })
+
+  // v2 Phase 3: counts only. No names, ids, emails or team names.
+  it('says why each model was flagged and counts distinct people, naming nobody', async () => {
     seedGroups()
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
     mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
-    const res = await get('admin')
-    expect(res.statusCode).toBe(200)
-    const body = res.json()
-    expect(body.rows).toEqual([
-      {
-        userId: USER_A,
-        userName: 'Ada',
-        userEmail: 'ada@x.test',
-        teams: ['Platform'],
-        agent: 'qwen',
-        modelName: 'coder-model',
-        reason: 'free-tier-agent',
-        days: 3,
-        tokens: 900,
-        firstDate: '2026-11-01',
-        lastDate: '2026-11-05',
-      },
-      expect.objectContaining({ userId: USER_B, teams: [], reason: 'unpriced-model', tokens: 100 }),
-    ])
-    expect(body.byTeam).toEqual([
-      { teamId: TEAM_A, teamName: 'Platform', users: 1, tokens: 900 },
-      { teamId: null, teamName: null, users: 1, tokens: 100 },
-    ])
-    expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+    for (const role of ['admin', 'manager'] as const) {
+      const res = await get(role)
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({
+        people: 2,
+        rows: [
+          { agent: 'qwen', modelName: 'coder-model', reason: 'free-tier-agent', people: 2, days: 3, tokens: 900 },
+          { agent: 'claude', modelName: 'claude-new', reason: 'unpriced-model', people: 1, days: 1, tokens: 100 },
+        ],
+      })
+      for (const leak of [USER_A, USER_B, 'Ada', 'Bo', 'ada@x.test', 'bo@x.test', 'Platform']) expect(res.body).not.toContain(leak)
+    }
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
   })
 
   it('limits a manager to themselves and the teams they manage', async () => {
@@ -3235,10 +3368,10 @@ describe('GET /v1/dashboard/governance/mcp', () => {
 
   const seed = () => {
     mongoState.aggregates.claudeEnrichment = [
-      { _id: 'playwright', calls: 40, users: [USER_B, USER_A], days: 2, lastDate: '2026-11-05' },
-      { _id: 'plugin_vercel_vercel', calls: 9, users: [USER_A], days: 1, lastDate: '2026-11-04' },
-      { _id: 'claude_ai_Neon', calls: 3, users: [USER_A], days: 1, lastDate: '2026-11-03' },
-      { _id: '1a59c906-04da-521d-bda7-7f71b9f9e01c', calls: 1, users: [USER_A], days: 1, lastDate: '2026-11-02' },
+      { _id: 'playwright', calls: 40, people: 2, days: 2, lastDate: '2026-11-05' },
+      { _id: 'plugin_vercel_vercel', calls: 9, people: 1, days: 1, lastDate: '2026-11-04' },
+      { _id: 'claude_ai_Neon', calls: 3, people: 1, days: 1, lastDate: '2026-11-03' },
+      { _id: '1a59c906-04da-521d-bda7-7f71b9f9e01c', calls: 1, people: 1, days: 1, lastDate: '2026-11-02' },
     ]
     mongoState.docs.users = [
       { _id: USER_A, orgId: ORG_A, name: 'Ada' },
@@ -3260,23 +3393,26 @@ describe('GET /v1/dashboard/governance/mcp', () => {
     expect((await get('admin', '/v1/dashboard/governance/mcp')).statusCode).toBe(400)
   })
 
-  it('lists servers with source, approval and names, plus approvals nobody used', async () => {
+  it('lists servers with source, approval and a people count, plus approvals nobody used', async () => {
     seed()
     const res = await get('admin')
     expect(res.statusCode).toBe(200)
     expect(match()).toEqual({ orgId: ORG_A, date: { $gte: DATE, $lte: DATE } })
     expect(callsTo(mongoState, 'mcpApprovals', 'find')[0][0]).toEqual({ orgId: ORG_A })
-    expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
+    // v2 Phase 3: no name lookup, and the pipeline hands back a count, not ids.
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+    const [pipeline] = callsTo(mongoState, 'claudeEnrichment', 'aggregate')[0] as Document[][]
+    const project = pipeline.filter((st) => st.$project).at(-1)?.$project
+    expect(project).toMatchObject({ people: { $size: '$users' } })
+    expect(project).not.toHaveProperty('users')
+    for (const leak of [USER_A, USER_B, 'Ada', 'Bo']) expect(res.body).not.toContain(leak)
     const body = res.json()
     expect(body.servers[0]).toEqual({
       server: 'playwright',
       source: 'local',
       approved: true,
       note: 'browser tests',
-      users: [
-        { userId: USER_A, name: 'Ada' },
-        { userId: USER_B, name: 'Bo' },
-      ],
+      people: 2,
       calls: 40,
       days: 2,
       lastDate: '2026-11-05',
@@ -3400,10 +3536,12 @@ describe('GET /v1/dashboard/governance/accounts', () => {
       ['Claude org 1', true, true],
       ['Claude org 2', false, false],
     ])
-    expect(body.people.map((p: { name: string; flags: string[] }) => [p.name, p.flags])).toEqual([
-      ['Bo', ['shared', 'outside-org']],
-      ['Ada', ['shared']],
-    ])
+    // v2 Phase 3: how many people carry each flag, never who.
+    expect(body).not.toHaveProperty('people')
+    expect(body.flagCounts).toEqual({ shared: 2, 'outside-org': 1, several: 0, 'seat-no-use': 0, 'use-no-seat': 0 })
+    for (const leak of [USER_A, USER_B, TEAM_B, 'Ada', 'Bo']) expect(res.body).not.toContain(leak)
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+    expect(callsTo(mongoState, 'teamMembers', 'find')).toEqual([])
     // No hash leaves the API except the org ids the save call needs.
     const { orgs, ...rest } = body
     expect(JSON.stringify(rest)).not.toMatch(/[0-9a-f]{64}/)
@@ -3417,9 +3555,15 @@ describe('GET /v1/dashboard/governance/accounts', () => {
     expect((callsTo(mongoState, 'claudeEnrichment', 'find')[0][0] as { userId: unknown }).userId).toEqual({ $in: [USER_A] })
   })
 
-  it('answers empty lists without reading users when nothing is hashed', async () => {
+  it('answers empty lists and zero counts without reading users when nothing is hashed', async () => {
     const body = (await get('admin')).json()
-    expect(body).toMatchObject({ coverage: { users: 0, hashed: 0 }, companyOrgSet: false, orgs: [], accounts: [], people: [] })
+    expect(body).toMatchObject({
+      coverage: { users: 0, hashed: 0 },
+      companyOrgSet: false,
+      orgs: [],
+      accounts: [],
+      flagCounts: { shared: 0, 'outside-org': 0, several: 0, 'seat-no-use': 0, 'use-no-seat': 0 },
+    })
     expect(callsTo(mongoState, 'users', 'find')).toEqual([])
   })
 })
@@ -3463,11 +3607,13 @@ describe('PUT /v1/dashboard/governance/claude-orgs', () => {
   })
 })
 
-describe('GET /v1/dashboard/governance/violations', () => {
-  const URL = range('/v1/dashboard/governance/violations')
+describe('GET /v1/dashboard/governance/setup-checks', () => {
+  const URL = range('/v1/dashboard/governance/setup-checks')
   const get = (role: JwtPayload['role'], url = URL) =>
     app.inject({ method: 'GET', url, headers: auth(token({ role })) })
   const aggregates = () => callsTo(mongoState, 'usageEvents', 'aggregate').map((c) => c[0] as Document[])
+  // The setup-check read is the one with an $or; an admin's seen-models read can run before it.
+  const checkMatch = () => aggregates().find((p) => p[0].$match.$or)![0].$match
   const policy = (agent: string, rule: string, models: string[] = []) => ({
     _id: `${ORG_A}:${agent}`,
     orgId: ORG_A,
@@ -3492,7 +3638,7 @@ describe('GET /v1/dashboard/governance/violations', () => {
       'copilot:unset',
     ])
     expect(callsTo(mongoState, 'agentPolicies', 'find')[0][0]).toEqual({ orgId: ORG_A })
-    expect(aggregates()[0][0].$match).toEqual({
+    expect(checkMatch()).toEqual({
       orgId: ORG_A,
       date: { $gte: DATE, $lte: DATE },
       $or: [{ agent: { $in: ['claude', 'qwen', 'gemini', 'codex', 'copilot'] } }],
@@ -3508,13 +3654,13 @@ describe('GET /v1/dashboard/governance/violations', () => {
       policy('copilot', 'allowed'),
     ]
     await get('admin')
-    expect(aggregates()[0][0].$match.$or).toEqual([
+    expect(checkMatch().$or).toEqual([
       { agent: { $in: ['qwen'] } },
       { agent: 'claude', modelName: { $nin: ['claude-opus-5'] } },
     ])
   })
 
-  it('runs no violation query when every agent is allowed', async () => {
+  it('runs no setup-check query when every agent is allowed', async () => {
     mongoState.docs.agentPolicies = ['claude', 'qwen', 'gemini', 'codex', 'copilot'].map((a) => policy(a, 'allowed'))
     mongoState.aggregates.usageEvents = [{ _id: 'claude', models: ['claude-opus-5'] }]
     const body = (await get('admin')).json()
@@ -3524,24 +3670,54 @@ describe('GET /v1/dashboard/governance/violations', () => {
     expect(aggregates()[0][0].$match.$or).toBeUndefined()
   })
 
-  it('names each row and says why it was flagged', async () => {
+  // `models` only so the admin's seen-models read, which the fake answers with
+  // the same seed, has something to spread.
+  const groups = () => [
+    { _id: { userId: USER_A, agent: 'claude', modelName: 'claude-opus-5-5' }, days: 2, tokens: 50, firstDate: DATE, lastDate: DATE, models: [] },
+    { _id: { userId: USER_A, agent: 'qwen', modelName: 'coder-model' }, days: 1, tokens: 10, firstDate: DATE, lastDate: DATE, models: [] },
+    { _id: { userId: USER_B, agent: 'gemini', modelName: 'gemini-3' }, days: 1, tokens: 5, firstDate: DATE, lastDate: DATE, models: [] },
+  ]
+
+  it('names each row and says why it was flagged, for an admin', async () => {
     mongoState.docs.agentPolicies = [policy('claude', 'models', ['claude-opus-5']), policy('qwen', 'blocked')]
-    mongoState.aggregates.usageEvents = [
-      { _id: { userId: USER_A, agent: 'claude', modelName: 'claude-opus-5-5' }, days: 2, tokens: 50, firstDate: DATE, lastDate: DATE },
-      { _id: { userId: USER_A, agent: 'qwen', modelName: 'coder-model' }, days: 1, tokens: 10, firstDate: DATE, lastDate: DATE },
-      { _id: { userId: USER_B, agent: 'gemini', modelName: 'gemini-3' }, days: 1, tokens: 5, firstDate: DATE, lastDate: DATE },
-    ]
+    mongoState.aggregates.usageEvents = groups()
     mongoState.docs.users = [{ _id: USER_A, orgId: ORG_A, name: 'Ada', email: 'ada@x.test' }]
-    // A manager, because the fake answers every usageEvents aggregate with the
-    // same seed and an admin also runs the seen-models read.
-    const body = (await get('manager')).json()
+    const body = (await get('admin')).json()
     expect(body.rows.map((r: { modelName: string; reason: string }) => [r.modelName, r.reason])).toEqual([
       ['claude-opus-5-5', 'model-not-listed'],
       ['coder-model', 'agent-blocked'],
       ['gemini-3', 'agent-not-set'],
     ])
-    expect(body.rows[0]).toMatchObject({ userName: 'Ada', userEmail: 'ada@x.test', teams: [] })
+    expect(body.rows[0]).toMatchObject({ userId: USER_A, userName: 'Ada', userEmail: 'ada@x.test', teams: [] })
+    expect(body.people).toBe(2)
+    expect(body).not.toHaveProperty('byTeam')
     expect(body.policies[0]).toEqual({ agent: 'claude', rule: 'models', models: ['claude-opus-5'], note: null })
+  })
+
+  // v2 Phase 3: a manager learns how many people used something outside the
+  // rules, never who.
+  it('gives a manager a people count and no rows, without reading names', async () => {
+    mongoState.docs.agentPolicies = [policy('claude', 'models', ['claude-opus-5']), policy('qwen', 'blocked')]
+    mongoState.aggregates.usageEvents = groups()
+    mongoState.docs.users = [
+      { _id: USER_A, orgId: ORG_A, name: 'Ada', email: 'ada@x.test' },
+      { _id: USER_B, orgId: ORG_A, name: 'Bo', email: 'bo@x.test' },
+    ]
+    const res = await get('manager')
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.rows).toEqual([])
+    expect(body.people).toBe(2)
+    expect(body).not.toHaveProperty('byTeam')
+    for (const leak of [USER_A, USER_B, 'Ada', 'Bo', 'ada@x.test', 'bo@x.test']) expect(res.body).not.toContain(leak)
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+  })
+
+  it('answers 404 on the old /governance/violations path', async () => {
+    for (const path of ['/v1/dashboard/governance/violations', '/v1/dashboard/governance/violations/count']) {
+      expect((await get('admin', path.endsWith('count') ? path : range(path))).statusCode, path).toBe(404)
+    }
+    expect(mongoState.calls.filter((c) => c.collection !== 'auditEvents')).toEqual([])
   })
 
   it('limits a manager to their teams and skips the seen-models read', async () => {
@@ -3566,7 +3742,7 @@ describe('agent policy routes', () => {
   it.each(['developer', 'manager'] as const)('answers 403 to a %s and touches nothing', async (role) => {
     expect((await send('PUT', one, { rule: 'allowed' }, role)).statusCode).toBe(403)
     expect((await send('DELETE', one, undefined, role)).statusCode).toBe(403)
-    expect((await send('GET', '/v1/dashboard/governance/violations/count', undefined, role)).statusCode).toBe(403)
+    expect((await send('GET', '/v1/dashboard/governance/setup-checks/count', undefined, role)).statusCode).toBe(403)
     expect(mongoState.calls).toEqual([])
   })
 
@@ -3605,17 +3781,17 @@ describe('agent policy routes', () => {
     expect(callsTo(mongoState, 'agentPolicies', 'deleteOne')[0][0]).toEqual({ _id: `${ORG_A}:claude`, orgId: ORG_A })
   })
 
-  it('counts violation groups over the last 30 days for an admin', async () => {
+  it('counts setup-check groups over the last 30 days for an admin', async () => {
     mongoState.aggregates.usageEvents = [{ n: 4 }]
-    expect((await send('GET', '/v1/dashboard/governance/violations/count')).json()).toEqual({ count: 4 })
+    expect((await send('GET', '/v1/dashboard/governance/setup-checks/count')).json()).toEqual({ count: 4 })
     const pipeline = callsTo(mongoState, 'usageEvents', 'aggregate')[0][0] as Document[]
     expect(pipeline[0].$match).toMatchObject({ orgId: ORG_A, $or: [{ agent: { $in: expect.any(Array) } }] })
     expect(pipeline.at(-1)).toEqual({ $count: 'n' })
   })
 })
 
-describe('GET /v1/dashboard/adoption/idle-seats', () => {
-  const URL = '/v1/dashboard/adoption/idle-seats'
+describe('GET /v1/dashboard/adoption/unused-seats', () => {
+  const URL = '/v1/dashboard/adoption/unused-seats'
   const USER_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
   const get = (role: JwtPayload['role'], url = URL) =>
     app.inject({ method: 'GET', url, headers: auth(token({ role })) })
@@ -3643,10 +3819,16 @@ describe('GET /v1/dashboard/adoption/idle-seats', () => {
     ]
   }
 
-  it('refuses a developer before reading seats', async () => {
+  // Admin only since v2 Phase 3: the rows are named.
+  it.each(['developer', 'manager'] as const)('refuses a %s before reading seats', async (role) => {
     seed()
-    expect((await get('developer')).statusCode).toBe(403)
+    expect((await get(role)).statusCode).toBe(403)
     expect(callsTo(mongoState, 'seats', 'find')).toEqual([])
+    expect(callsTo(mongoState, 'users', 'find')).toEqual([])
+  })
+
+  it('answers 404 on the old /adoption/idle-seats path', async () => {
+    expect((await get('admin', '/v1/dashboard/adoption/idle-seats')).statusCode).toBe(404)
   })
 
   it.each(['0', '366', '1.5', 'abc'])('rejects idleDays=%s', async (n) => {
@@ -3656,7 +3838,7 @@ describe('GET /v1/dashboard/adoption/idle-seats', () => {
 
   it('reads only the caller org, skips seats younger than the window, defaults to 14 days', async () => {
     const res = await get('admin')
-    expect(res.json()).toEqual({ idleDays: 14, rows: [], byAgent: [], byTeam: [], totalMonthlyUsd: 0, orgSeats: 0 })
+    expect(res.json()).toEqual({ idleDays: 14, rows: [], byAgent: [], totalMonthlyUsd: 0, orgSeats: 0 })
     expect(callsTo(mongoState, 'seats', 'find')[0][0]).toEqual({ orgId: ORG_A, startDate: { $lte: daysBefore(t, 13) } })
     expect(callsTo(mongoState, 'seats', 'find')[1][0]).toEqual({ orgId: ORG_A })
     // Nothing idle, so no last-used, user or team reads.
@@ -3664,11 +3846,10 @@ describe('GET /v1/dashboard/adoption/idle-seats', () => {
     expect(callsTo(mongoState, 'users', 'find')).toEqual([])
   })
 
-  it('lists idle seats longest idle first, counting a never-used seat from its start date', async () => {
+  it('lists unused seats longest unused first, counting a never-used seat from its start date', async () => {
     seed()
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
     mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' }]
-    const { seatCost } = await import('@burn-watch/db')
     const res = await get('admin', `${URL}?idleDays=30`)
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -3677,63 +3858,40 @@ describe('GET /v1/dashboard/adoption/idle-seats', () => {
     expect(lastUsedPipeline[0][0].$match).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
     expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
 
-    const [bo, ada] = mongoState.docs.seats.slice().reverse() as Parameters<typeof seatCost>[0][]
+    // Name, seat and days unused only: no team, price, start date or last use.
     expect(body.rows).toEqual([
-      {
-        userId: USER_B,
-        userName: 'Bo',
-        teams: [],
-        agent: 'copilot',
-        startDate: daysBefore(t, 40),
-        lastUsed: null,
-        daysIdle: 41,
-        monthlyPriceUsd: 19,
-        costSinceUsedUsd: seatCost(bo, daysBefore(t, 40), t, t) / 1e6,
-      },
-      {
-        userId: USER_A,
-        userName: 'Ada',
-        teams: ['Platform'],
-        agent: 'claude',
-        startDate: daysBefore(t, 100),
-        lastUsed: daysBefore(t, 20),
-        daysIdle: 20,
-        monthlyPriceUsd: 30,
-        costSinceUsedUsd: seatCost(ada, daysBefore(t, 19), t, t) / 1e6,
-      },
+      { userId: USER_B, userName: 'Bo', agent: 'copilot', daysUnused: 41 },
+      { userId: USER_A, userName: 'Ada', agent: 'claude', daysUnused: 20 },
     ])
+    for (const row of body.rows) expect(Object.keys(row).sort()).toEqual(['agent', 'daysUnused', 'userId', 'userName'])
+    expect(res.body).not.toContain('Platform')
+    expect(body).not.toHaveProperty('byTeam')
     expect(body.byAgent).toEqual([
       { agent: 'claude', seats: 1, monthlyUsd: 30 },
       { agent: 'copilot', seats: 1, monthlyUsd: 19 },
     ])
-    expect(body.byTeam).toEqual([{ teamId: TEAM_A, teamName: 'Platform', seats: 1, monthlyUsd: 30 }])
     expect(body.totalMonthlyUsd).toBe(49)
     expect(body.orgSeats).toBe(2)
+    expect(callsTo(mongoState, 'teamMembers', 'find')).toEqual([])
   })
 
-  it('limits a manager to their teams, and hides the org seat count', async () => {
+  it('narrows an admin to one team', async () => {
     seed()
     mongoState.docs.seats.push(seatDoc(USER_C, 'gemini', daysBefore(t, 60), 20))
     mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
     mongoState.docs.teamMembers = [
-      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'manager' },
+      { teamId: TEAM_A, orgId: ORG_A, userId: USER_A, role: 'member' },
       { teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'member' },
       ...peerRows(TEAM_A),
     ]
-    const body = (await get('manager')).json()
+    const body = (await get('admin', `${URL}?teamId=${TEAM_A}`)).json()
     expect(body.rows.map((r: { userId: string }) => r.userId).sort()).toEqual([USER_A, USER_B].sort())
-    expect(body.orgSeats).toBeNull()
     expect(body.totalMonthlyUsd).toBe(49)
-    // Only the idle check reads seats; no org-wide count for a manager.
-    expect(callsTo(mongoState, 'seats', 'find')).toHaveLength(1)
   })
 
-  it('answers 404 to a team outside the org and 403 to a team a manager does not run', async () => {
+  it('answers 404 to a team outside the org', async () => {
     seed()
     expect((await get('admin', `${URL}?teamId=${TEAM_B}`)).statusCode).toBe(404)
-    mongoState.docs.teams = [{ _id: TEAM_A, orgId: ORG_A, name: 'Platform' }]
-    mongoState.docs.teamMembers = [{ teamId: TEAM_A, orgId: ORG_A, userId: USER_B, role: 'manager' }]
-    expect((await get('manager', `${URL}?teamId=${TEAM_A}`)).statusCode).toBe(403)
     expect(callsTo(mongoState, 'seats', 'find')).toEqual([])
   })
 })
@@ -4313,6 +4471,23 @@ describe('GET /v1/dashboard/adoption/practices', () => {
       expect(body.setup[1].items[0]).toMatchObject({ key: 'github', approved: null })
     })
 
+    // v2 rule 2: no per-team counts for a team under MIN_GROUP_SIZE (5).
+    it('gives no card to a team with fewer than 5 members', async () => {
+      seed()
+      servers()
+      mongoState.docs.teams = [
+        { _id: TEAM_A, orgId: ORG_A, name: 'Platform' },
+        { _id: TEAM_B, orgId: ORG_A, name: 'Tiny' },
+      ]
+      mongoState.docs.teamMembers = [
+        ...[USER_A, USER_B, U3, U4, PEERS[0]].map((userId) => ({ teamId: TEAM_A, orgId: ORG_A, userId, role: 'member' })),
+        ...[USER_A, USER_B, U3, U4].map((userId) => ({ teamId: TEAM_B, orgId: ORG_A, userId, role: 'member' })),
+      ]
+      const body = (await get('admin')).json()
+      expect(body.setup.map((c: { teamName: string }) => c.teamName)).toEqual(['Whole org', 'Platform'])
+      expect(JSON.stringify(body.setup)).not.toContain(TEAM_B)
+    })
+
     it('says the group is too small with one reference person, and skips the scope card for a team filter', async () => {
       seed()
       servers()
@@ -4755,7 +4930,7 @@ describe('audit log (R1 B8)', () => {
     })
 
     it('folds the three Governance reads into one _id', async () => {
-      for (const path of ['free-tier', 'mcp', 'violations']) {
+      for (const path of ['free-tier', 'mcp', 'setup-checks']) {
         expect((await call('GET', `/v1/dashboard/governance/${path}?from=${DATE}&to=${DATE}`)).statusCode).toBe(200)
       }
       const ids = views().map((v) => v._id)
@@ -4764,7 +4939,7 @@ describe('audit log (R1 B8)', () => {
     })
 
     it('records adoption, people and team comparison reads', async () => {
-      await call('GET', '/v1/dashboard/adoption/idle-seats')
+      await call('GET', '/v1/dashboard/adoption/unused-seats')
       await call('GET', '/v1/auth/admin/users')
       await call('GET', '/v1/auth/admin/devices')
       teamOf()

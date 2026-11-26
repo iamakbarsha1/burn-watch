@@ -63,12 +63,12 @@ describe('apiMutate content type', () => {
 
   it('still declares json when there is a body to declare it for', async () => {
     const calls = captureFetch()
-    await createBudgetAlert({ userId: null, agent: null, monthlyLimitUsd: 100, threshold: 0.8 })
+    await createBudgetAlert({ agent: null, monthlyLimitUsd: 100, threshold: 0.8 })
 
     const headers = (calls[0].init.headers ?? {}) as Record<string, string>
     expect(headers['Content-Type']).toBe('application/json')
     expect(calls[0].init.body).toBe(
-      JSON.stringify({ userId: null, agent: null, monthlyLimitUsd: 100, threshold: 0.8 }),
+      JSON.stringify({ agent: null, monthlyLimitUsd: 100, threshold: 0.8 }),
     )
   })
 

@@ -13,9 +13,8 @@ import {
   type BudgetAlertDoc,
   type IsoDate,
   type OrgId,
-  type UserId,
 } from '@burn-watch/db'
-import { requireAdmin, viewerScope } from '../../plugins/jwt.js'
+import { requireAdmin } from '../../plugins/jwt.js'
 import { evaluateBudgetAlert } from '../../services/budget-alert.service.js'
 import { audit } from '../../audit.js'
 
@@ -40,64 +39,38 @@ function typeError(a: TypedFields): string | null {
 }
 
 export async function budgetAlertsRoutes(fastify: FastifyInstance) {
-  // GET /budget-alerts — every threshold configured for the caller's org, with
-  // live month-to-date spend and whether it is tripped this calendar month.
-  // Open to every dashboard role, but a non-admin only gets alerts set on
-  // their own account: an org-wide one carries the whole org's spend.
-  fastify.get('/budget-alerts', async (request) => {
+  // GET /budget-alerts — admin only (v2 Phase 3): every alert covers the whole
+  // org or one agent, so it carries org spend. Counts only: an idle-seat alert
+  // gives how many seats, a limit-hit alert how many people. Names are on the
+  // admin's Unused seats card.
+  fastify.get('/budget-alerts', { preHandler: requireAdmin(fastify) }, async (request) => {
     const store = getStore()
     const orgId = request.user.orgId as OrgId
     const date = today()
     const monthKey = date.slice(0, 7)
 
-    const userIds = await viewerScope(request.user)
-    const alerts = await store.budgetAlerts.find({ orgId, ...(userIds && { userId: { $in: userIds } }) })
-
-    const idleByAlert = new Map(
-      await Promise.all(
-        alerts
-          .filter((a) => a.type === 'idle-seat')
-          .map(async (a) => [a._id, await idleSeats(store, orgId, a.userId, a.agent, a.idleDays ?? 1, date)] as const),
-      ),
-    )
-    const idleUsers = [...idleByAlert.values()].flat().map((seat) => seat.userId)
-
-    // The left join Postgres did, as one lookup for every scoped alert rather
-    // than one per alert. An id that matches no user still renders, with a null
-    // name, which is what the left join gave and what keeps a deleted user from
-    // hiding the limit set against them.
-    //
-    // `orgId` is in the filter where the Postgres join had nothing: PATCH
-    // accepts a userId without checking its org (POST does check), so an alert
-    // in this org can carry another org's user id and this lookup would
-    // otherwise resolve that user's name into the response. Scoping the read
-    // renders it as null instead. The PATCH hole itself predates this phase
-    // and is left for its own change.
-    const scoped = [
-      ...new Set([...alerts.map((a) => a.userId), ...idleUsers].filter((id): id is UserId => id !== null)),
-    ]
-    const names = new Map<string, string>()
-    if (scoped.length > 0) {
-      const found = await store.users.find(
-        { _id: { $in: scoped }, orgId },
-        { projection: { name: 1 } },
-      )
-      for (const user of found) names.set(user._id, user.name)
-    }
-
+    const alerts = await store.budgetAlerts.find({ orgId })
     const seated = await seatedKeys(store, orgId)
+    const people = alerts.some((a) => a.type === 'limit-hit')
+      ? ((
+          await store.claudeEnrichment.aggregate<{ n: number }>([
+            { $match: { orgId, date: { $gte: `${monthKey}-01` as IsoDate, $lte: date }, limitHitCount: { $gt: 0 } } },
+            { $group: { _id: '$userId' } },
+            { $count: 'n' },
+          ])
+        )[0]?.n ?? 0)
+      : 0
 
     const result: BudgetAlert[] = await Promise.all(
       alerts.map(async (alert): Promise<BudgetAlert> => {
         const type = alert.type ?? 'api-spend'
         const spend = await monthToDateSpend(store, orgId, alert.userId, alert.agent, date, seated)
-        const idle = idleByAlert.get(alert._id) ?? null
+        const idle =
+          type === 'idle-seat' ? await idleSeats(store, orgId, alert.userId, alert.agent, alert.idleDays ?? 1, date) : null
         const trippedMonth = alert.trippedAt ? isoMonth(alert.trippedAt) : null
         return {
           id: alert._id,
           type,
-          userId: alert.userId,
-          userName: alert.userId ? names.get(alert.userId) ?? null : null,
           agent: alert.agent,
           // Micros travel as far as this line and no further. Everything below
           // a handler works in whole micros; dollars exist for the wire.
@@ -109,9 +82,8 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
           monthToDateSpendUsd: usdFromMicros(spend),
           idleDays: alert.idleDays ?? null,
           limitHits: alert.limitHits ?? null,
-          idleSeats:
-            idle?.map((seat) => ({ userId: seat.userId, userName: names.get(seat.userId) ?? null, agent: seat.agent })) ??
-            null,
+          idleSeatCount: idle ? idle.length : null,
+          people: type === 'limit-hit' ? people : null,
         }
       }),
     )
@@ -119,8 +91,7 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
     return result
   })
 
-  // POST /budget-alerts — admin only. A userId has to belong to the caller's
-  // own org, the same check POST /v1/auth/admin/users applies.
+  // POST /budget-alerts — admin only. Org-wide or per agent; never one person (v2 Phase 3).
   fastify.post(
     '/budget-alerts',
     { preHandler: requireAdmin(fastify) },
@@ -140,19 +111,12 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
       const invalid = typeError(typed)
       if (invalid) return reply.status(400).send({ error: invalid })
 
-      if (body.userId) {
-        const user = await store.users.findOne({ _id: body.userId as UserId, orgId })
-        if (!user) {
-          return reply.status(400).send({ error: 'User not found in this organization' })
-        }
-      }
-
       const id = newId<string>()
       await store.budgetAlerts.insertOne({
         _id: id,
         orgId,
         ...typed,
-        userId: body.userId as UserId | null,
+        userId: null,
         agent: body.agent,
         threshold: body.threshold,
         trippedAt: null,
@@ -181,7 +145,6 @@ export async function budgetAlertsRoutes(fastify: FastifyInstance) {
       // Never empty: the schema refuses a patch with no fields, because an
       // empty one would be a successful no-op that looks like a saved change.
       const values: Partial<BudgetAlertDoc> = {}
-      if (patch.userId !== undefined) values.userId = patch.userId as UserId | null
       if (patch.agent !== undefined) values.agent = patch.agent
       if (patch.monthlyLimitUsd !== undefined) {
         values.monthlyLimitMicros = microsFromUsd(patch.monthlyLimitUsd)

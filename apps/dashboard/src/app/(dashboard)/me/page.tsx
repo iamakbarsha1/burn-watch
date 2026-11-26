@@ -1,6 +1,16 @@
-import { ACTIVE_DAYS_PER_WEEK, MIN_FEATURES, type FeatureKey, type MyOnboarding, type OnboardingState } from '@burn-watch/shared'
+import {
+  ACTIVE_DAYS_PER_WEEK,
+  MIN_FEATURES,
+  type FeatureKey,
+  type FreeTierReason,
+  type MyOnboarding,
+  type MyUsageResponse,
+  type OnboardingState,
+  type SetupCheckReason,
+} from '@burn-watch/shared'
 import { fetchMyUsage } from '@/lib/api'
 import { agentById } from '@/lib/agents'
+import { FLAG_LABEL } from '@/lib/account-flags'
 import { formatCost, formatCount, formatRange, formatTokens, resolveRange } from '@/lib/format'
 import { Badge, EmptyRow, EmptyState, PageHeader, Section, StatTile, TableFrame, Td, Th, Tr } from '@/components/ui'
 import { HelpVolunteerForm } from './HelpVolunteerForm'
@@ -58,6 +68,63 @@ function FirstDays({ o }: { o: MyOnboarding }) {
       <p className="mt-3 text-xs text-ink-2">
         {`Features used: ${listOf(o.features.map((k) => FEATURES[k]))}. Features count MCP, skills, subagents, plan mode and SDK.`}
       </p>
+    </Section>
+  )
+}
+
+/** A seat counts as unused from this many days, the Unused seats card's default. */
+const UNUSED_DAYS = 14
+
+const FREE_TIER_NOTE: Record<FreeTierReason, string> = {
+  'free-tier-agent': 'free tier: the provider may train on what you send',
+  'unpriced-model': 'no price on file for this model, so it may be a free tier',
+}
+
+const CHECK_NOTE: Record<SetupCheckReason, string> = {
+  'agent-blocked': 'this agent is not on the org\'s allowed list',
+  'agent-not-set': 'the org has no rule for this agent yet',
+  'model-not-listed': 'this model is not on the org\'s list for this agent',
+}
+
+const agentModel = (agent: string, model: string) => `${agentById(agent)?.label ?? agent} · ${model}`
+
+/** v2 Phase 3: the facts an admin can see about you, shown to you first. */
+function YourSetup({ u }: { u: MyUsageResponse }) {
+  const empty = !u.seats.length && !u.freeTier.length && !u.setupChecks.length && !u.accountFlags.length
+  return (
+    <Section title="Your setup" description="Your seats and anything about your setup worth a look. Admins see the same.">
+      {empty ? (
+        <p className="text-sm text-ink-2">Nothing to note: no seats on file and nothing outside the org&apos;s setup.</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {u.seats.map((s) => (
+            <li key={`seat:${s.agent}`} className="flex flex-wrap gap-x-3">
+              <span className="text-ink">{`${agentById(s.agent)?.label ?? s.agent} seat`}</span>
+              <span className="text-ink-2">
+                {s.daysUnused >= UNUSED_DAYS ? `unused for ${s.daysUnused} days` : 'in use'}
+              </span>
+            </li>
+          ))}
+          {u.freeTier.map((f) => (
+            <li key={`free:${f.agent}:${f.modelName}`} className="flex flex-wrap gap-x-3">
+              <span className="text-ink">{agentModel(f.agent, f.modelName)}</span>
+              <span className="text-ink-2">{`${FREE_TIER_NOTE[f.reason]} (${plural(f.days, 'day')})`}</span>
+            </li>
+          ))}
+          {u.setupChecks.map((c) => (
+            <li key={`check:${c.agent}:${c.modelName}`} className="flex flex-wrap gap-x-3">
+              <span className="text-ink">{agentModel(c.agent, c.modelName)}</span>
+              <span className="text-ink-2">{`outside the org's agent rules: ${CHECK_NOTE[c.reason]} (${plural(c.days, 'day')})`}</span>
+            </li>
+          ))}
+          {u.accountFlags.map((f) => (
+            <li key={`flag:${f}`} className="flex flex-wrap gap-x-3">
+              <span className="text-ink">Claude account</span>
+              <span className="text-ink-2">{FLAG_LABEL[f]}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </Section>
   )
 }
@@ -133,6 +200,8 @@ export default async function MyUsagePage({ searchParams }: { searchParams: Prom
           </Section>
 
           {usage.onboarding && <FirstDays o={usage.onboarding} />}
+
+          <YourSetup u={usage} />
 
           <Section title="Help others">
             <HelpVolunteerForm helpVolunteer={usage.helpVolunteer} />
