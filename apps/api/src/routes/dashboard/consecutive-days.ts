@@ -1,4 +1,4 @@
-import type { Streak } from '@burn-watch/shared'
+import type { ConsecutiveDays } from '@burn-watch/shared'
 
 const DAY_MS = 86_400_000
 
@@ -18,15 +18,15 @@ function noWeekdayBetween(a: number, b: number): boolean {
 }
 
 /**
- * Current and longest streak of active days (UTC dates), all time.
+ * Current and longest run of consecutive active days (UTC dates), all time.
  *
- * A streak is a run of active days with no weekday missing in between:
+ * A run is active days with no weekday left out in between:
  * Saturday and Sunday never break one, and activity on them still counts.
- * `today` and the day before never break the current streak, since their data
+ * `today` and the day before never break the current run, since their data
  * is usually not synced yet. Lengths count active days, not calendar days.
  * Shared with D1 (AI Wrapped), so it stays a pure function.
  */
-export function streaks(dates: string[], today: string): Streak {
+export function consecutiveDays(dates: string[], today: string): ConsecutiveDays {
   const days = [...new Set(dates)].map(dayNumber).sort((a, b) => a - b)
   if (days.length === 0) return { current: 0, longest: 0, lastActive: null }
 

@@ -33,7 +33,8 @@
 import { strict as assert } from 'node:assert'
 import { MongoClient } from 'mongodb'
 import type { FastifyRequest } from 'fastify'
-import type { AdminDeviceRow, AdminUserRow, ProjectEntry } from '@burn-watch/shared'
+import type { AdminDeviceRow, AdminUserRow, AuditMeResponse, ProjectEntry } from '@burn-watch/shared'
+import type { JwtPayload } from '../plugins/jwt.js'
 import {
   dayKey,
   idleSeats,
@@ -43,6 +44,7 @@ import {
   newId,
   seatKey,
   seatLastUsed,
+  teamMemberKey,
   seatedKeys,
   getClient,
   storeFor,
@@ -56,6 +58,7 @@ import {
   type OrgId,
   type SeatDoc,
   type Store,
+  type TeamId,
   type UserId,
 } from '@burn-watch/db'
 import { toolUsageTotals } from '../routes/dashboard/activity.js'
@@ -342,6 +345,7 @@ async function clean(store: Store) {
   await store.users.deleteMany(orgs)
   await store.organizations.deleteMany({ _id: { $in: [MINE, THEIRS] } })
   await store.auditEvents.deleteMany(orgs)
+  await store.teamMembers.deleteMany(orgs)
 }
 
 const checks: string[] = []
@@ -818,6 +822,8 @@ async function auditLog(store: Store) {
     assert.equal(views.length, 1)
     const [v] = views
     assert.equal(v.count, 2)
+    // v2.1: a whole-org view keeps the org's active people, once each however many views.
+    assert.deepEqual([...v.coveredUserIds!].sort(), [ADA, BO, CY, DI].sort())
     assert.equal(v.action, 'view.governance')
     assert.ok(v.lastAt!.getTime() >= v.at.getTime())
     assert.equal(v.expiresAt!.getTime() - v.at.getTime(), 365 * 86_400_000)
@@ -843,6 +849,56 @@ async function auditLog(store: Store) {
     const ttl = indexes.find((i) => i.name === 'auditEvents_ttl')
     assert.equal(ttl?.expireAfterSeconds, 0)
   })
+}
+
+/**
+ * v2.1. GET /audit/me against a real server: `coveredUserIds: me` on an array,
+ * beside a nested $or for rows written before v2.1. CY joins a team after a
+ * view of it, so must not see that view; BO was in it, so must.
+ */
+async function auditMe(store: Store) {
+  const { buildServer } = await import('../build-server.js')
+  const app = buildServer()
+  await app.ready()
+  try {
+    const team = newId<TeamId>()
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + 86_400_000)
+    const row = { orgId: MINE, kind: 'view' as const, actorId: DI, detail: null, at: now, lastAt: now, count: 1, expiresAt }
+    await store.auditEvents.insertOne({
+      ...row,
+      _id: newId(),
+      action: 'view.overview',
+      actorRole: 'admin',
+      target: { type: 'scope', id: null, label: 'org' },
+    })
+    await store.auditEvents.insertOne({
+      ...row,
+      _id: newId(),
+      action: 'view.team_compare',
+      actorRole: 'manager',
+      target: { type: 'team', id: team, label: 'Platform' },
+      coveredUserIds: [BO, DI],
+    })
+    // CY is in the team today, after the view.
+    await store.teamMembers.insertOne({ _id: teamMemberKey(team, CY), teamId: team, orgId: MINE, userId: CY, role: 'member', createdAt: now })
+
+    const surfaces = async (userId: UserId) => {
+      const token = app.jwt.access.sign({ userId, orgId: MINE, role: 'developer' } as JwtPayload)
+      const res = await app.inject({ method: 'GET', url: '/v1/dashboard/audit/me', headers: { authorization: `Bearer ${token}` } })
+      assert.equal(res.statusCode, 200)
+      return (res.json() as AuditMeResponse).rows.map((r) => r.surface).sort()
+    }
+    const cy = await surfaces(CY)
+    const bo = await surfaces(BO)
+    check('audit/me: a view covers who was in scope then, not who is in the team now; older rows still match', () => {
+      // governance: the whole-org view auditLog wrote, which covered both.
+      assert.deepEqual(cy, ['governance', 'overview'])
+      assert.deepEqual(bo, ['governance', 'overview', 'team_compare'])
+    })
+  } finally {
+    await app.close()
+  }
 }
 
 async function main() {
@@ -874,6 +930,7 @@ async function main() {
     await seats(store)
     await rateLimit(store)
     await auditLog(store)
+    await auditMe(store)
   } finally {
     await clean(store)
     await client.close()

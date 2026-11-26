@@ -315,4 +315,10 @@ export interface AuditEventDoc {
   count: number
   /** TTL. Null = kept: actions until B9 picks a period; views at + 365 days. */
   expiresAt: Date | null
+  /**
+   * Views only (v2.1): everyone the view covered when it happened, unioned over
+   * the day. "Who viewed my data" matches on this, so a later team change does
+   * not rewrite the past. Absent on views written before v2.1.
+   */
+  coveredUserIds?: UserId[]
 }

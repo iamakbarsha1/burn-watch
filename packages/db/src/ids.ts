@@ -15,7 +15,7 @@ export type DayKey = string & { readonly __brand: 'DayKey' }
  *
  * Postgres spelled this as a unique index over (org_id, provider), added after
  * two admins connecting at once raced into two rows. As an _id the constraint
- * cannot be dropped, misnamed, or missed by a sync that never ran.
+ * cannot be dropped, misnamed, or skipped by a sync that never ran.
  */
 export type IntegrationKey = string & { readonly __brand: 'IntegrationKey' }
 /** `${orgId}:${agent}`, so an org holds one policy rule per agent and a re-save is an upsert. */

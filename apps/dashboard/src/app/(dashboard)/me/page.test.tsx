@@ -32,7 +32,7 @@ const usage = (over: Partial<MyUsageResponse> = {}): MyUsageResponse => ({
   to: '2026-11-30',
   rangeDays: 30,
   activeDays: 12,
-  streak: { current: 4, longest: 18, lastActive: '2026-11-20' },
+  consecutiveDays: { current: 4, longest: 18, lastActive: '2026-11-20' },
   totalTokens: 1_500_000,
   sessions: 42,
   totalCostUsd: 19,
@@ -71,11 +71,13 @@ describe('MyUsagePage', () => {
     )
   })
 
-  it('shows active days against the range, both streaks, tokens, sessions and cost', async () => {
+  it('shows active days against the range, both consecutive-day runs, tokens, sessions and cost', async () => {
     const html = await render(NOV)
     expect(html).toContain('12 of 30')
     expect(html).toContain('4 days')
     expect(html).toContain('Longest 18 days. Only visible to you.')
+    expect(html).toContain('Consecutive days')
+    expect(html).not.toMatch(/streak/i)
     expect(html).toContain('42')
     expect(html).toContain('$19.00')
   })
@@ -199,7 +201,7 @@ describe('Who viewed my data', () => {
     }
     const html = await render(NOV)
     expect(html).toContain('Who viewed my data')
-    expect(html).toContain('Teams are the ones you are in today.')
+    expect(html).toContain('Each view counts the people it covered at the time.')
     expect(html).toContain('Priya <span class="text-ink-2">(manager)</span>')
     expect(html).toContain('Teams they manage')
     expect(html).toContain('Governance')

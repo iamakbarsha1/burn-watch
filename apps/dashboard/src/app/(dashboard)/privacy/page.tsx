@@ -65,8 +65,8 @@ export default function PrivacyPage() {
       </p>
 
       <p className="text-sm text-ink-2">
-        Totals for a team, or for the teams a manager runs, are hidden when they cover fewer than{' '}
-        {MIN_GROUP_SIZE} people. A small team cannot be used to read one person&apos;s numbers.
+        Totals for a team, for the teams a manager runs, or for a whole org, are hidden when they cover fewer
+        than {MIN_GROUP_SIZE} people. A small team or org cannot be used to read one person&apos;s numbers.
       </p>
 
       {FIELD_GROUPS.map((group) => (

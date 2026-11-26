@@ -11,13 +11,13 @@ Target: companies with 50+ developers using AI coding assistants.
 BurnWatch v2 is built so it cannot be used to watch individual people. Every route follows these rules. The plan and status live in `tasks/V2-NO-MICROMANAGEMENT-PLAN.md`.
 
 1. **Groups for managers, self for people.** Admins and managers see team and org totals. Each person sees their own numbers in full. Nobody sees another person's usage numbers.
-2. **Minimum group size of 5.** `MIN_GROUP_SIZE` in `packages/shared`. `readScope` (`apps/api/src/plugins/jwt.ts`) refuses a read that covers other people but fewer than 5 of them, and the route answers 403 `group_too_small`. Team compare leaves such teams out. The top-vs-rest split needs 17 people so the top quarter is itself 5.
-3. **No ranking, scoring or streaks** shown to anyone but the person.
+2. **Minimum group size of 5.** `MIN_GROUP_SIZE` in `packages/shared`. `readScope` (`apps/api/src/plugins/jwt.ts`) refuses a read that covers other people but fewer than 5 of them, and the route answers 403 `group_too_small`. Team compare leaves such teams out. The top-vs-rest split needs 17 people so the top quarter is itself 5. An admin's whole-org read counts the org's active people the same way, except the named admin lists (unused seats, setup checks), which exist so an admin can act on one person.
+3. **No ranking or scoring.** Consecutive active days are shown only to the person.
 4. **Named lists only for admin operations, with symmetry.** Unused seats and setup checks may name a person to an admin. The person sees the same fact about themselves.
-5. **People can see who looked** at data that covered them: `GET /v1/dashboard/audit/me`, shown as "Who viewed my data" on My usage.
+5. **People can see who looked** at data that covered them: `GET /v1/dashboard/audit/me`, shown as "Who viewed my data" on My usage. Each view row records who it covered at the time (`coveredUserIds`), so a later team change does not rewrite it. Rows from before v2.1 go by current teams.
 6. **Plain, neutral words.** No "score", "streak", "stuck", "missed", "violations", "leaderboard".
 
-`npm run no-individuals -w @burn-watch/api` checks rules 1, 2 and 4 against a real MongoDB in CI. It calls every dashboard GET as admin, manager and developer and fails on any other person's id, name or email outside its allowlist. Its `KNOWN_LEAKS` list is empty since Phase 3; a new leak fails CI. `scripts/check-words.sh` checks rule 6 in the dashboard source, with a short allowlist.
+`npm run no-individuals -w @burn-watch/api` checks rules 1, 2 and 4 against a real MongoDB in CI. It calls every dashboard GET as admin, manager and developer and fails on any other person's id, name or email outside its allowlist. Its `KNOWN_LEAKS` list is empty since Phase 3; a new leak fails CI. `scripts/check-words.sh` checks rule 6 in the dashboard, API and shared package source, with a short allowlist for pre-v2 audit labels and migration 0005.
 
 ## System Overview
 
