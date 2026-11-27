@@ -3510,13 +3510,14 @@ describe('GET /v1/dashboard/governance/mcp', () => {
       days: 2,
       lastDate: '2026-11-05',
     })
-    // v2 rule 2 at row level: a one-person server keeps its count, not its calls, days or last date.
-    expect(body.servers[1]).toMatchObject({ server: 'plugin_vercel_vercel', people: 1, calls: null, days: null, lastDate: null })
-    expect(body.servers.map((s: { source: string; approved: boolean }) => [s.source, s.approved])).toEqual([
-      ['local', true],
-      ['plugin', false],
-      ['claude.ai', false],
-      ['unnamed', false],
+    // v2 rule 2 at row level: a one-person server keeps its count, not its calls, days or last date,
+    // and one-person servers follow by name, not by calls (9, 3, 1 in the aggregate).
+    expect(body.servers.at(-1)).toMatchObject({ server: 'plugin_vercel_vercel', people: 1, calls: null, days: null, lastDate: null })
+    expect(body.servers.map((s: { server: string; source: string; approved: boolean }) => [s.server, s.source, s.approved])).toEqual([
+      ['playwright', 'local', true],
+      ['1a59c906-04da-521d-bda7-7f71b9f9e01c', 'unnamed', false],
+      ['claude_ai_Neon', 'claude.ai', false],
+      ['plugin_vercel_vercel', 'plugin', false],
     ])
     expect(body.unusedApprovals).toEqual([{ server: 'context7', note: null }])
   })
