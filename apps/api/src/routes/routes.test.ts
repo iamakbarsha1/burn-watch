@@ -3958,12 +3958,14 @@ describe('GET /v1/dashboard/adoption/unused-seats', () => {
     expect(lastUsedPipeline[0][0].$match).toEqual({ orgId: ORG_A, userId: { $in: [USER_A, USER_B] } })
     expect(callsTo(mongoState, 'users', 'find')[0][0]).toMatchObject({ orgId: ORG_A })
 
-    // Name, seat and days unused only: no team, price, start date or last use.
+    // Name, seat and a coarse bucket only: no exact days, team, price, start date or last use.
+    // 41 and 20 exact days both land in 30+ (idleDays is the floor), so the order is by name.
     expect(body.rows).toEqual([
-      { userId: USER_B, userName: 'Bo', agent: 'copilot', daysUnused: 41 },
-      { userId: USER_A, userName: 'Ada', agent: 'claude', daysUnused: 20 },
+      { userId: USER_A, userName: 'Ada', agent: 'claude', unusedAtLeastDays: 30 },
+      { userId: USER_B, userName: 'Bo', agent: 'copilot', unusedAtLeastDays: 30 },
     ])
-    for (const row of body.rows) expect(Object.keys(row).sort()).toEqual(['agent', 'daysUnused', 'userId', 'userName'])
+    for (const row of body.rows) expect(Object.keys(row).sort()).toEqual(['agent', 'unusedAtLeastDays', 'userId', 'userName'])
+    expect(res.body).not.toContain('41')
     expect(res.body).not.toContain('Platform')
     expect(body).not.toHaveProperty('byTeam')
     expect(body.byAgent).toEqual([
@@ -5173,11 +5175,12 @@ describe('audit log (R1 B8)', () => {
                 },
               ],
             },
-            { sort: { at: -1 }, limit: 1000 },
+            { sort: { at: -1 }, limit: 1001 },
           ],
         ])
         expect(mongoCalls('users', 'find')).toEqual([[{ _id: { $in: [USER_B, 'gone'] }, orgId: ORG_A }, { projection: { name: 1 } }]])
         const body = res.json()
+        expect(body.truncated).toBe(false)
         expect(body.rows).toEqual([
           { at: at.toISOString(), lastAt: at.toISOString(), count: 3, surface: 'team', viewer: { name: 'Priya', role: 'manager' }, scope: 'Platform' },
           { at: at.toISOString(), lastAt: null, count: 1, surface: 'governance', viewer: { name: null, role: 'admin' }, scope: 'org' },

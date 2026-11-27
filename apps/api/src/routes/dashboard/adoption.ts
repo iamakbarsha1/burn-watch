@@ -56,6 +56,14 @@ export function daysUnused(seat: { startDate: string }, lastUsed: string | null,
   return Math.max(0, daysBetween(since, date) + 1)
 }
 
+/**
+ * Coarse unused days for a named admin row: the largest of idleDays, 30, 60,
+ * 90, 180, 365 the seat has reached. Never the exact count next to a name.
+ */
+export function unusedBucket(days: number, idleDays: number): number {
+  return Math.max(idleDays, ...[30, 60, 90, 180, 365].filter((b) => b > idleDays && b <= days))
+}
+
 const FunnelQuerySchema = z
   .object({ ...dateRangeFields, ...teamIdField })
   .refine((d) => d.from && d.to && d.from <= d.to, { message: 'Provide from+to, from not after to' })
@@ -257,9 +265,15 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
         userId: s.userId,
         userName: nameOf.get(s.userId) ?? null,
         agent: s.agent,
-        daysUnused: daysUnused(s, lastUsed.get(s._id) ?? null, date),
+        unusedAtLeastDays: unusedBucket(daysUnused(s, lastUsed.get(s._id) ?? null, date), idleDays),
       }))
-      .sort((a, b) => b.daysUnused - a.daysUnused || a.agent.localeCompare(b.agent))
+      // By bucket, then name: no order inside a bucket that gives the exact count away.
+      .sort(
+        (a, b) =>
+          b.unusedAtLeastDays - a.unusedAtLeastDays ||
+          (a.userName ?? '').localeCompare(b.userName ?? '') ||
+          a.agent.localeCompare(b.agent),
+      )
 
     // Sum in micros, so the totals carry no float drift.
     const byAgent = new Map<AgentName, { seats: number; micros: number }>()

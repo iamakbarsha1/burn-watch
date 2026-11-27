@@ -174,7 +174,7 @@ function UnusedSeatsSection({
             <tr>
               <Th>Person</Th>
               <Th>Agent</Th>
-              <Th numeric>Days unused</Th>
+              <Th>Unused for</Th>
             </tr>
           </thead>
           <tbody>
@@ -185,7 +185,7 @@ function UnusedSeatsSection({
                 <Tr key={`${r.userId}:${r.agent}`}>
                   <Td className="font-medium text-ink">{r.userName ?? 'Removed user'}</Td>
                   <Td>{agentById(r.agent)?.label ?? r.agent}</Td>
-                  <Td numeric>{r.daysUnused}</Td>
+                  <Td>{r.unusedAtLeastDays}+ days</Td>
                 </Tr>
               ))
             ) : data.orgSeats === 0 ? (
