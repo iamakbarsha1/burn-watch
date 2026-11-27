@@ -217,7 +217,7 @@ export default async function AdminPage() {
 
         <Section
           title={`Seats (${seats.length})`}
-          description="Paid plans per person and agent, such as Claude Max or Copilot Business. Seat prices make up the actual cost on Overview and Users. Usage on an agent without a seat counts as API spend."
+          description="Paid plans per person and agent, such as Claude Max or Copilot Business. Seat prices make up the actual cost on Overview. Usage on an agent without a seat counts as API spend."
         >
           <div className="space-y-4">
             <AddSeatForm users={users} defaultStart={firstOfMonth} />

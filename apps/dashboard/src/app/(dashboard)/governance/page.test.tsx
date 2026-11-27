@@ -200,6 +200,16 @@ describe('GovernancePage', () => {
     expect(html).not.toContain('Person')
   })
 
+  it('shows dashes, not days or tokens, on a free-tier row under 5 people', async () => {
+    state.data = {
+      people: 1,
+      rows: [{ agent: 'qwen', modelName: 'coder-model', reason: 'free-tier-agent', people: 1, days: null, tokens: null }],
+    }
+    const html = await render()
+    expect(html).toMatch(/>1<\/td><td[^>]*>—<\/td><td[^>]*>—</)
+    expect(html).toContain('A dash means the row covers fewer than 5 people, so only the count shows.')
+  })
+
   it('says so when the API is down', async () => {
     state.data = null
     expect(await render()).toContain('Could not read free-tier usage')
@@ -220,6 +230,16 @@ describe('GovernancePage', () => {
     expect(html).toContain('[revoke:playwright]')
     expect(html).toContain('[approve:claude_ai_Neon]')
     expect(html).toContain('[revoke:context7]')
+  })
+
+  it('shows dashes, not calls, days or last date, on an MCP server under 5 people', async () => {
+    state.mcp = {
+      servers: [{ server: 'solo', source: 'local', approved: false, note: null, people: 1, calls: null, days: null, lastDate: null }],
+      unusedApprovals: [],
+    }
+    const html = await render()
+    expect(html).toMatch(/>1<\/td><td[^>]*>—<\/td><td[^>]*>—<\/td><td[^>]*>—</)
+    expect(html).not.toContain('null')
   })
 
   it('hides the approval buttons from a manager', async () => {

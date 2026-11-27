@@ -95,7 +95,9 @@ export default function PrivacyPage() {
 
       <p className="text-sm text-ink-2">
         Totals for a team, for the teams a manager runs, or for a whole org, are hidden when they cover fewer
-        than {MIN_GROUP_SIZE} people. A small team or org cannot be used to read one person&apos;s numbers.
+        than {MIN_GROUP_SIZE} people. So are the days, tokens, calls and shares on any row inside them that covers
+        fewer than {MIN_GROUP_SIZE}, such as a model or MCP server only one person used: the row shows how many people,
+        nothing more. A small team, org or row cannot be used to read one person&apos;s numbers.
       </p>
 
       {FIELD_GROUPS.map((group) => (

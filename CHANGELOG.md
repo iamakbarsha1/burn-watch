@@ -8,6 +8,27 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v2.4.0 (2026-11-27)
+
+Breaking API change. A row that covers fewer than 5 people keeps its people
+count but no longer shows its numbers.
+
+- Governance: Free-tier rows under 5 people show a dash for Days and Tokens.
+  MCP servers under 5 people show a dash for Calls, Days and Last seen. Claude
+  orgs under 5 people show a dash for Days.
+- Adoption: a Features group with fewer than 5 Claude Code users shows its
+  user count and a dash for each share.
+- API: on `governance/free-tier`, `governance/mcp`, `governance/accounts` and
+  `adoption/features`, these fields are now null on rows under 5 people:
+  `days`, `tokens`, `calls`, `lastDate`, `used`. `/me/usage` keeps exact
+  numbers for your own rows.
+- CI: the no-individuals check now fails when a row with 1 to 4 people carries
+  any of those numbers.
+- Copy: the Funnel says no team has 5 or more members yet when teams exist but
+  are all small, instead of "No teams yet". Your setup on My usage says what
+  admins actually see. Admin > Seats no longer mentions a Users page.
+- /privacy: the small-group promise now covers rows inside a total too.
+
 ## web-v2.3.0 (2026-11-27)
 
 Breaking API change. Unused seats no longer shows exact days next to a name.

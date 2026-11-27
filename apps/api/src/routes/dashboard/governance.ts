@@ -18,6 +18,7 @@ import {
   FREE_TIER_AGENTS,
   McpApprovalInputSchema,
   McpServerKeySchema,
+  MIN_GROUP_SIZE,
   type AgentName,
   type AgentPolicy,
   type ClaudeAccountFlag,
@@ -98,17 +99,26 @@ export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userI
 }
 
 /** Free-tier rows and the distinct people across them. */
-export function freeTierRows(groups: ModelGroup[]): FreeTierResponse {
+/**
+ * v2 rule 2 at row level: a row covering fewer than MIN_GROUP_SIZE people keeps
+ * its people count but not its numbers. `minPeople` is 0 for a person's own rows.
+ */
+export const isSmall = (people: number, minPeople = MIN_GROUP_SIZE) => people < minPeople
+
+export function freeTierRows(groups: ModelGroup[], minPeople = MIN_GROUP_SIZE): FreeTierResponse {
   return {
     people: new Set(groups.flatMap((g) => g.users)).size,
-    rows: groups.map<FreeTierModelRow>((g) => ({
-      agent: g._id.agent,
-      modelName: g._id.modelName,
-      reason: FREE_TIER_AGENTS.has(g._id.agent) ? 'free-tier-agent' : 'unpriced-model',
-      people: g.users.length,
-      days: g.days,
-      tokens: g.tokens,
-    })),
+    rows: groups.map<FreeTierModelRow>((g) => {
+      const small = isSmall(g.users.length, minPeople)
+      return {
+        agent: g._id.agent,
+        modelName: g._id.modelName,
+        reason: FREE_TIER_AGENTS.has(g._id.agent) ? 'free-tier-agent' : 'unpriced-model',
+        people: g.users.length,
+        days: small ? null : g.days,
+        tokens: small ? null : g.tokens,
+      }
+    }),
   }
 }
 
@@ -291,16 +301,19 @@ export async function governanceRoutes(fastify: FastifyInstance) {
 
     const approvalOf = new Map(approvals.map((a) => [a.server, a]))
 
-    const servers = groups.map<McpServerRow>((g) => ({
-      server: g._id,
-      source: mcpSource(g._id),
-      approved: approvalOf.has(g._id),
-      note: approvalOf.get(g._id)?.note ?? null,
-      people: g.people,
-      calls: g.calls,
-      days: g.days,
-      lastDate: g.lastDate,
-    }))
+    const servers = groups.map<McpServerRow>((g) => {
+      const small = isSmall(g.people)
+      return {
+        server: g._id,
+        source: mcpSource(g._id),
+        approved: approvalOf.has(g._id),
+        note: approvalOf.get(g._id)?.note ?? null,
+        people: g.people,
+        calls: small ? null : g.calls,
+        days: small ? null : g.days,
+        lastDate: small ? null : g.lastDate,
+      }
+    })
     const used = new Set(groups.map((g) => g._id))
     const unusedApprovals = approvals
       .filter((a) => !used.has(a.server))
@@ -404,8 +417,8 @@ export async function governanceRoutes(fastify: FastifyInstance) {
       companyOrgSet: own.length > 0,
       seatsEntered: seats.length,
       companyOrgUsers: grouped.companyOrgUsers,
-      orgs: grouped.orgs,
-      accounts: grouped.accounts,
+      orgs: grouped.orgs.map((o) => (isSmall(o.users) ? { ...o, days: null } : o)),
+      accounts: grouped.accounts.map((a) => (isSmall(a.users) ? { ...a, days: null } : a)),
       flagCounts,
     } satisfies ClaudeAccountsResponse
   })

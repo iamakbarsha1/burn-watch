@@ -56,7 +56,7 @@ async function ownStatus(
     seats: seats
       .map((s) => ({ agent: s.agent, daysUnused: daysUnused(s, lastUsed.get(s._id) ?? null, date) }))
       .sort((a, b) => (a.agent < b.agent ? -1 : 1)),
-    freeTier: freeTierRows(free).rows,
+    freeTier: freeTierRows(free, 0).rows,
     setupChecks: checks.groups.map((g) => ({
       agent: g._id.agent,
       modelName: g._id.modelName,

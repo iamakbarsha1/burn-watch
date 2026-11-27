@@ -94,7 +94,7 @@ const agentModel = (agent: string, model: string) => `${agentById(agent)?.label 
 function YourSetup({ u }: { u: MyUsageResponse }) {
   const empty = !u.seats.length && !u.freeTier.length && !u.setupChecks.length && !u.accountFlags.length
   return (
-    <Section title="Your setup" description="Your seats and anything about your setup worth a look. Admins see the same.">
+    <Section title="Your setup" description="Your seats and anything about your setup worth a look. Admins see your seats and setup checks by name, but not the days. Free-tier use and account notes reach them only as counts.">
       {empty ? (
         <p className="text-sm text-ink-2">Nothing to note: no seats on file and nothing outside the org&apos;s setup.</p>
       ) : (
@@ -110,7 +110,7 @@ function YourSetup({ u }: { u: MyUsageResponse }) {
           {u.freeTier.map((f) => (
             <li key={`free:${f.agent}:${f.modelName}`} className="flex flex-wrap gap-x-3">
               <span className="text-ink">{agentModel(f.agent, f.modelName)}</span>
-              <span className="text-ink-2">{`${FREE_TIER_NOTE[f.reason]} (${plural(f.days, 'day')})`}</span>
+              <span className="text-ink-2">{`${FREE_TIER_NOTE[f.reason]}${f.days === null ? '' : ` (${plural(f.days, 'day')})`}`}</span>
             </li>
           ))}
           {u.setupChecks.map((c) => (
