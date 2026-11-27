@@ -8,6 +8,25 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v2.2.0 (2026-11-27)
+
+Breaking API change. The last usage and activity times next to names are gone.
+
+- Devices: the Last seen column is now Reporting: Yes, or Not for 7+ days.
+  The list sorts by owner name, then hostname, not by most recent activity.
+  The active-device count on Devices uses the same 7 days (was 14).
+- API: `GET /v1/auth/admin/devices` drops `lastSeenAt` and adds `reporting`
+  (submitted in the last 7 days), the same flag as the admin roster.
+- Governance: Setup checks rows drop the Days, Tokens and Last seen columns
+  and sort by name. Each person still sees their own counts on My usage.
+- API: `GET /v1/dashboard/governance/setup-checks` rows drop `days`,
+  `tokens`, `firstDate` and `lastDate`.
+- CI: `KNOWN_FIELDS` in the no-individuals check is empty. No allowlisted
+  route returns usage numbers or activity dates next to a name.
+- /privacy: the admin list now says Devices and Setup checks show no
+  times or amounts.
+- No migration. No schema sync.
+
 ## web-v2.1.0 (2026-11-27)
 
 - /privacy: a new section, What an admin sees about you, lists every

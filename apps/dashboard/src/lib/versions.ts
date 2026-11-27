@@ -1,8 +1,5 @@
 import { AGENT_FIELDS_VERSION, UPDATE_AGENT_VERSION, compareVersions, type AdminDeviceRow } from '@burn-watch/shared'
 
-/** A1's default: a device counts as active when it holds a live token and was seen in the last 14 days. */
-const ACTIVE_DAYS = 14
-
 export interface DeviceVersionStatus {
   /** below: under the org minimum. unknown: agent too old to report it. none: agent reports, no Claude Code use seen. */
   claude: 'ok' | 'below' | 'unknown' | 'none'
@@ -35,10 +32,9 @@ export interface VersionSummary {
   unknown: number
 }
 
-/** Counts over active devices only; revoked and long-unseen rows stay in the table but not here. */
-export function versionSummary(rows: AdminDeviceRow[], min: string | null, now: Date = new Date()): VersionSummary {
-  const since = now.getTime() - ACTIVE_DAYS * 86_400_000
-  const active = rows.filter((r) => !r.revoked && r.lastSeenAt !== null && new Date(r.lastSeenAt).getTime() >= since)
+/** Counts over active devices only: a live token and reporting in the last 7 days. Others stay in the table but not here. */
+export function versionSummary(rows: AdminDeviceRow[], min: string | null): VersionSummary {
+  const active = rows.filter((r) => !r.revoked && r.reporting)
   const statuses = active.map((r) => deviceVersionStatus(r, min))
   return {
     active: active.length,

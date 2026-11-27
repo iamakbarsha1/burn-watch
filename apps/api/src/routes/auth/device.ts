@@ -49,11 +49,6 @@ async function revokeTokensFor(deviceId: string) {
   return { deviceId, revoked: result.modifiedCount }
 }
 
-// Timestamps go out as text formatted by the database, the way Postgres
-// formatted them with to_char, so the API hands over exactly what is stored.
-// Dates are UTC, hence the Z. A null date formats to null.
-const isoSeconds = (date: unknown) => ({ $dateToString: { date, format: '%Y-%m-%dT%H:%M:%SZ' } })
-
 /** An agent that has submitted within this many days counts as reporting. */
 export const REPORTING_DAYS = 7
 
@@ -100,16 +95,19 @@ export function adminUsersPipeline(orgId: OrgId, now: Date = new Date()): Docume
 }
 
 /**
- * Every device in the org as an AdminDeviceRow, newest activity first.
+ * Every device in the org as an AdminDeviceRow, by owner name then hostname.
  * Starts from users because a device carries no orgId. `revoked` is true when
  * the device holds no unrevoked token, the same condition the auth guard checks.
+ * `reporting` replaces the exact last-seen time, like the roster's: no order or
+ * date of activity per named person (v2 rules 1 and 3).
  */
-export function adminDevicesPipeline(orgId: OrgId): Document[] {
+export function adminDevicesPipeline(orgId: OrgId, now: Date = new Date()): Document[] {
+  const since = new Date(now.getTime() - REPORTING_DAYS * 86_400_000)
   return [
     { $match: { orgId } },
     { $lookup: { from: 'devices', localField: '_id', foreignField: 'userId', as: 'device' } },
     { $unwind: '$device' },
-    { $sort: { 'device.lastSeenAt': -1 } },
+    { $sort: { name: 1, 'device.hostname': 1 } },
     { $limit: 500 },
     {
       $lookup: {
@@ -126,7 +124,8 @@ export function adminDevicesPipeline(orgId: OrgId): Document[] {
         id: '$device._id',
         hostname: '$device.hostname',
         platform: '$device.platform',
-        lastSeenAt: isoSeconds('$device.lastSeenAt'),
+        // A missing or null lastSeenAt sorts below any date, so false.
+        reporting: { $gte: ['$device.lastSeenAt', since] },
         userName: '$name',
         userEmail: '$email',
         revoked: { $eq: [{ $size: '$live' }, 0] },

@@ -695,13 +695,14 @@ async function adoptionFunnel(store: Store) {
 }
 
 async function adminDevices(store: Store) {
-  const rows = await store.users.aggregate<AdminDeviceRow>(adminDevicesPipeline(MINE))
+  // Seven days after alpha was last seen, plus a second: zeta (06-02) and di-box (06-03) still report.
+  const rows = await store.users.aggregate<AdminDeviceRow>(adminDevicesPipeline(MINE, new Date('2026-06-08T08:00:01Z')))
 
-  check('admin devices lists the org newest first, with revoked derived from tokens and both versions', () => {
+  check('admin devices lists the org by owner then hostname, revoked from tokens, reporting over 7 days', () => {
     assert.deepEqual(rows, [
-      { id: DI_BOX, hostname: 'di-box', platform: 'darwin', lastSeenAt: '2026-06-03T00:00:00Z', userName: 'Di', userEmail: 'di@example.invalid', revoked: true, agentVersion: '0.1.0', claudeVersion: null },
-      { id: ZETA, hostname: 'zeta', platform: 'darwin', lastSeenAt: '2026-06-02T10:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: true, agentVersion: '0.1.0', claudeVersion: null },
-      { id: ALPHA, hostname: 'alpha', platform: 'darwin', lastSeenAt: '2026-06-01T08:00:00Z', userName: 'Ada', userEmail: 'ada@example.invalid', revoked: false, agentVersion: '0.4.0', claudeVersion: '2.1.330' },
+      { id: ALPHA, hostname: 'alpha', platform: 'darwin', reporting: false, userName: 'Ada', userEmail: 'ada@example.invalid', revoked: false, agentVersion: '0.4.0', claudeVersion: '2.1.330' },
+      { id: ZETA, hostname: 'zeta', platform: 'darwin', reporting: true, userName: 'Ada', userEmail: 'ada@example.invalid', revoked: true, agentVersion: '0.1.0', claudeVersion: null },
+      { id: DI_BOX, hostname: 'di-box', platform: 'darwin', reporting: true, userName: 'Di', userEmail: 'di@example.invalid', revoked: true, agentVersion: '0.1.0', claudeVersion: null },
     ])
   })
 }

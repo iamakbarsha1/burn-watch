@@ -301,9 +301,6 @@ function RulesSection({ checks, isAdmin }: { checks: SetupChecksResponse | null;
                     <Th>Teams</Th>
                     <Th>Agent · model</Th>
                     <Th>Why flagged</Th>
-                    <Th numeric>Days</Th>
-                    <Th numeric>Tokens</Th>
-                    <Th numeric>Last seen</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -320,9 +317,6 @@ function RulesSection({ checks, isAdmin }: { checks: SetupChecksResponse | null;
                       <Td>
                         <Badge tone={r.reason === 'agent-blocked' ? 'bad' : 'warn'}>{REASON_LABEL[r.reason]}</Badge>
                       </Td>
-                      <Td numeric>{r.days}</Td>
-                      <Td numeric>{formatTokens(r.tokens)}</Td>
-                      <Td numeric>{r.lastDate}</Td>
                     </Tr>
                   ))}
                 </tbody>

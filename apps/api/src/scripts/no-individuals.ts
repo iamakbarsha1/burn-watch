@@ -66,8 +66,8 @@ const ALLOWED: Record<string, { roles: Role[]; why: string; fields: string[] }> 
   },
   '/v1/auth/admin/devices': {
     roles: ['admin'],
-    why: 'device admin: revoke a laptop, check versions',
-    fields: ['id', 'hostname', 'platform', 'userName', 'userEmail', 'revoked', 'agentVersion', 'claudeVersion'],
+    why: 'device admin: revoke a laptop, check versions, spot a broken agent. No exact last-seen time',
+    fields: ['id', 'hostname', 'platform', 'reporting', 'userName', 'userEmail', 'revoked', 'agentVersion', 'claudeVersion'],
   },
   '/v1/dashboard/seats': {
     roles: ['admin'],
@@ -86,7 +86,7 @@ const ALLOWED: Record<string, { roles: Role[]; why: string; fields: string[] }> 
   },
   '/v1/dashboard/governance/setup-checks': {
     roles: ['admin'],
-    why: 'setup checks: who to help fix a blocked agent or unlisted model',
+    why: 'setup checks: who to help fix a blocked agent or unlisted model. No days, tokens or dates',
     fields: ['policies', 'people', 'rows', 'seenModels', 'userId', 'userName', 'userEmail', 'teams', 'agent', 'modelName', 'reason'],
   },
   // v2 rule 5: names the people who viewed the caller's data, never anyone's usage.
@@ -102,13 +102,7 @@ const ALLOWED: Record<string, { roles: Role[]; why: string; fields: string[] }> 
  * A ratchet like KNOWN_LEAKS: a listed field that no longer appears fails the
  * run, so the list can only shrink.
  */
-const KNOWN_FIELDS: Record<string, string> = {
-  '/v1/auth/admin/devices lastSeenAt': 'exact last submit per named laptop: presence. Coarsen like admin/users reporting',
-  '/v1/dashboard/governance/setup-checks days': 'usage per named person. The admin needs who and what, not how much',
-  '/v1/dashboard/governance/setup-checks tokens': 'usage per named person',
-  '/v1/dashboard/governance/setup-checks firstDate': 'activity dates per named person',
-  '/v1/dashboard/governance/setup-checks lastDate': 'activity dates per named person',
-}
+const KNOWN_FIELDS: Record<string, string> = {}
 
 /**
  * Routes that name people today, with the phase that fixes them. Keys are

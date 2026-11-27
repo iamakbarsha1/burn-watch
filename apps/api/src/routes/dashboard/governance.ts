@@ -156,7 +156,9 @@ async function nameGroups(viewer: JwtPayload, groups: UsageGroup[], reasonOf: (g
     teamsOf.set(m.userId, [...(teamsOf.get(m.userId) ?? []), m.teamId])
   }
 
-  return groups.map<SetupCheckRow>((g) => ({
+  // Who and what only: no days, tokens or dates next to a name (v2 rule 1), and
+  // sorted by name, not by how much (rule 3). The person sees their own counts on My usage.
+  const rows = groups.map<SetupCheckRow>((g) => ({
     userId: g._id.userId,
     userName: userById.get(g._id.userId)?.name ?? null,
     userEmail: userById.get(g._id.userId)?.email ?? null,
@@ -164,11 +166,13 @@ async function nameGroups(viewer: JwtPayload, groups: UsageGroup[], reasonOf: (g
     agent: g._id.agent,
     modelName: g._id.modelName,
     reason: reasonOf(g),
-    days: g.days,
-    tokens: g.tokens,
-    firstDate: g.firstDate,
-    lastDate: g.lastDate,
   }))
+  // A removed user (null name) sorts last.
+  const key = (r: SetupCheckRow) => [r.userName ?? '\uffff', r.agent, r.modelName]
+  return rows.sort((a, b) => {
+    const [x, y] = [key(a), key(b)]
+    return x[0].localeCompare(y[0]) || x[1].localeCompare(y[1]) || x[2].localeCompare(y[2])
+  })
 }
 
 /** Usage outside the agent rules over `match`, grouped per user, agent and model. Empty when nothing can fail. */

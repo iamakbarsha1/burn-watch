@@ -3123,7 +3123,7 @@ describe('GET /v1/auth/admin/devices', () => {
     id: DEVICE_A,
     hostname: 'laptop-1',
     platform: 'darwin',
-    lastSeenAt: '2026-11-05T12:00:00Z',
+    reporting: true,
     userName: 'Dev One',
     userEmail: 'dev1@example.com',
     revoked: false,
@@ -3172,6 +3172,14 @@ describe('GET /v1/auth/admin/devices', () => {
     expect(lookup.pipeline).toContainEqual({ $match: { revokedAt: null } })
     const project = pipeline().at(-1)!.$project as Record<string, unknown>
     expect(project.revoked).toEqual({ $eq: [{ $size: '$live' }, 0] })
+  })
+
+  it('reports a coarse flag and sorts by name, never by when a laptop was last seen', async () => {
+    await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
+    const project = pipeline().at(-1)!.$project as Record<string, unknown>
+    expect(project).not.toHaveProperty('lastSeenAt')
+    expect(project.reporting).toEqual({ $gte: ['$device.lastSeenAt', expect.any(Date)] })
+    expect(pipeline().find((s) => '$sort' in s)).toEqual({ $sort: { name: 1, 'device.hostname': 1 } })
     expect(project._id).toBe(0)
   })
   it('projects both versions, reading a missing claudeVersion as null', async () => {
@@ -3772,7 +3780,15 @@ describe('GET /v1/dashboard/governance/setup-checks', () => {
       ['coder-model', 'agent-blocked'],
       ['gemini-3', 'agent-not-set'],
     ])
-    expect(body.rows[0]).toMatchObject({ userId: USER_A, userName: 'Ada', userEmail: 'ada@x.test', teams: [] })
+    expect(body.rows[0]).toEqual({
+      userId: USER_A,
+      userName: 'Ada',
+      userEmail: 'ada@x.test',
+      teams: [],
+      agent: 'claude',
+      modelName: 'claude-opus-5-5',
+      reason: 'model-not-listed',
+    })
     expect(body.people).toBe(2)
     expect(body).not.toHaveProperty('byTeam')
     expect(body.policies[0]).toEqual({ agent: 'claude', rule: 'models', models: ['claude-opus-5'], note: null })

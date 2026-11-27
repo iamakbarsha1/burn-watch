@@ -23,7 +23,7 @@ describe('PrivacyPage', () => {
 
   it('lists what an admin sees about one person, and that an admin can delete them', () => {
     expect(html).toContain('What an admin sees about you')
-    expect(html).toContain('Whether your agent has sent anything in the last 7 days, on the Admin page. Not when.')
+    expect(html).toContain('Whether your agent has sent anything in the last 7 days, per laptop on Devices and overall on Admin. Not when.')
     expect(html).toContain('Admins never see your cost, tokens or active days anywhere else')
     expect(html).toContain('An admin can delete you.')
   })
