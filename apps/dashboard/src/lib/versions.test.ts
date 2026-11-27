@@ -2,13 +2,11 @@ import { describe, it, expect } from 'vitest'
 import type { AdminDeviceRow } from '@burn-watch/shared'
 import { deviceVersionStatus, versionSummary } from './versions'
 
-const NOW = new Date('2026-11-22T12:00:00Z')
-
 const row = (over: Partial<AdminDeviceRow> = {}): AdminDeviceRow => ({
   id: 'd1',
   hostname: 'laptop',
   platform: 'darwin',
-  lastSeenAt: '2026-11-22T08:00:00Z',
+  reporting: true,
   userName: 'Ada',
   userEmail: 'ada@example.com',
   revoked: false,
@@ -50,10 +48,10 @@ describe('versionSummary', () => {
       row({ id: 'old', agentVersion: '0.1.0', claudeVersion: null }),
       row({ id: 'none', claudeVersion: null }),
       row({ id: 'revoked', revoked: true, claudeVersion: '1.0.0' }),
-      row({ id: 'stale', agentVersion: '0.1.0', claudeVersion: null, lastSeenAt: '2026-11-01T00:00:00Z' }),
-      row({ id: 'never', lastSeenAt: null }),
+      row({ id: 'stale', agentVersion: '0.1.0', claudeVersion: null, reporting: false }),
+      row({ id: 'never', reporting: false }),
     ]
-    expect(versionSummary(rows, '2.1.0', NOW)).toEqual({ active: 4, agentCurrent: 3, below: 1, unknown: 1 })
-    expect(versionSummary(rows, null, NOW).below).toBe(0)
+    expect(versionSummary(rows, '2.1.0')).toEqual({ active: 4, agentCurrent: 3, below: 1, unknown: 1 })
+    expect(versionSummary(rows, null).below).toBe(0)
   })
 })

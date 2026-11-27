@@ -23,12 +23,11 @@ const ADMIN_SEES = [
   'Your name, email and role, and whether your login is turned on.',
   'The date your account was made.',
   'Your laptops: how many, their names and operating system, and the agent and Claude Code versions on each.',
-  'When each of your laptops last sent usage, on the Devices page.',
-  'Whether your agent has sent anything in the last 7 days, on the Admin page. Not when.',
+  'Whether your agent has sent anything in the last 7 days, per laptop on Devices and overall on Admin. Not when.',
   'The teams you are in, and whether you manage one.',
   'Your paid seats: agent, monthly price and start date.',
   'On Unused seats: how many days a paid seat of yours has gone unused.',
-  'On Setup checks: an agent or model you used outside the org\'s rules, on how many days, how many tokens, and the first and last date.',
+  'On Setup checks: an agent or model you used outside the org\'s rules. Not how much or when.',
 ]
 
 const SEES: Record<Audience, [boolean, boolean, boolean]> = {

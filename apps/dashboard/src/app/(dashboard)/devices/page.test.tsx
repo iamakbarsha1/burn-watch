@@ -33,7 +33,7 @@ const row = (over: Partial<AdminDeviceRow>): AdminDeviceRow => ({
   id: 'd',
   hostname: 'box',
   platform: 'darwin',
-  lastSeenAt: new Date().toISOString(),
+  reporting: true,
   userName: 'Ada',
   userEmail: 'ada@example.com',
   revoked: false,

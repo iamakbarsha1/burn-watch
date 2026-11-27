@@ -257,7 +257,8 @@ export interface AdminDeviceRow {
   id: string
   hostname: string
   platform: string
-  lastSeenAt: string | null
+  /** Submitted in the last 7 days. No exact time per named laptop (v2 rules 1 and 3). */
+  reporting: boolean
   userName: string
   userEmail: string
   revoked: boolean
@@ -542,10 +543,6 @@ export interface SetupCheckRow {
   agent: AgentName
   modelName: string
   reason: SetupCheckReason
-  days: number
-  tokens: number
-  firstDate: string
-  lastDate: string
 }
 
 // GET /v1/dashboard/governance/setup-checks (R1 B2, renamed in v2 Phase 3).
@@ -554,7 +551,7 @@ export interface SetupChecksResponse {
   policies: AgentPolicy[]
   /** Distinct people in scope with use outside the rules. */
   people: number
-  /** Named rows, admins only; [] for managers. */
+  /** Named rows, admins only, by name; [] for managers. No usage numbers or dates. */
   rows: SetupCheckRow[]
   /** Model names used in the range per agent, for the edit form. Admins only; {} for managers. */
   seenModels: Partial<Record<AgentName, string[]>>

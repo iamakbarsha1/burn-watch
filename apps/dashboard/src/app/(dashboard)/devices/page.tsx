@@ -2,7 +2,6 @@ import Link from 'next/link'
 import { AGENT_FIELDS_VERSION, UPDATE_AGENT_VERSION, type AdminDeviceRow } from '@burn-watch/shared'
 import { getUserRole } from '@/lib/session'
 import { fetchAdminDevices, fetchDeviceSettings } from '@/lib/api'
-import { formatAgo } from '@/lib/format'
 import { deviceVersionStatus, versionSummary } from '@/lib/versions'
 import { ApproveDeviceForm } from './ApproveDeviceForm'
 import { DeviceSettingsForm } from './DeviceSettingsForm'
@@ -80,7 +79,7 @@ export default async function DevicesPage() {
                   <tr>
                     <Th>Device</Th>
                     <Th>Owner</Th>
-                    <Th>Last seen</Th>
+                    <Th>Reporting</Th>
                     <Th>Claude Code</Th>
                     <Th>Agent</Th>
                     <Th>Status</Th>
@@ -102,7 +101,7 @@ export default async function DevicesPage() {
                           <div className="text-xs text-ink-3">{d.userEmail}</div>
                         </Td>
                         <Td className="text-ink-2">
-                          {formatAgo(d.lastSeenAt) ?? <span className="text-ink-3">never</span>}
+                          {d.reporting ? 'Yes' : <span className="text-ink-3">Not for 7+ days</span>}
                         </Td>
                         <Td>
                           {v.claude === 'unknown' ? (
