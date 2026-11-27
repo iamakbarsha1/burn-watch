@@ -246,11 +246,8 @@ export interface AdminUserRow {
   createdAt: string
   deviceCount: number
   hostnames: string[]
-  lastSeenAt: string | null
-  lastSyncDate: string | null
-  totalCostUsd: number
-  totalTokens: number
-  activeDays: number
+  /** An agent of theirs submitted in the last 7 days. No usage or dates per person (v2 rules 1 and 3). */
+  reporting: boolean
 }
 
 // One row of the admin device view. `revoked` is derived, not stored: it is

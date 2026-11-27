@@ -54,16 +54,20 @@ async function revokeTokensFor(deviceId: string) {
 // Dates are UTC, hence the Z. A null date formats to null.
 const isoSeconds = (date: unknown) => ({ $dateToString: { date, format: '%Y-%m-%dT%H:%M:%SZ' } })
 
+/** An agent that has submitted within this many days counts as reporting. */
+export const REPORTING_DAYS = 7
+
 /**
  * The admin roster: one AdminUserRow per user in the org, including users who
- * have never synced. Each $lookup groups inside its own sub-pipeline, so
- * devices and snapshots never multiply each other's rows and no sum comes
- * back scaled by the number of devices a user owns.
+ * have never synced. Names and admin facts only: no usage numbers, no dates of
+ * activity (v2 rules 1 and 3). `reporting` is the one activity signal, coarse on
+ * purpose, so an admin can spot a broken agent: true when any of the person's
+ * devices submitted in the last REPORTING_DAYS days.
  *
- * `_id` stays the `id` the dashboard reads. Cost is micros over 1e6, the same
- * sum `usdFromMicros` would do at the boundary.
+ * `_id` stays the `id` the dashboard reads.
  */
-export function adminUsersPipeline(orgId: OrgId): Document[] {
+export function adminUsersPipeline(orgId: OrgId, now: Date = new Date()): Document[] {
+  const since = new Date(now.getTime() - REPORTING_DAYS * 86_400_000)
   return [
     { $match: { orgId } },
     { $limit: 500 },
@@ -77,26 +81,6 @@ export function adminUsersPipeline(orgId: OrgId): Document[] {
       },
     },
     {
-      $lookup: {
-        from: 'dailySnapshots',
-        localField: '_id',
-        foreignField: 'userId',
-        pipeline: [
-          {
-            $group: {
-              _id: null,
-              lastSyncDate: { $max: '$date' },
-              costMicros: { $sum: '$totalCostMicros' },
-              totalTokens: { $sum: '$totalTokens' },
-              activeDays: { $sum: 1 },
-            },
-          },
-        ],
-        as: 'usage',
-      },
-    },
-    { $set: { usage: { $first: '$usage' } } },
-    {
       // Every field is an expression so the output keeps this key order.
       $project: {
         _id: 0,
@@ -108,11 +92,8 @@ export function adminUsersPipeline(orgId: OrgId): Document[] {
         createdAt: { $dateToString: { date: '$createdAt', format: '%Y-%m-%dT%H:%M:%S.%LZ' } },
         deviceCount: { $size: '$devices' },
         hostnames: { $sortArray: { input: '$devices.hostname', sortBy: 1 } },
-        lastSeenAt: isoSeconds({ $max: '$devices.lastSeenAt' }),
-        lastSyncDate: { $ifNull: ['$usage.lastSyncDate', null] },
-        totalCostUsd: { $divide: [{ $ifNull: ['$usage.costMicros', 0] }, 1e6] },
-        totalTokens: { $ifNull: ['$usage.totalTokens', 0] },
-        activeDays: { $ifNull: ['$usage.activeDays', 0] },
+        // No devices: $max is null, and null sorts below any date, so false.
+        reporting: { $gte: [{ $max: '$devices.lastSeenAt' }, since] },
       },
     },
   ]
@@ -443,9 +424,9 @@ export async function authRoutes(fastify: FastifyInstance) {
       adminUsersPipeline(jwt.orgId as OrgId),
     )
 
-    // 500 rows at most, so the sort is cheaper here, and localeCompare keeps
-    // the name order the Postgres version had.
-    result.sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.name.localeCompare(b.name))
+    // By name, never by any number: the roster is not a ranking (v2 rule 3).
+    // 500 rows at most, so the sort is cheaper here than in the pipeline.
+    result.sort((a, b) => a.name.localeCompare(b.name))
     await auditView(request, 'people', undefined)
     return result
   })

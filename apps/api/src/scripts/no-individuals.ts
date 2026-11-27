@@ -15,6 +15,12 @@
  * The ingest route runs a transaction, so the server must be a replica set:
  * `packages/db/scripts/local-replset.sh up` prints a URI for one.
  *
+ * A route on the allowlist may name people, but only with the fields listed for
+ * it. Any object in its response that holds another person's id, email or name,
+ * directly or in a nested object, may carry only those keys. So a usage number
+ * such as totalCostUsd or activeDays next to a name fails the run, even on an
+ * admin route.
+ *
  * KNOWN_LEAKS is a ratchet. It lists the routes that still name people today
  * and the v2 phase that removes them. A route that leaks and is not listed
  * fails the run, and so does a listed route that no longer leaks, so the list
@@ -46,16 +52,62 @@ process.env.NODE_ENV = 'test'
 
 type Role = 'admin' | 'manager' | 'developer'
 
-/** Named per-person data that an admin needs to act on one person. Admin only. */
-const ALLOWED: Record<string, { roles: Role[]; why: string }> = {
-  '/v1/auth/admin/users': { roles: ['admin'], why: 'user admin: invite, role, deactivate' },
-  '/v1/auth/admin/devices': { roles: ['admin'], why: 'device admin: revoke a laptop' },
-  '/v1/dashboard/seats': { roles: ['admin'], why: 'seat admin: who holds a paid seat' },
-  '/v1/dashboard/teams': { roles: ['admin', 'manager'], why: 'team roster for the filter: names only, no usage' },
-  '/v1/dashboard/adoption/unused-seats': { roles: ['admin'], why: 'unused seats: reclaim a licence' },
-  '/v1/dashboard/governance/setup-checks': { roles: ['admin'], why: 'setup checks: fix a security setting' },
+/**
+ * Named per-person data that an admin needs to act on one person. `fields` are
+ * the only keys an object naming someone else may carry on that route, on any
+ * object between the name and the top of the response. Adding a field here is a
+ * privacy decision: it needs a reason in `why`, and /privacy has to say it.
+ */
+const ALLOWED: Record<string, { roles: Role[]; why: string; fields: string[] }> = {
+  '/v1/auth/admin/users': {
+    roles: ['admin'],
+    why: 'user admin: invite, role, delete, spot a broken agent. No usage, no dates of activity',
+    fields: ['id', 'name', 'email', 'role', 'isActive', 'createdAt', 'deviceCount', 'hostnames', 'reporting'],
+  },
+  '/v1/auth/admin/devices': {
+    roles: ['admin'],
+    why: 'device admin: revoke a laptop, check versions',
+    fields: ['id', 'hostname', 'platform', 'userName', 'userEmail', 'revoked', 'agentVersion', 'claudeVersion'],
+  },
+  '/v1/dashboard/seats': {
+    roles: ['admin'],
+    why: 'seat admin: who holds a paid seat. The price is the contract, not usage',
+    fields: ['userId', 'userName', 'userEmail', 'agent', 'monthlyPriceUsd', 'startDate', 'createdAt'],
+  },
+  '/v1/dashboard/teams': {
+    roles: ['admin', 'manager'],
+    why: 'team roster for the filter: names only, no usage',
+    fields: ['id', 'name', 'members', 'userId', 'role'],
+  },
+  '/v1/dashboard/adoption/unused-seats': {
+    roles: ['admin'],
+    why: 'unused seats: reclaim a licence. daysUnused is the reason the row exists (v2 decision 2); org totals sit on the wrapper',
+    fields: ['idleDays', 'rows', 'userId', 'userName', 'agent', 'daysUnused', 'byAgent', 'totalMonthlyUsd', 'orgSeats'],
+  },
+  '/v1/dashboard/governance/setup-checks': {
+    roles: ['admin'],
+    why: 'setup checks: who to help fix a blocked agent or unlisted model',
+    fields: ['policies', 'people', 'rows', 'seenModels', 'userId', 'userName', 'userEmail', 'teams', 'agent', 'modelName', 'reason'],
+  },
   // v2 rule 5: names the people who viewed the caller's data, never anyone's usage.
-  '/v1/dashboard/audit/me': { roles: ['admin', 'manager', 'developer'], why: 'who viewed my data' },
+  '/v1/dashboard/audit/me': {
+    roles: ['admin', 'manager', 'developer'],
+    why: 'who viewed my data: the viewer, when and how often',
+    fields: ['from', 'to', 'rows', 'at', 'lastAt', 'count', 'surface', 'viewer', 'name', 'role', 'scope'],
+  },
+}
+
+/**
+ * Fields that sit next to a name today and should not, keyed `route field`.
+ * A ratchet like KNOWN_LEAKS: a listed field that no longer appears fails the
+ * run, so the list can only shrink.
+ */
+const KNOWN_FIELDS: Record<string, string> = {
+  '/v1/auth/admin/devices lastSeenAt': 'exact last submit per named laptop: presence. Coarsen like admin/users reporting',
+  '/v1/dashboard/governance/setup-checks days': 'usage per named person. The admin needs who and what, not how much',
+  '/v1/dashboard/governance/setup-checks tokens': 'usage per named person',
+  '/v1/dashboard/governance/setup-checks firstDate': 'activity dates per named person',
+  '/v1/dashboard/governance/setup-checks lastDate': 'activity dates per named person',
 }
 
 /**
@@ -338,6 +390,30 @@ function leaksIn(body: string, caller: Person): Person[] {
   return PEOPLE.filter((p) => p !== caller && [p.id, p.email, p.name].some((s) => body.includes(s)))
 }
 
+/**
+ * Keys of every object in `body` that names someone other than the caller,
+ * itself or through anything nested in it. A wrapper such as `{ rows: [...] }`
+ * counts too, so a number one level up from a name is caught as well.
+ */
+function namedKeys(body: string, caller: Person): Set<string> {
+  const others = PEOPLE.filter((p) => p !== caller).flatMap((p) => [p.id, p.email, p.name])
+  const keys = new Set<string>()
+  const walk = (v: unknown): boolean => {
+    if (typeof v === 'string') return others.some((s) => v.includes(s))
+    if (Array.isArray(v)) return v.map(walk).some(Boolean)
+    if (v === null || typeof v !== 'object') return false
+    const named = Object.values(v).map(walk).some(Boolean)
+    if (named) for (const k of Object.keys(v)) keys.add(k)
+    return named
+  }
+  try {
+    walk(JSON.parse(body))
+  } catch {
+    // Not JSON: leaksIn still checks the raw text.
+  }
+  return keys
+}
+
 interface Result {
   route: string
   caller: string
@@ -346,6 +422,8 @@ interface Result {
   status: number
   error?: string
   leaked: Person[]
+  /** Keys on objects that name someone else, from namedKeys. */
+  keys: Set<string>
   body: string
 }
 
@@ -399,7 +477,7 @@ async function main() {
           } catch {
             error = undefined
           }
-          results.push({ route, caller: label, role: caller.role, variant, status: res.statusCode, error, leaked: leaksIn(res.body, caller), body: res.body })
+          results.push({ route, caller: label, role: caller.role, variant, status: res.statusCode, error, leaked: leaksIn(res.body, caller), keys: namedKeys(res.body, caller), body: res.body })
         }
       }
     }
@@ -411,14 +489,25 @@ async function main() {
 
   // Rule: no other person's identity outside the allowlist.
   const leakKeys = new Set<string>()
+  const fieldKeys = new Set<string>()
   for (const r of results) {
     if (r.leaked.length === 0) continue
-    if (ALLOWED[r.route]?.roles.includes(r.role)) continue
+    const allowed = ALLOWED[r.route]
+    if (allowed?.roles.includes(r.role)) {
+      // Allowed to name people, but only with the listed fields.
+      for (const k of r.keys) if (`${r.route} ${k}` in KNOWN_FIELDS) fieldKeys.add(`${r.route} ${k}`)
+      const extra = [...r.keys].filter((k) => !allowed.fields.includes(k) && !(`${r.route} ${k}` in KNOWN_FIELDS))
+      if (extra.length > 0) failures.push(`FIELDS ${r.route} ${r.caller} [${r.variant}] puts ${extra.sort().join(', ')} next to a name`)
+      continue
+    }
     const key = `${r.route} ${r.caller}`
     leakKeys.add(key)
     if (!(key in KNOWN_LEAKS)) {
       failures.push(`LEAK ${key} [${r.variant}] names: ${r.leaked.map((p) => p.name).join(', ')}`)
     }
+  }
+  for (const key of Object.keys(KNOWN_FIELDS)) {
+    if (!fieldKeys.has(key)) failures.push(`STALE known field, remove it from KNOWN_FIELDS: ${key}`)
   }
   for (const key of Object.keys(KNOWN_LEAKS)) {
     if (!leakKeys.has(key)) failures.push(`STALE known leak, remove it from KNOWN_LEAKS: ${key}`)
@@ -472,7 +561,7 @@ async function main() {
     process.exit(1)
   }
   console.log(`PASS: ${statuses.size} routes, ${results.length} calls, no one named outside the allowlist`)
-  console.log(`  ${Object.keys(KNOWN_LEAKS).length} known leaks left`)
+  console.log(`  ${Object.keys(KNOWN_LEAKS).length} known leaks left, ${Object.keys(KNOWN_FIELDS).length} known fields next to names left`)
 }
 
 main().catch((error) => {

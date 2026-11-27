@@ -2268,11 +2268,7 @@ describe('GET /v1/auth/admin/users', () => {
     createdAt: '2026-10-01T00:00:00.000Z',
     deviceCount: 1,
     hostnames: ['laptop-1'],
-    lastSeenAt: '2026-11-05T12:00:00Z',
-    lastSyncDate: '2026-11-04',
-    totalCostUsd: 12.5,
-    totalTokens: 1000,
-    activeDays: 3,
+    reporting: true,
     ...over,
   })
 
@@ -2303,48 +2299,43 @@ describe('GET /v1/auth/admin/users', () => {
     expect(pipeline()[0]).toEqual({ $match: { orgId: ORG_B } })
   })
 
-  it('joins devices and snapshots on the user, each grouped in its own lookup', async () => {
+  it('joins devices only, never usage', async () => {
     await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
-    // The SQL version broke by correlating on the wrong table, which zeroed
-    // every total. Here the join key is spelled out per lookup.
+    // v2 rules 1 and 3: the roster carries no usage, so it reads no snapshots.
     const lookups = pipeline()
       .filter((s) => '$lookup' in s)
       .map((s) => s.$lookup as Record<string, unknown>)
-    expect(lookups.map((l) => [l.from, l.localField, l.foreignField])).toEqual([
-      ['devices', '_id', 'userId'],
-      ['dailySnapshots', '_id', 'userId'],
-    ])
+    expect(lookups.map((l) => [l.from, l.localField, l.foreignField])).toEqual([['devices', '_id', 'userId']])
   })
 
   it('hands back the roster rows unchanged, never an _id', async () => {
     mongoState.aggregates.users = [
-      row({ deviceCount: 0, hostnames: [], lastSeenAt: null, lastSyncDate: null, totalCostUsd: 0, totalTokens: 0, activeDays: 0 }),
+      row({ deviceCount: 0, hostnames: [], reporting: false }),
     ]
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([
-      row({ deviceCount: 0, hostnames: [], lastSeenAt: null, lastSyncDate: null, totalCostUsd: 0, totalTokens: 0, activeDays: 0 }),
+      row({ deviceCount: 0, hostnames: [], reporting: false }),
     ])
     const project = pipeline().at(-1)!.$project as Record<string, unknown>
     expect(project._id).toBe(0)
     expect(project.id).toBe('$_id')
   })
 
-  it('formats timestamps in the database, not through a local-time Date', async () => {
+  it('returns no usage numbers or activity dates, only whether the agent reports', async () => {
     await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
-    const project = pipeline().at(-1)!.$project as Record<string, Record<string, Record<string, unknown>>>
-    expect(project.lastSeenAt.$dateToString.format).toBe('%Y-%m-%dT%H:%M:%SZ')
-    // `date` is already a YYYY-MM-DD string, so the max of it is too.
-    expect(project.lastSyncDate).toEqual({ $ifNull: ['$usage.lastSyncDate', null] })
+    const project = pipeline().at(-1)!.$project as Record<string, unknown>
+    for (const k of ['lastSeenAt', 'lastSyncDate', 'totalCostUsd', 'totalTokens', 'activeDays']) expect(project).not.toHaveProperty(k)
+    expect(project.reporting).toEqual({ $gte: [{ $max: '$devices.lastSeenAt' }, expect.any(Date)] })
   })
 
-  it('ranks by spend, highest first', async () => {
+  it('sorts by name, never by usage', async () => {
     mongoState.aggregates.users = [
-      row({ id: 'a', name: 'Low', totalCostUsd: 1 }),
-      row({ id: 'b', name: 'High', totalCostUsd: 99 }),
+      row({ id: 'b', name: 'Bo' }),
+      row({ id: 'a', name: 'Ada' }),
     ]
     const res = await app.inject({ method: 'GET', url, headers: auth(token({ role: 'admin' })) })
-    expect(res.json().map((u: { name: string }) => u.name)).toEqual(['High', 'Low'])
+    expect(res.json().map((u: { name: string }) => u.name)).toEqual(['Ada', 'Bo'])
   })
 })
 
