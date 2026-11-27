@@ -213,7 +213,7 @@ describe('Who viewed my data', () => {
   })
 
   it('says so when no one has viewed data that includes you', async () => {
-    expect(await render(NOV)).toContain('No one has viewed data that includes you in the last 90 days.')
+    expect(await render(NOV)).toContain('No one has viewed data that includes you in the last 365 days.')
   })
 
   it('shows the rest of the page when the read fails', async () => {

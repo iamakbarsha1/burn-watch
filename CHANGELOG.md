@@ -8,6 +8,17 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v2.1.0 (2026-11-27)
+
+- /privacy: a new section, What an admin sees about you, lists every
+  field an admin's pages return about one named person, the ones still
+  due a fix included (last seen per laptop, and usage on Setup checks). It
+  also says an admin can delete you and all your data.
+- Admin: no Delete button on your own row. The API already refused it.
+- Who viewed my data now covers the last 365 days, as long as view
+  records are kept, instead of 90. `GET /v1/dashboard/audit/me` defaults
+  to 365 days and returns up to 1000 rows (was 200).
+
 ## web-v2.0.0 (2026-11-27)
 
 Breaking API change. The admin roster no longer carries usage.

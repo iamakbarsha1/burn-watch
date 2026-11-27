@@ -17,6 +17,20 @@ const WONT = [
   'Read your prompts or your code.',
 ]
 
+// What GET routes an admin can call return about one named person. Kept in step
+// with ALLOWED and KNOWN_FIELDS in apps/api/src/scripts/no-individuals.ts.
+const ADMIN_SEES = [
+  'Your name, email and role, and whether your login is turned on.',
+  'The date your account was made.',
+  'Your laptops: how many, their names and operating system, and the agent and Claude Code versions on each.',
+  'When each of your laptops last sent usage, on the Devices page.',
+  'Whether your agent has sent anything in the last 7 days, on the Admin page. Not when.',
+  'The teams you are in, and whether you manage one.',
+  'Your paid seats: agent, monthly price and start date.',
+  'On Unused seats: how many days a paid seat of yours has gone unused.',
+  'On Setup checks: an agent or model you used outside the org\'s rules, on how many days, how many tokens, and the first and last date.',
+]
+
 const SEES: Record<Audience, [boolean, boolean, boolean]> = {
   scoped: [true, true, true],
   self: [true, false, false],
@@ -51,6 +65,22 @@ export default function PrivacyPage() {
             <li key={line}>{line}</li>
           ))}
         </ul>
+      </Section>
+
+      <Section
+        title="What an admin sees about you"
+        description="Admins manage logins, laptops and seats, so some pages name you. This is all of it. Admins never see your cost, tokens or active days anywhere else, and no list sorts people by usage."
+      >
+        <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
+          {ADMIN_SEES.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+        <p className="mt-3 text-sm text-ink-2">
+          An admin can delete you. That removes your usage history, daily totals, seats, team places,
+          laptops and their tokens, invites and your login. It cannot be undone. Past org and team totals
+          drop by your share. The audit log keeps its rows about you.
+        </p>
       </Section>
 
       <p className="text-sm text-ink-2">

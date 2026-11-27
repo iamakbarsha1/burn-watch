@@ -139,7 +139,7 @@ function WhoViewed({ audit }: { audit: AuditMeResponse | null }) {
   return (
     <Section
       title="Who viewed my data"
-      description="Views that included you: the whole org, a team you are in, or the teams your manager runs. Each view counts the people it covered at the time. Views before 2026-11-27 go by the teams you are in today."
+      description="Views that included you: the whole org, a team you are in, or the teams your manager runs. Each view counts the people it covered at the time. Views before 2026-11-27 go by the teams you are in today. Covers the last 365 days, as long as view records are kept."
     >
       {audit === null ? (
         <p className="text-sm text-ink-2">Could not read who viewed your data. Try again in a moment.</p>
@@ -157,7 +157,7 @@ function WhoViewed({ audit }: { audit: AuditMeResponse | null }) {
             </thead>
             <tbody>
               {audit.rows.length === 0 ? (
-                <EmptyRow colSpan={5}>No one has viewed data that includes you in the last 90 days.</EmptyRow>
+                <EmptyRow colSpan={5}>No one has viewed data that includes you in the last 365 days.</EmptyRow>
               ) : (
                 audit.rows.map((r, i) => (
                   <Tr key={i}>
