@@ -104,7 +104,7 @@ export default async function AdoptionPage({ searchParams }: { searchParams: Pro
 
         <DistributionSection data={distribution} />
 
-        <FunnelSection data={funnel} />
+        <FunnelSection data={funnel} hasTeams={teams.length > 0} />
 
         <OnboardingSection data={onboarding} />
 
@@ -277,7 +277,7 @@ function FunnelRow({ name, c, bars = false }: { name: string; c: FunnelCounts; b
   )
 }
 
-function FunnelSection({ data }: { data: FunnelResponse | null }) {
+function FunnelSection({ data, hasTeams }: { data: FunnelResponse | null; hasTeams: boolean }) {
   return (
     <Section
       title="Funnel"
@@ -303,7 +303,7 @@ function FunnelSection({ data }: { data: FunnelResponse | null }) {
                 <FunnelRow name="Total" c={data.total} bars />
                 {data.noTeam && data.teams.length === 0 && (
                   <EmptyRow colSpan={6}>
-                    No teams yet. Create them in{' '}
+                    {hasTeams ? `No team has ${MIN_GROUP_SIZE} or more members yet. Add people in` : 'No teams yet. Create them in'}{' '}
                     <Link href="/admin" className="text-brand underline-offset-4 hover:underline">
                       Admin &gt; Teams
                     </Link>
@@ -408,7 +408,8 @@ const FEATURES: Record<FeatureKey, string> = {
 /** Share of the group that used a feature; SDK counts only people whose agent reports it. */
 function shareOf(c: FeatureCounts, key: FeatureKey) {
   const of = key === 'sdk' ? c.sdkKnown : c.users
-  return of === 0 ? '—' : `${Math.round((c.used[key] / of) * 100)}%`
+  // Null under MIN_GROUP_SIZE users: a share of 2 people would point at one of them.
+  return of === 0 || c.used === null ? '—' : `${Math.round((c.used[key] / of) * 100)}%`
 }
 
 function FeatureRow({ name, c }: { name: string; c: FeatureCounts }) {
@@ -429,7 +430,7 @@ function FeaturesSection({ data }: { data: FeatureMatrixResponse | null }) {
   return (
     <Section
       title="Features"
-      description={`Share of Claude Code users in each group who used a feature on at least one day in this range. Counts only, no names. SDK needs agent 0.4 or later, so its share counts only people whose agent reports it. Teams show from ${MIN_GROUP_SIZE} members.`}
+      description={`Share of Claude Code users in each group who used a feature on at least one day in this range. Counts only, no names. SDK needs agent 0.4 or later, so its share counts only people whose agent reports it. Teams show from ${MIN_GROUP_SIZE} members. A group with fewer than ${MIN_GROUP_SIZE} Claude Code users shows its count, not its shares.`}
     >
       <TableFrame>
         <table className="w-full">

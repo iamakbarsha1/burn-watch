@@ -162,6 +162,12 @@ describe('Your setup', () => {
     expect(html).toContain('Nothing to note')
   })
 
+  it('says admins see seats and setup checks without the days', async () => {
+    const html = await render(NOV)
+    expect(html).toContain('Admins see your seats and setup checks by name, but not the days.')
+    expect(html).not.toContain('Admins see the same')
+  })
+
   it('shows own seats, free-tier use, setup checks and account flags in plain words', async () => {
     state.usage = usage({
       seats: [

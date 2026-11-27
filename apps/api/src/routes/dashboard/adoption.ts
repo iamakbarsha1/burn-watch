@@ -18,6 +18,7 @@ import {
   MIN_GROUP_SIZE,
   PRACTICE_RANKS,
   type AgentName,
+  type FeatureCounts,
   type FeatureMatrixResponse,
   type FunnelCounts,
   type FunnelResponse,
@@ -435,16 +436,21 @@ export async function adoptionRoutes(fastify: FastifyInstance) {
     const teamRows = await bigTeams(orgId, teams.filter((team) => !teamId || team._id === teamId))
     const noTeam = role === 'admin' && !teamId ? bigEnough(people.filter((p) => p.teamIds.length === 0)) : null
 
+    // v2 rule 2 at row level: under MIN_GROUP_SIZE Claude Code users, the count but no shares.
+    const counts = (group: typeof people): FeatureCounts => {
+      const c = countFeatures(group)
+      return c.users < MIN_GROUP_SIZE ? { ...c, used: null } : c
+    }
     return {
       from,
       to,
-      total: countFeatures(people),
+      total: counts(people),
       teams: teamRows.map((team) => ({
         teamId: team._id,
         teamName: team.name,
-        ...countFeatures(people.filter((p) => p.teamIds.includes(team._id))),
+        ...counts(people.filter((p) => p.teamIds.includes(team._id))),
       })),
-      noTeam: noTeam && countFeatures(noTeam),
+      noTeam: noTeam && counts(noTeam),
     } satisfies FeatureMatrixResponse
   })
 

@@ -3372,7 +3372,7 @@ describe('GET /v1/dashboard/governance/free-tier', () => {
   // One group per (agent, model), with the people in it for counting.
   const seedGroups = () => {
     mongoState.aggregates.usageEvents = [
-      { _id: { agent: 'qwen', modelName: 'coder-model' }, users: [USER_A, USER_B], days: 3, tokens: 900 },
+      { _id: { agent: 'qwen', modelName: 'coder-model' }, users: [USER_A, USER_B, 'u3', 'u4', 'u5'], days: 3, tokens: 900 },
       { _id: { agent: 'claude', modelName: 'claude-new' }, users: [USER_B], days: 1, tokens: 100 },
     ]
     mongoState.docs.users = [
@@ -3419,11 +3419,12 @@ describe('GET /v1/dashboard/governance/free-tier', () => {
     for (const role of ['admin', 'manager'] as const) {
       const res = await get(role)
       expect(res.statusCode).toBe(200)
+      // v2 rule 2 at row level: the one-person row keeps its count, not its days or tokens.
       expect(res.json()).toEqual({
-        people: 2,
+        people: 5,
         rows: [
-          { agent: 'qwen', modelName: 'coder-model', reason: 'free-tier-agent', people: 2, days: 3, tokens: 900 },
-          { agent: 'claude', modelName: 'claude-new', reason: 'unpriced-model', people: 1, days: 1, tokens: 100 },
+          { agent: 'qwen', modelName: 'coder-model', reason: 'free-tier-agent', people: 5, days: 3, tokens: 900 },
+          { agent: 'claude', modelName: 'claude-new', reason: 'unpriced-model', people: 1, days: null, tokens: null },
         ],
       })
       for (const leak of [USER_A, USER_B, 'Ada', 'Bo', 'ada@x.test', 'bo@x.test', 'Platform']) expect(res.body).not.toContain(leak)
@@ -3460,7 +3461,7 @@ describe('GET /v1/dashboard/governance/mcp', () => {
 
   const seed = () => {
     mongoState.aggregates.claudeEnrichment = [
-      { _id: 'playwright', calls: 40, people: 2, days: 2, lastDate: '2026-11-05' },
+      { _id: 'playwright', calls: 40, people: 5, days: 2, lastDate: '2026-11-05' },
       { _id: 'plugin_vercel_vercel', calls: 9, people: 1, days: 1, lastDate: '2026-11-04' },
       { _id: 'claude_ai_Neon', calls: 3, people: 1, days: 1, lastDate: '2026-11-03' },
       { _id: '1a59c906-04da-521d-bda7-7f71b9f9e01c', calls: 1, people: 1, days: 1, lastDate: '2026-11-02' },
@@ -3504,11 +3505,13 @@ describe('GET /v1/dashboard/governance/mcp', () => {
       source: 'local',
       approved: true,
       note: 'browser tests',
-      people: 2,
+      people: 5,
       calls: 40,
       days: 2,
       lastDate: '2026-11-05',
     })
+    // v2 rule 2 at row level: a one-person server keeps its count, not its calls, days or last date.
+    expect(body.servers[1]).toMatchObject({ server: 'plugin_vercel_vercel', people: 1, calls: null, days: null, lastDate: null })
     expect(body.servers.map((s: { source: string; approved: boolean }) => [s.source, s.approved])).toEqual([
       ['local', true],
       ['plugin', false],
@@ -3623,7 +3626,12 @@ describe('GET /v1/dashboard/governance/accounts', () => {
     expect(callsTo(mongoState, 'seats', 'find')[0][0]).toEqual({ orgId: ORG_A, agent: 'claude' })
     const body = res.json()
     expect(body).toMatchObject({ coverage: { users: 3, hashed: 2 }, companyOrgSet: true, seatsEntered: 1, companyOrgUsers: 1 })
-    expect(body.accounts).toEqual([{ label: 'Account 1', users: 2, days: 1, shared: true }])
+    // v2 rule 2 at row level: rows under 5 people keep their count, not their days.
+    expect(body.accounts).toEqual([{ label: 'Account 1', users: 2, days: null, shared: true }])
+    expect(body.orgs.map((o: { users: number; days: number | null }) => [o.users, o.days])).toEqual([
+      [1, null],
+      [1, null],
+    ])
     expect(body.orgs.map((o: { label: string; ours: boolean; includesYou: boolean }) => [o.label, o.ours, o.includesYou])).toEqual([
       ['Claude org 1', true, true],
       ['Claude org 2', false, false],
@@ -4195,8 +4203,9 @@ describe('GET /v1/dashboard/adoption/features', () => {
     expect(Object.keys(opts.projection)).not.toContain('accountHashes')
     // Names are not even read.
     expect(callsTo(mongoState, 'users', 'find')[0][1]).toEqual({ projection: { _id: 1 } })
-    const ada = { users: 1, used: { ...none, mcp: 1, skills: 1, subagents: 1 }, sdkKnown: 1 }
-    expect(body.total).toEqual({ users: 2, used: { ...none, mcp: 1, skills: 1, subagents: 1 }, sdkKnown: 1 })
+    // v2 rule 2 at row level: under 5 Claude Code users, the count but no feature counts.
+    const ada = { users: 1, used: null, sdkKnown: 1 }
+    expect(body.total).toEqual({ users: 2, used: null, sdkKnown: 1 })
     expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', ...ada }])
     // Bo alone in no team: under 5, so no row.
     expect(body.noTeam).toBeNull()
@@ -4236,7 +4245,7 @@ describe('GET /v1/dashboard/adoption/features', () => {
     const [filter] = callsTo(mongoState, 'claudeEnrichment', 'find')[0] as [{ userId: { $in: string[] } }]
     expect(filter.userId.$in.sort()).toEqual([USER_A, USER_B, ...PEERS].sort())
     expect(body.noTeam).toBeNull()
-    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', users: 2, used: none, sdkKnown: 0 }])
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', users: 2, used: null, sdkKnown: 0 }])
     for (const leak of [USER_A, USER_B, ...PEERS, 'Ada', 'Bo']) expect(res.body).not.toContain(leak)
   })
 
@@ -4251,7 +4260,7 @@ describe('GET /v1/dashboard/adoption/features', () => {
     mongoState.docs.users = [{ _id: USER_A, name: 'Ada' }]
     const body = (await get('admin', `${URL}&teamId=${TEAM_A}`)).json()
     expect(body.noTeam).toBeNull()
-    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', users: 1, used: none, sdkKnown: 0 }])
+    expect(body.teams).toEqual([{ teamId: TEAM_A, teamName: 'Platform', users: 1, used: null, sdkKnown: 0 }])
   })
 
   it('answers an empty matrix without reading users when no one used Claude Code', async () => {

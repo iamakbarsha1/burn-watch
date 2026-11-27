@@ -1,7 +1,8 @@
 /**
  * v2 rule check: no dashboard response names another person, unless the route
  * is an admin operation on the allowlist below. Also checks the minimum group
- * size: a scoped read over fewer than MIN_GROUP_SIZE people is refused.
+ * size: a scoped read over fewer than MIN_GROUP_SIZE people is refused, and a
+ * row inside an allowed read that covers fewer keeps its count but not its numbers.
  *
  * Runs against a real MongoDB, like dashboard-pipelines. The route tests' fake
  * store ignores filters and returns one canned aggregate per collection, so a
@@ -42,6 +43,7 @@ import {
   type TeamId,
   type UserId,
 } from '@burn-watch/db'
+import { MIN_GROUP_SIZE } from '@burn-watch/shared'
 import type { FastifyInstance } from 'fastify'
 import type { JwtPayload } from '../plugins/jwt.js'
 
@@ -351,7 +353,8 @@ function payload(p: Person, date: IsoDate) {
       topSessions: [],
       toolUsage: { Read: 20, Edit: 10, Task: 2, TodoWrite: 1 },
       shellUsage: { git: 4, npm: 2 },
-      mcpUsage: { github: 3 },
+      // One person alone on a server: its row must keep the count only.
+      mcpUsage: p.freeTier ? { github: 3, 'solo-server': 2 } : { github: 3 },
       limitHitCount: p.limitHits ?? 0,
       claudeVersions: { '1.9.0': 40 },
       entrypointCounts: { cli: 40 },
@@ -377,6 +380,33 @@ async function ingest(app: FastifyInstance) {
       if (res.statusCode >= 300) throw new Error(`ingest ${p.name} ${dayOffset(-i)}: ${res.statusCode} ${res.body}`)
     }
   }
+}
+
+/** Numbers a row may not carry when it covers 1 to MIN_GROUP_SIZE - 1 people. */
+const SMALL_ROW_HIDDEN = ['days', 'tokens', 'calls', 'lastDate', 'used']
+
+/**
+ * Objects with a `people` or `users` count from 1 to MIN_GROUP_SIZE - 1 that
+ * still carry a number from SMALL_ROW_HIDDEN, as `key=value` paths.
+ */
+function smallRowNumbers(body: string): string[] {
+  const found: string[] = []
+  const walk = (v: unknown, path: string) => {
+    if (Array.isArray(v)) return v.forEach((x, i) => walk(x, `${path}[${i}]`))
+    if (v === null || typeof v !== 'object') return
+    const o = v as Record<string, unknown>
+    const n = typeof o.people === 'number' ? o.people : typeof o.users === 'number' ? o.users : null
+    if (n !== null && n >= 1 && n < MIN_GROUP_SIZE) {
+      for (const k of SMALL_ROW_HIDDEN) if (o[k] !== undefined && o[k] !== null) found.push(`${path}.${k} (${n} people)`)
+    }
+    for (const [k, x] of Object.entries(o)) walk(x, `${path}.${k}`)
+  }
+  try {
+    walk(JSON.parse(body), '')
+  } catch {
+    // Not JSON: nothing to walk.
+  }
+  return found
 }
 
 /** Every identity string a response could carry for someone other than the caller. */
@@ -505,6 +535,13 @@ async function main() {
   }
   for (const key of Object.keys(KNOWN_LEAKS)) {
     if (!leakKeys.has(key)) failures.push(`STALE known leak, remove it from KNOWN_LEAKS: ${key}`)
+  }
+
+  // Rule: a row covering fewer than MIN_GROUP_SIZE people keeps its count, not
+  // its numbers. A developer only ever reads their own data, and so does /me/usage.
+  for (const r of results) {
+    if (r.status !== 200 || r.role === 'developer' || r.route === '/v1/dashboard/me/usage') continue
+    for (const f of smallRowNumbers(r.body)) failures.push(`SMALL ROW ${r.route} ${r.caller} [${r.variant}] ${f}`)
   }
 
   // Rule: a read over fewer than MIN_GROUP_SIZE people is refused, and only

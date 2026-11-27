@@ -508,9 +508,10 @@ export interface FreeTierModelRow {
   reason: FreeTierReason
   /** People with use of this model in range. 1 on `/me/usage`. */
   people: number
-  /** Distinct days with use in the range. */
-  days: number
-  tokens: number
+  /** Distinct days with use in the range. Null when `people` is under MIN_GROUP_SIZE (not on `/me/usage`). */
+  days: number | null
+  /** Null when `people` is under MIN_GROUP_SIZE (not on `/me/usage`). */
+  tokens: number | null
 }
 
 export interface FreeTierResponse {
@@ -568,10 +569,11 @@ export interface McpServerRow {
   note: string | null
   /** Distinct people who called it in range. No names (v2 Phase 3). */
   people: number
-  calls: number
+  /** calls, days and lastDate are null when `people` is under MIN_GROUP_SIZE. */
+  calls: number | null
   /** Distinct days with a call in the range. */
-  days: number
-  lastDate: string
+  days: number | null
+  lastDate: string | null
 }
 
 export interface McpInventoryResponse {
@@ -590,7 +592,8 @@ export interface ClaudeOrgRow {
   /** "Claude org 1", stable only within one range. */
   label: string
   users: number
-  days: number
+  /** Null on Governance when `users` is under MIN_GROUP_SIZE. */
+  days: number | null
   ours: boolean
   /** The viewer's own days carry this org. */
   includesYou: boolean
@@ -607,7 +610,8 @@ export interface ClaudeAccountsResponse {
   /** People with a day on a company org. Null when the company org is not set. */
   companyOrgUsers: number | null
   orgs: ClaudeOrgRow[]
-  accounts: { label: string; users: number; days: number; shared: boolean }[]
+  /** `days` is null when `users` is under MIN_GROUP_SIZE. */
+  accounts: { label: string; users: number; days: number | null; shared: boolean }[]
   /** People per flag. No names (v2 Phase 3); each person sees their own flags on My usage. */
   flagCounts: Record<ClaudeAccountFlag, number>
 }
@@ -676,8 +680,8 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number]
 export interface FeatureCounts {
   /** People with at least one Claude Code day in range. */
   users: number
-  /** People who used each feature on at least one day. */
-  used: Record<FeatureKey, number>
+  /** People who used each feature on at least one day. Null when `users` is under MIN_GROUP_SIZE. */
+  used: Record<FeatureKey, number> | null
   /** People with a day from agent 0.4.0+, the only ones whose SDK use is known. */
   sdkKnown: number
 }

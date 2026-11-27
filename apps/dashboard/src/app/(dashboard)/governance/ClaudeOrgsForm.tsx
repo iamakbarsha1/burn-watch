@@ -28,7 +28,7 @@ export function ClaudeOrgsForm({ orgs }: { orgs: ClaudeOrgRow[] }) {
                   {o.includesYou && <span className="ml-2 text-xs text-ink-2">includes you</span>}
                 </Td>
                 <Td numeric>{o.users}</Td>
-                <Td numeric>{o.days}</Td>
+                <Td numeric>{o.days ?? '—'}</Td>
                 <Td>
                   <input type="checkbox" name="ids" value={o.id} defaultChecked={o.ours} aria-label={`${o.label} is the company's`} />
                 </Td>

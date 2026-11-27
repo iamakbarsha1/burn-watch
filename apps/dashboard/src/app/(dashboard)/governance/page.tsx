@@ -10,13 +10,16 @@ import { pickTeam } from '@/lib/teams'
 import { getUserRole } from '@/lib/session'
 import { TeamFilter } from '@/components/TeamFilter'
 import { GroupTooSmall, PageHeader, Section, TableFrame, Th, Td, Tr, EmptyRow, Badge } from '@/components/ui'
-import type { AgentPolicyRule, ClaudeAccountFlag, McpServerSource, SetupCheckReason, SetupChecksResponse } from '@burn-watch/shared'
+import { MIN_GROUP_SIZE, type AgentPolicyRule, type ClaudeAccountFlag, type McpServerSource, type SetupCheckReason, type SetupChecksResponse } from '@burn-watch/shared'
 import { McpApprovalButton } from './McpApprovalButton'
 import { AgentPolicyForm } from './AgentPolicyForm'
 import { ClaudeOrgsForm } from './ClaudeOrgsForm'
 
 // Shown whatever the list holds, so an empty list is never read as "nobody
 // uses Gemini's free tier". Remove when BW-43 ships.
+/** v2 rule 2: a row covering fewer people than this shows its count, not its numbers. */
+const SMALL_ROW_NOTE = `A dash means the row covers fewer than ${MIN_GROUP_SIZE} people, so only the count shows.`
+
 const GEMINI_NOTE =
   'Gemini on a personal Google login is free, but it is not detected yet: those rows carry a list-price cost and are not flagged (BW-43).'
 
@@ -144,8 +147,8 @@ export default async function GovernancePage({
                       )}
                     </Td>
                     <Td numeric>{r.people}</Td>
-                    <Td numeric>{r.days}</Td>
-                    <Td numeric>{formatTokens(r.tokens)}</Td>
+                    <Td numeric>{r.days ?? '—'}</Td>
+                    <Td numeric>{r.tokens === null ? '—' : formatTokens(r.tokens)}</Td>
                   </Tr>
                 ))
               )}
@@ -154,7 +157,7 @@ export default async function GovernancePage({
         </TableFrame>
         <p className="mt-3 text-xs text-ink-2">
           &ldquo;Unpriced model&rdquo; means the agent found no price for the model, so it may not
-          be a free tier. {GEMINI_NOTE}
+          be a free tier. {SMALL_ROW_NOTE} {GEMINI_NOTE}
         </p>
       </Section>
 
@@ -200,9 +203,9 @@ export default async function GovernancePage({
                     </Td>
                     <Td className="text-ink-2">{SOURCE_LABEL[s.source]}</Td>
                     <Td numeric>{s.people}</Td>
-                    <Td numeric>{s.calls}</Td>
-                    <Td numeric>{s.days}</Td>
-                    <Td numeric>{s.lastDate}</Td>
+                    <Td numeric>{s.calls ?? '—'}</Td>
+                    <Td numeric>{s.days ?? '—'}</Td>
+                    <Td numeric>{s.lastDate ?? '—'}</Td>
                     <Td>{s.approved ? <Badge tone="good">approved</Badge> : <Badge tone="warn">not approved</Badge>}</Td>
                     {isAdmin && (
                       <Td>
@@ -215,6 +218,7 @@ export default async function GovernancePage({
             </tbody>
           </table>
         </TableFrame>
+        <p className="mt-3 text-xs text-ink-2">{SMALL_ROW_NOTE}</p>
 
         {mcp && mcp.unusedApprovals.length > 0 && (
           <div className="mt-4">
@@ -357,6 +361,7 @@ function ClaudeAccountsSection({ data }: { data: Awaited<ReturnType<typeof fetch
                 <p className="mb-3 text-sm text-ink-2">Mark your company&rsquo;s Claude org to see personal-account use.</p>
               )}
               <ClaudeOrgsForm orgs={data.orgs} />
+              <p className="mt-3 text-xs text-ink-2">{SMALL_ROW_NOTE}</p>
             </>
           )}
 

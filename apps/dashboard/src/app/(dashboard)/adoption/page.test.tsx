@@ -225,6 +225,14 @@ describe('AdoptionPage funnel', () => {
     expect(html.indexOf('Total')).toBeLessThan(html.indexOf('>No team<'))
   })
 
+  it('says no team is big enough, not that there are none, when every team is under 5', async () => {
+    state.teams = [{ id: 't1', name: 'Al-Sorat', members: [] }]
+    state.funnel = funnel()
+    const html = await render()
+    expect(html).toContain('No team has 5 or more members yet. Add people in')
+    expect(html).not.toContain('No teams yet')
+  })
+
   it('shows a dash when the previous stage is zero', async () => {
     state.funnel = funnel({ total: counts(2, 0, 0, 0, 0, 0), noTeam: null })
     const html = await render()
@@ -315,6 +323,14 @@ describe('AdoptionPage funnel', () => {
       expect(html).toMatch(/Total<\/td>(?:(?!<\/tr>).)*—/)
       expect(html).toMatch(/Platform<\/td>(?:(?!<\/tr>).)*0%<\/td><\/tr>/)
       expect(html).not.toContain(' of 2')
+    })
+
+    it('shows the user count and dashes, not shares, for a group under 5 users', async () => {
+      state.features = matrix({ total: { users: 2, used: null, sdkKnown: 1 }, teams: [] })
+      const html = await render()
+      expect(html).toMatch(/Total<\/td><td[^>]*>2<\/td>(?:<td[^>]*>—<\/td>){5}<\/tr>/)
+      expect(html).not.toMatch(/Total<\/td>(?:(?!<\/tr>).)*%/)
+      expect(html).toContain('A group with fewer than 5 Claude Code users shows its count, not its shares.')
     })
 
     it('has no per-person grid', async () => {
