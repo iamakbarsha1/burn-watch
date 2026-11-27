@@ -105,20 +105,30 @@ export function freeTierPipeline(orgId: OrgId, from: IsoDate, to: IsoDate, userI
  */
 export const isSmall = (people: number, minPeople = MIN_GROUP_SIZE) => people < minPeople
 
+/**
+ * Rows in usage order, except rows under `minPeople`: those go last, by name, so
+ * their order cannot rank one person's usage either.
+ */
+export function smallRowsByName<T extends { people: number }>(rows: T[], name: (r: T) => string, minPeople = MIN_GROUP_SIZE): T[] {
+  const small = rows.filter((r) => isSmall(r.people, minPeople)).sort((a, b) => name(a).localeCompare(name(b)))
+  return [...rows.filter((r) => !isSmall(r.people, minPeople)), ...small]
+}
+
 export function freeTierRows(groups: ModelGroup[], minPeople = MIN_GROUP_SIZE): FreeTierResponse {
+  const rows = groups.map<FreeTierModelRow>((g) => {
+    const small = isSmall(g.users.length, minPeople)
+    return {
+      agent: g._id.agent,
+      modelName: g._id.modelName,
+      reason: FREE_TIER_AGENTS.has(g._id.agent) ? 'free-tier-agent' : 'unpriced-model',
+      people: g.users.length,
+      days: small ? null : g.days,
+      tokens: small ? null : g.tokens,
+    }
+  })
   return {
     people: new Set(groups.flatMap((g) => g.users)).size,
-    rows: groups.map<FreeTierModelRow>((g) => {
-      const small = isSmall(g.users.length, minPeople)
-      return {
-        agent: g._id.agent,
-        modelName: g._id.modelName,
-        reason: FREE_TIER_AGENTS.has(g._id.agent) ? 'free-tier-agent' : 'unpriced-model',
-        people: g.users.length,
-        days: small ? null : g.days,
-        tokens: small ? null : g.tokens,
-      }
-    }),
+    rows: smallRowsByName(rows, (r) => `${r.agent} ${r.modelName}`, minPeople),
   }
 }
 
@@ -301,7 +311,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
 
     const approvalOf = new Map(approvals.map((a) => [a.server, a]))
 
-    const servers = groups.map<McpServerRow>((g) => {
+    const rows = groups.map<McpServerRow>((g) => {
       const small = isSmall(g.people)
       return {
         server: g._id,
@@ -314,6 +324,7 @@ export async function governanceRoutes(fastify: FastifyInstance) {
         lastDate: small ? null : g.lastDate,
       }
     })
+    const servers = smallRowsByName(rows, (r) => r.server)
     const used = new Set(groups.map((g) => g._id))
     const unusedApprovals = approvals
       .filter((a) => !used.has(a.server))

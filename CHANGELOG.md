@@ -8,6 +8,15 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v2.4.1 (2026-11-27)
+
+- Governance: Free-tier and MCP server rows under 5 people now come after the
+  bigger rows, sorted by name. Before, they kept the usage order, so with
+  every row at one person the order still ranked that person's use. Bigger
+  rows keep their usage order.
+- CI: the no-individuals check fails when small rows sit in usage order or
+  before a bigger row, and seeds two one-person models and servers to test it.
+
 ## web-v2.4.0 (2026-11-27)
 
 Breaking API change. A row that covers fewer than 5 people keeps its people

@@ -154,6 +154,11 @@ interface Person {
   newHire?: boolean
   personalAccount?: boolean
   freeTier?: boolean
+  /**
+   * Alone on a model and an MCP server whose names sort before the free-tier
+   * person's, with less use: usage order and name order then disagree.
+   */
+  soloUse?: boolean
   limitHits?: number
 }
 
@@ -173,7 +178,7 @@ const BIG_MGR = person('bigmgr', 'Wendell Bigmanager', 'manager', 10)
 const SMALL_MGR = person('smallmgr', 'Thaddea Smallmanager', 'manager', 4)
 const BIG_DEVS = [
   person('b1', 'Ysolde Heavyuser', 'developer', 14, { limitHits: 3 }),
-  person('b2', 'Corvin Personalacct', 'developer', 9, { personalAccount: true }),
+  person('b2', 'Corvin Personalacct', 'developer', 9, { personalAccount: true, soloUse: true }),
   person('b3', 'Elspeth Freetier', 'developer', 6, { freeTier: true }),
   person('b4', 'Bramwell Newhire', 'developer', 2, { newHire: true }),
   person('b5', 'Odalys Neverused', 'developer', 0),
@@ -324,6 +329,7 @@ function payload(p: Person, date: IsoDate) {
   })
   const events = [event('claude', 'claude-sonnet-4', 40_000, 2.5, false)]
   if (p.freeTier) events.push(event('qwen', 'qwen3-coder', 10_000, 0, true))
+  if (p.soloUse) events.push(event('qwen', 'coder-solo', 1_000, 0, true))
   return {
     deviceId: p.device,
     date,
@@ -353,8 +359,8 @@ function payload(p: Person, date: IsoDate) {
       topSessions: [],
       toolUsage: { Read: 20, Edit: 10, Task: 2, TodoWrite: 1 },
       shellUsage: { git: 4, npm: 2 },
-      // One person alone on a server: its row must keep the count only.
-      mcpUsage: p.freeTier ? { github: 3, 'solo-server': 2 } : { github: 3 },
+      // One person alone on a server: its row must keep the count only, and sort by name.
+      mcpUsage: p.freeTier ? { github: 3, 'solo-server': 2 } : p.soloUse ? { github: 3, 'aaa-solo': 1 } : { github: 3 },
       limitHitCount: p.limitHits ?? 0,
       claudeVersions: { '1.9.0': 40 },
       entrypointCounts: { cli: 40 },
@@ -407,6 +413,27 @@ function smallRowNumbers(body: string): string[] {
     // Not JSON: nothing to walk.
   }
   return found
+}
+
+/** Routes whose rows sort by usage, with the list key and each row's name. */
+const SMALL_ROW_ORDER: Record<string, { list: string; name: (r: Record<string, unknown>) => string }> = {
+  '/v1/dashboard/governance/free-tier': { list: 'rows', name: (r) => `${r.agent} ${r.modelName}` },
+  '/v1/dashboard/governance/mcp': { list: 'servers', name: (r) => String(r.server) },
+}
+
+/**
+ * Small rows must follow every big row and sort by name, so their order cannot
+ * rank one person's usage. Returns why the order is wrong, or null.
+ */
+function smallRowOrder(route: string, body: string): string | null {
+  const spec = SMALL_ROW_ORDER[route]
+  if (!spec) return null
+  const rows = (JSON.parse(body) as Record<string, Record<string, unknown>[]>)[spec.list] ?? []
+  const small = rows.map((r) => (r.people as number) < MIN_GROUP_SIZE)
+  if (small.some((s, i) => s && !small[i + 1] && i + 1 < small.length)) return 'a small row comes before a big one'
+  const names = rows.filter((_, i) => small[i]).map(spec.name)
+  const sorted = [...names].sort((a, b) => a.localeCompare(b))
+  return names.join('|') === sorted.join('|') ? null : `small rows in usage order: ${names.join(', ')}`
 }
 
 /** Every identity string a response could carry for someone other than the caller. */
@@ -542,6 +569,14 @@ async function main() {
   for (const r of results) {
     if (r.status !== 200 || r.role === 'developer' || r.route === '/v1/dashboard/me/usage') continue
     for (const f of smallRowNumbers(r.body)) failures.push(`SMALL ROW ${r.route} ${r.caller} [${r.variant}] ${f}`)
+    const order = smallRowOrder(r.route, r.body)
+    if (order) failures.push(`SMALL ROW ORDER ${r.route} ${r.caller} [${r.variant}] ${order}`)
+  }
+  // The order check needs two small rows whose usage and name orders differ.
+  for (const route of Object.keys(SMALL_ROW_ORDER)) {
+    const r = results.find((x) => x.route === route && x.caller === 'admin' && x.variant === 'org')
+    const list = r && (JSON.parse(r.body) as Record<string, { people: number }[]>)[SMALL_ROW_ORDER[route].list]
+    if (!list || list.filter((x) => x.people < MIN_GROUP_SIZE).length < 2) failures.push(`SMALL ROW ORDER ${route}: seed has fewer than 2 small rows`)
   }
 
   // Rule: a read over fewer than MIN_GROUP_SIZE people is refused, and only
