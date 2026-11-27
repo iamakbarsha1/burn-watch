@@ -8,6 +8,30 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v2.0.0 (2026-11-27)
+
+Breaking API change. The admin roster no longer carries usage.
+
+- Admin: the Team table drops the Days, Tokens and Value columns and the
+  Last sync column, and lists people by name. Status now reads Disabled,
+  Not set up, Reporting, or Not reporting for 7+ days. That is enough to
+  spot a broken agent without showing when each person was last active.
+  The All-time value tile is now a Not reporting count. Org totals stay
+  on Overview.
+- API: `GET /v1/auth/admin/users` drops `lastSeenAt`, `lastSyncDate`,
+  `totalCostUsd`, `totalTokens` and `activeDays`, and adds `reporting`
+  (true when any of the person's devices submitted in the last 7 days).
+  It sorts by name, not by cost. Before this, admins still had a cost
+  ranking of named people, which broke v2 rules 1 and 3.
+- CI: the no-individuals check now lists, for each allowlisted named
+  route, the fields it may return. Any object that names someone else may
+  carry only those keys, so a usage number next to a name fails the run,
+  even on an admin route. Five fields that still sit next to names are
+  listed in `KNOWN_FIELDS` as a ratchet: `lastSeenAt` on
+  `/v1/auth/admin/devices`, and `days`, `tokens`, `firstDate`, `lastDate`
+  on `/v1/dashboard/governance/setup-checks`.
+- No migration. No schema sync.
+
 ## web-v1.2.0 (2026-11-27)
 
 - Admin: a Delete button on each person in the Team table. After a

@@ -9,7 +9,7 @@ import {
   fetchTeams,
   fetchSeats,
 } from '@/lib/api'
-import { formatCost, formatTokens, formatAgo, today } from '@/lib/format'
+import { today } from '@/lib/format'
 import { InviteForm } from './InviteForm'
 import { BulkInviteForm } from './BulkInviteForm'
 import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
@@ -52,7 +52,7 @@ export default async function AdminPage() {
   const firstOfMonth = `${today().slice(0, 8)}01`
 
   const onboarded = users.filter((u) => u.deviceCount > 0).length
-  const totalSpend = users.reduce((sum, u) => sum + u.totalCostUsd, 0)
+  const quiet = users.filter((u) => u.isActive && u.deviceCount > 0 && !u.reporting).length
   const openInvites = invites.filter((i) => !i.usedAt && new Date(i.expiresAt) > new Date())
   const trippedAlerts = budgetAlerts.filter((a) => a.tripped)
 
@@ -77,7 +77,7 @@ export default async function AdminPage() {
             hint={onboarded < users.length ? `${users.length - onboarded} still to set up` : 'everyone reporting'}
           />
           <StatTile label="Open invites" value={String(openInvites.length)} />
-          <StatTile label="All-time value" value={formatCost(totalSpend)} />
+          <StatTile label="Not reporting" value={String(quiet)} hint="agent installed, nothing sent for 7+ days" />
         </div>
 
         <section>
@@ -86,8 +86,8 @@ export default async function AdminPage() {
               Team ({users.length})
             </h2>
             <p className="text-sm text-ink-2">
-              Everyone in the org, including those who have not installed the agent. Send
-              them{' '}
+              Everyone in the org, by name, including those who have not installed the agent. No
+              usage numbers here: those stay with each person. Send them{' '}
               <Link href="/setup" className={linkClass}>
                 the setup guide
               </Link>
@@ -96,24 +96,20 @@ export default async function AdminPage() {
           </div>
 
           <TableFrame>
-            <table className="w-full min-w-[1000px] border-collapse">
+            <table className="w-full min-w-[720px] border-collapse">
               <thead className="bg-surface-2">
                 <tr>
                   <Th>Developer</Th>
                   <Th>Role</Th>
                   <Th>Status</Th>
                   <Th>Devices</Th>
-                  <Th>Last sync</Th>
-                  <Th numeric>Days</Th>
-                  <Th numeric>Tokens</Th>
-                  <Th numeric>Value</Th>
                   <Th>
                     <span className="sr-only">Actions</span>
                   </Th>
                 </tr>
               </thead>
               <tbody>
-                {users.length === 0 && <EmptyRow colSpan={9}>No users yet</EmptyRow>}
+                {users.length === 0 && <EmptyRow colSpan={5}>No users yet</EmptyRow>}
                 {users.map((u) => (
                   <Tr key={u.id}>
                     <Td>
@@ -126,8 +122,10 @@ export default async function AdminPage() {
                         <Badge tone="neutral">Disabled</Badge>
                       ) : u.deviceCount === 0 ? (
                         <Badge tone="warn">Not set up</Badge>
+                      ) : u.reporting ? (
+                        <Badge tone="good">Reporting</Badge>
                       ) : (
-                        <Badge tone="good">Active</Badge>
+                        <Badge tone="warn">Not reporting for 7+ days</Badge>
                       )}
                     </Td>
                     <Td>
@@ -139,21 +137,6 @@ export default async function AdminPage() {
                           <div className="text-xs text-ink-3">{u.hostnames.join(', ')}</div>
                         </>
                       )}
-                    </Td>
-                    <Td>
-                      <div className="text-ink">
-                        {u.lastSyncDate ?? <span className="text-ink-3">never</span>}
-                      </div>
-                      <div className="text-xs text-ink-3">{formatAgo(u.lastSeenAt) ?? ''}</div>
-                    </Td>
-                    <Td numeric className="text-ink-2">
-                      {u.activeDays}
-                    </Td>
-                    <Td numeric className="text-ink-2">
-                      {formatTokens(u.totalTokens)}
-                    </Td>
-                    <Td numeric className="font-semibold text-ink">
-                      {formatCost(u.totalCostUsd)}
                     </Td>
                     <Td>
                       <DeleteUserButton userId={u.id} name={u.name} email={u.email} />

@@ -624,7 +624,9 @@ async function projects(store: Store) {
 }
 
 async function adminUsers(store: Store) {
-  const rows = await store.users.aggregate<AdminUserRow>(adminUsersPipeline(MINE))
+  // Two days after ADA's later device (zeta) was last seen.
+  const now = new Date('2026-06-04T10:00:00Z')
+  const rows = await store.users.aggregate<AdminUserRow>(adminUsersPipeline(MINE, now))
   const byId = new Map(rows.map((r) => [r.id, r]))
   const createdAt = (id: UserId) => USERS.find((u) => u._id === id)!.createdAt.toISOString()
 
@@ -632,17 +634,15 @@ async function adminUsers(store: Store) {
     assert.deepEqual([...byId.keys()].sort(), [ADA, BO, CY, DI].sort())
   })
 
-  check('admin users returns exactly the AdminUserRow keys, in order', () => {
+  check('admin users returns exactly the AdminUserRow keys, in order, and no usage', () => {
     for (const r of rows) {
       assert.deepEqual(Object.keys(r), [
-        'id', 'name', 'email', 'role', 'isActive', 'createdAt', 'deviceCount', 'hostnames',
-        'lastSeenAt', 'lastSyncDate', 'totalCostUsd', 'totalTokens', 'activeDays',
+        'id', 'name', 'email', 'role', 'isActive', 'createdAt', 'deviceCount', 'hostnames', 'reporting',
       ])
     }
   })
 
-  check('admin users sums snapshots without multiplying by devices', () => {
-    // ADA owns two devices; a join that multiplied rows would double these.
+  check('admin users counts devices once and reports on the latest one', () => {
     assert.deepEqual(byId.get(ADA), {
       id: ADA,
       name: 'Ada',
@@ -652,48 +652,18 @@ async function adminUsers(store: Store) {
       createdAt: createdAt(ADA),
       deviceCount: 2,
       hostnames: ['alpha', 'zeta'],
-      // The later device, to the second, like Postgres' to_char.
-      lastSeenAt: '2026-06-02T10:00:00Z',
-      lastSyncDate: D2,
-      totalCostUsd: 9,
-      totalTokens: 3_500,
-      activeDays: 2,
+      reporting: true,
     })
   })
 
-  check('admin users zero-fills a user with no devices', () => {
-    assert.deepEqual(byId.get(BO), {
-      id: BO,
-      name: 'Bo',
-      email: 'bo@example.invalid',
-      role: 'developer',
-      isActive: true,
-      createdAt: createdAt(BO),
-      deviceCount: 0,
-      hostnames: [],
-      lastSeenAt: null,
-      lastSyncDate: D2,
-      totalCostUsd: 0,
-      totalTokens: 7_000,
-      activeDays: 1,
-    })
-    assert.equal(byId.get(CY)!.lastSyncDate, D3)
-    assert.equal(byId.get(DI)!.totalCostUsd, 40)
+  check('admin users: no devices means not reporting', () => {
+    assert.equal(byId.get(BO)!.deviceCount, 0)
+    assert.equal(byId.get(BO)!.reporting, false)
   })
 
-  // A user with no snapshots at all, the "has not onboarded" case.
-  const NEW = newId<UserId>()
-  await store.users.insertOne(user(NEW, MINE, 'Neo'))
-  const [fresh] = (await store.users.aggregate<AdminUserRow>(adminUsersPipeline(MINE))).filter(
-    (r) => r.id === NEW,
-  )
-  await store.users.deleteOne({ _id: NEW })
-  check('admin users zero-fills a user who never synced', () => {
-    assert.equal(fresh.deviceCount, 0)
-    assert.equal(fresh.lastSyncDate, null)
-    assert.equal(fresh.totalCostUsd, 0)
-    assert.equal(fresh.totalTokens, 0)
-    assert.equal(fresh.activeDays, 0)
+  const later = await store.users.aggregate<AdminUserRow>(adminUsersPipeline(MINE, new Date('2026-06-09T10:00:01Z')))
+  check('admin users: reporting turns false 7 days after the last submit', () => {
+    assert.equal(later.find((x) => x.id === ADA)!.reporting, false)
   })
 }
 
