@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { getUserRole } from '@/lib/session'
+import { getSession, getUserRole } from '@/lib/session'
 import {
   fetchAdminUsers,
   fetchPendingInvites,
@@ -50,6 +50,8 @@ export default async function AdminPage() {
     fetchSeats().catch(() => []),
   ])
   const firstOfMonth = `${today().slice(0, 8)}01`
+  // No Delete on your own row: the API refuses it anyway. Emails are stored lowercase.
+  const myEmail = (await getSession())?.user?.email?.toLowerCase()
 
   const onboarded = users.filter((u) => u.deviceCount > 0).length
   const quiet = users.filter((u) => u.isActive && u.deviceCount > 0 && !u.reporting).length
@@ -139,7 +141,7 @@ export default async function AdminPage() {
                       )}
                     </Td>
                     <Td>
-                      <DeleteUserButton userId={u.id} name={u.name} email={u.email} />
+                      {u.email !== myEmail && <DeleteUserButton userId={u.id} name={u.name} email={u.email} />}
                     </Td>
                   </Tr>
                 ))}

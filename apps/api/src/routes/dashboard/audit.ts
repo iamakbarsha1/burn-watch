@@ -66,7 +66,8 @@ export async function auditRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid query', details: parsed.error.flatten() })
     }
     const to = (parsed.data.to ?? today()) as IsoDate
-    const from = (parsed.data.from ?? daysBefore(to, 89)) as IsoDate
+    // The full year view rows are kept for (VIEW_RETENTION_MS in audit.ts).
+    const from = (parsed.data.from ?? daysBefore(to, 364)) as IsoDate
     if (from > to) return reply.status(400).send({ error: 'Invalid query', details: 'from is after to' })
     const orgId = request.user.orgId as OrgId
     const me = request.user.userId as UserId
@@ -101,7 +102,9 @@ export async function auditRoutes(fastify: FastifyInstance) {
           },
         ],
       },
-      { sort: { at: -1 }, limit: 200 },
+      // One row per viewer, surface and day: a year of daily views by a few
+      // people fits. shortcut: older rows past 1000 are cut, page it if an org hits that.
+      { sort: { at: -1 }, limit: 1000 },
     )
     const ids = [...new Set(events.map((e) => e.actorId))]
     const users = ids.length ? await store.users.find({ _id: { $in: ids }, orgId }, { projection: { name: 1 } }) : []

@@ -5157,7 +5157,7 @@ describe('audit log (R1 B8)', () => {
                 },
               ],
             },
-            { sort: { at: -1 }, limit: 200 },
+            { sort: { at: -1 }, limit: 1000 },
           ],
         ])
         expect(mongoCalls('users', 'find')).toEqual([[{ _id: { $in: [USER_B, 'gone'] }, orgId: ORG_A }, { projection: { name: 1 } }]])
@@ -5199,11 +5199,11 @@ describe('audit log (R1 B8)', () => {
       ])
     })
 
-    it('uses the last 90 days by default and the given range otherwise', async () => {
+    it('uses the last 365 days by default and the given range otherwise', async () => {
       await call('GET', '/v1/dashboard/audit/me', undefined, 'developer')
       await call('GET', '/v1/dashboard/audit/me?from=2026-11-01&to=2026-11-05', undefined, 'developer')
       const [[a], [b]] = mongoCalls('auditEvents', 'find') as [[{ at: unknown }], [{ at: unknown }]]
-      expect(a.at).toEqual({ $gte: new Date(`${daysBefore(today(), 89)}T00:00:00.000Z`), $lt: expect.any(Date) })
+      expect(a.at).toEqual({ $gte: new Date(`${daysBefore(today(), 364)}T00:00:00.000Z`), $lt: expect.any(Date) })
       expect(b.at).toEqual({ $gte: new Date('2026-11-01T00:00:00.000Z'), $lt: new Date('2026-11-06T00:00:00.000Z') })
     })
 

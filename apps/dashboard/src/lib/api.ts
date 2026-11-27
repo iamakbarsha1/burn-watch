@@ -383,7 +383,7 @@ export async function fetchAuditLog(q: AuditQuery): Promise<AuditRow[]> {
   return apiFetch(`/v1/dashboard/audit?${params}`)
 }
 
-// v2 Phase 4. Any role: who viewed data that covered the caller. Defaults to the last 90 days.
+// v2 Phase 4. Any role: who viewed data that covered the caller. Defaults to the last 365 days, as long as view records are kept.
 export async function fetchAuditMe(from?: string, to?: string): Promise<AuditMeResponse> {
   const params = new URLSearchParams()
   if (from) params.set('from', from)

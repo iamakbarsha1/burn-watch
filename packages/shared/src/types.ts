@@ -911,7 +911,7 @@ export interface AuditMeRow {
 export interface AuditMeResponse {
   from: string
   to: string
-  /** Newest first, at most 200. */
+  /** Newest first, at most 1000. */
   rows: AuditMeRow[]
 }
 
