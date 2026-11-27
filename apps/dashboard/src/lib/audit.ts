@@ -51,6 +51,8 @@ export function auditSentence(row: AuditRow, names: ReadonlyMap<string, string> 
       return `Set up the organization ${d.orgName ?? ''}`.trim()
     case 'user.create':
       return `Added ${d.email} as a developer`
+    case 'user.delete':
+      return `Deleted ${d.email} and their usage`
     case 'invite.create':
       return `Invited ${label} as ${d.role}`
     case 'invite.bulk': {

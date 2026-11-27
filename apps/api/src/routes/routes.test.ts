@@ -69,6 +69,11 @@ vi.mock('@burn-watch/db', async (importOriginal) => {
 // an admin sees totals for. A test that needs a smaller org sets `orgSize.ids`.
 const orgSize = vi.hoisted(() => ({ ids: [] as string[] }))
 vi.mock('../plugins/org-people.js', () => ({ orgPeople: async () => orgSize.ids }))
+// better-auth's collections are not store collections; record what the delete route asks for.
+const logins = vi.hoisted(() => ({ deleted: [] as string[] }))
+vi.mock('../auth-logins.js', () => ({
+  deleteLogin: async (email: string) => (logins.deleted.push(email), 3),
+}))
 
 // Rate limiting is not what these tests cover. The plugin is a no-op here, so
 // `config.rateLimit` on a route is simply inert metadata.
@@ -159,6 +164,7 @@ beforeEach(async () => {
   mongoState.schemaFails = false
   mongoState.docs = {}
   orgSize.ids = [USER_A, USER_B, ...PEERS]
+  logins.deleted = []
   mongoState.aggregates = {}
   mongoState.calls = []
   mongoState.failOn = null
@@ -2191,6 +2197,62 @@ describe('POST /v1/auth/admin/users', () => {
     expect(res.statusCode).toBe(409)
     expect(res.json().error).toBe('A user with this email already exists')
     expect(res.payload).not.toContain('E11000')
+  })
+})
+
+describe('DELETE /v1/auth/admin/users/:id', () => {
+  const del = (id: string, role: JwtPayload['role'] = 'admin') =>
+    app.inject({ method: 'DELETE', url: `/v1/auth/admin/users/${id}`, headers: auth(token({ role })) })
+  const deletes = () => mongoState.calls.filter((c) => c.op === 'deleteMany' || c.op === 'deleteOne')
+
+  it.each(['developer', 'manager'] as const)('returns 403 for a %s and deletes nothing', async (role) => {
+    expect((await del(USER_B, role)).statusCode).toBe(403)
+    expect(deletes()).toEqual([])
+    expect(logins.deleted).toEqual([])
+  })
+
+  it('refuses to delete the caller, so an org always keeps an admin', async () => {
+    const res = await del(USER_A)
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toBe('You cannot delete yourself')
+    expect(deletes()).toEqual([])
+  })
+
+  it('answers 404 for a user outside the caller org, and deletes nothing', async () => {
+    expect((await del(USER_B)).statusCode).toBe(404)
+    expect(mongoCalls('users', 'findOne')[0][0]).toEqual({ _id: USER_B, orgId: ORG_A })
+    expect(deletes()).toEqual([])
+    expect(logins.deleted).toEqual([])
+  })
+
+  it('deletes the person, their usage, places, devices, invites and login, then logs it', async () => {
+    mongoState.docs.users = [{ _id: USER_B, orgId: ORG_A, email: 'bo@example.com', role: 'developer' }]
+    mongoState.docs.devices = [{ _id: DEVICE_A, userId: USER_B }]
+    const res = await del(USER_B)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ userId: USER_B })
+    const byUser = { orgId: ORG_A, userId: USER_B }
+    expect(Object.fromEntries(deletes().filter((c) => c.collection !== 'auditEvents').map((c) => [c.collection, c.args[0]]))).toEqual({
+      usageEvents: byUser,
+      dailySnapshots: byUser,
+      claudeEnrichment: byUser,
+      seats: byUser,
+      teamMembers: byUser,
+      budgetAlerts: byUser,
+      deviceTokens: { deviceId: { $in: [DEVICE_A] } },
+      devices: { userId: USER_B },
+      pendingDevices: { email: 'bo@example.com' },
+      invites: { orgId: ORG_A, email: 'bo@example.com' },
+      users: { _id: USER_B, orgId: ORG_A },
+    })
+    expect(logins.deleted).toEqual(['bo@example.com'])
+    const [[event]] = mongoCalls('auditEvents', 'insertOne') as [[Record<string, unknown>]]
+    expect(event).toMatchObject({
+      action: 'user.delete',
+      actorId: USER_A,
+      target: { type: 'user', id: USER_B, label: 'bo@example.com' },
+      detail: { email: 'bo@example.com', role: 'developer' },
+    })
   })
 })
 

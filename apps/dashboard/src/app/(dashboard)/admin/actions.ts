@@ -19,6 +19,7 @@ import {
   setSeat,
   removeSeat,
   assignSeatToAll,
+  deleteUser,
 } from '@/lib/api'
 import { getUserRole } from '@/lib/session'
 import { parseInviteCsv } from '@/lib/csv'
@@ -435,6 +436,15 @@ export async function setTeamMemberAction(
   if (!userId) return { ok: false, message: 'Pick a person' }
   if (role !== 'manager' && role !== 'member') return { ok: false, message: 'Unknown team role' }
   return adminWrite(() => setTeamMember(teamId, userId, role), 'Member saved.', 'Failed to save member')
+}
+
+export async function deleteUserAction(
+  _prev: TeamActionState | null,
+  formData: FormData,
+): Promise<TeamActionState> {
+  const userId = field(formData, 'userId')
+  if (!userId) return { ok: false, message: 'No user selected' }
+  return adminWrite(() => deleteUser(userId), 'User deleted.', 'Failed to delete user')
 }
 
 export async function removeTeamMemberAction(

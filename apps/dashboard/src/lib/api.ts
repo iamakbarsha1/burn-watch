@@ -161,6 +161,11 @@ export async function fetchAdminUsers(): Promise<AdminUserRow[]> {
   return apiFetch('/v1/auth/admin/users')
 }
 
+/** Deletes the person and all their data, login included. Admin only; never the caller. */
+export async function deleteUser(userId: string): Promise<{ userId: string }> {
+  return apiDelete(`/v1/auth/admin/users/${userId}`)
+}
+
 export async function fetchPendingInvites(): Promise<PendingInvite[]> {
   return apiFetch('/v1/auth/admin/invites')
 }
