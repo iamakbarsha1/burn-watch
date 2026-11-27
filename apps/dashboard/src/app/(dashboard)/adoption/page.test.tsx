@@ -104,7 +104,7 @@ beforeEach(() => {
 describe('an org under 5 people (v2.1)', () => {
   const seats: UnusedSeatsResponse = {
     idleDays: 14,
-    rows: [{ userId: 'u1', userName: 'Ada', agent: 'claude', daysUnused: 20 }],
+    rows: [{ userId: 'u1', userName: 'Ada', agent: 'claude', unusedAtLeastDays: 14 }],
     byAgent: [{ agent: 'claude', seats: 1, monthlyUsd: 100 }],
     totalMonthlyUsd: 100,
     orgSeats: 3,
@@ -169,8 +169,8 @@ describe('AdoptionPage', () => {
     state.data = {
       idleDays: 14,
       rows: [
-        { userId: 'u2', userName: 'Bo', agent: 'copilot', daysUnused: 41 },
-        { userId: 'u1', userName: 'Ada', agent: 'claude', daysUnused: 20 },
+        { userId: 'u2', userName: 'Bo', agent: 'copilot', unusedAtLeastDays: 30 },
+        { userId: 'u1', userName: 'Ada', agent: 'claude', unusedAtLeastDays: 14 },
       ],
       byAgent: [
         { agent: 'claude', seats: 1, monthlyUsd: 30 },
@@ -182,7 +182,8 @@ describe('AdoptionPage', () => {
     const html = await render()
     expect(html).toContain('Unused seats')
     expect(html).toContain('2 unused seats, $49.00/month')
-    expect(html).toContain('41')
+    expect(html).toContain('30+ days')
+    expect(html).toContain('14+ days')
     expect(html.indexOf('Bo')).toBeLessThan(html.indexOf('Ada'))
   })
 

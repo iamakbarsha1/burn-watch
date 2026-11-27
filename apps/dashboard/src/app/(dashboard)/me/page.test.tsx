@@ -55,7 +55,7 @@ const NOV = { from: '2026-11-01', to: '2026-11-30' }
 beforeEach(() => {
   state.usage = usage()
   state.asked = []
-  state.audit = { from: '2026-08-29', to: '2026-11-26', rows: [] }
+  state.audit = { from: '2026-08-29', to: '2026-11-26', truncated: false, rows: [] }
 })
 
 describe('MyUsagePage', () => {
@@ -193,6 +193,7 @@ describe('Who viewed my data', () => {
     state.audit = {
       from: '2026-08-29',
       to: '2026-11-26',
+      truncated: false,
       rows: [
         { at, lastAt: at, count: 3, surface: 'adoption', viewer: { name: 'Priya', role: 'manager' }, scope: 'managed teams' },
         { at, lastAt: null, count: 1, surface: 'governance', viewer: { name: 'Sam', role: 'admin' }, scope: 'org' },
@@ -210,6 +211,12 @@ describe('Who viewed my data', () => {
     expect(html).toContain('Platform')
     expect(html).toContain('2026-11-05')
     expect(html).not.toContain('No one has viewed')
+    expect(html).not.toContain('Showing the newest 1000 rows')
+  })
+
+  it('says when older rows were cut at 1000', async () => {
+    state.audit = { from: '2026-08-29', to: '2026-11-26', truncated: true, rows: [] }
+    expect(await render(NOV)).toContain('Showing the newest 1000 rows. Older views in the last 365 days are kept but not listed here.')
   })
 
   it('says so when no one has viewed data that includes you', async () => {

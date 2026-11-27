@@ -81,8 +81,8 @@ const ALLOWED: Record<string, { roles: Role[]; why: string; fields: string[] }> 
   },
   '/v1/dashboard/adoption/unused-seats': {
     roles: ['admin'],
-    why: 'unused seats: reclaim a licence. daysUnused is the reason the row exists (v2 decision 2); org totals sit on the wrapper',
-    fields: ['idleDays', 'rows', 'userId', 'userName', 'agent', 'daysUnused', 'byAgent', 'totalMonthlyUsd', 'orgSeats'],
+    why: 'unused seats: reclaim a licence. A coarse unused bucket (30+, 60+ days) is the reason the row exists (v2 decision 2); org totals sit on the wrapper',
+    fields: ['idleDays', 'rows', 'userId', 'userName', 'agent', 'unusedAtLeastDays', 'byAgent', 'totalMonthlyUsd', 'orgSeats'],
   },
   '/v1/dashboard/governance/setup-checks': {
     roles: ['admin'],
@@ -93,7 +93,7 @@ const ALLOWED: Record<string, { roles: Role[]; why: string; fields: string[] }> 
   '/v1/dashboard/audit/me': {
     roles: ['admin', 'manager', 'developer'],
     why: 'who viewed my data: the viewer, when and how often',
-    fields: ['from', 'to', 'rows', 'at', 'lastAt', 'count', 'surface', 'viewer', 'name', 'role', 'scope'],
+    fields: ['from', 'to', 'truncated', 'rows', 'at', 'lastAt', 'count', 'surface', 'viewer', 'name', 'role', 'scope'],
   },
 }
 

@@ -620,13 +620,13 @@ export interface UnusedSeatRow {
   /** Null when the user row is gone. */
   userName: string | null
   agent: AgentName
-  /** Days since last use, or since the seat started when never used, today included. */
-  daysUnused: number
+  /** Unused for at least this many days: idleDays, 30, 60, 90, 180 or 365. Never the exact count. */
+  unusedAtLeastDays: number
 }
 
 export interface UnusedSeatsResponse {
   idleDays: number
-  /** Longest unused first. */
+  /** Longest unused bucket first, then by name. */
   rows: UnusedSeatRow[]
   byAgent: { agent: AgentName; seats: number; monthlyUsd: number }[]
   totalMonthlyUsd: number
@@ -910,6 +910,8 @@ export interface AuditMeResponse {
   to: string
   /** Newest first, at most 1000. */
   rows: AuditMeRow[]
+  /** True when older rows in range were cut at 1000. */
+  truncated: boolean
 }
 
 // GET /v1/dashboard/audit. Admin only, newest first.

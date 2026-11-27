@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Document } from 'mongodb'
 import type { IsoDate, OrgId, UserId } from '@burn-watch/db'
-import { countFunnel, daysUnused, funnelThresholds, funnelUsersPipeline, stageOf, type FunnelPerson } from './adoption.js'
+import { countFunnel, daysUnused, unusedBucket, funnelThresholds, funnelUsersPipeline, stageOf, type FunnelPerson } from './adoption.js'
 import { daysBefore } from './dates.js'
 
 /**
@@ -129,5 +129,18 @@ describe('daysUnused', () => {
     expect(daysUnused(seat, '2026-10-15', TODAY)).toBe(22)
     // The day before the start counts the same as never used.
     expect(daysUnused(seat, '2026-10-31', TODAY)).toBe(22)
+  })
+})
+
+describe('unusedBucket', () => {
+  it('floors to the largest step reached, never below idleDays', () => {
+    expect(unusedBucket(14, 14)).toBe(14)
+    expect(unusedBucket(29, 14)).toBe(14)
+    expect(unusedBucket(30, 14)).toBe(30)
+    expect(unusedBucket(59, 14)).toBe(30)
+    expect(unusedBucket(61, 14)).toBe(60)
+    expect(unusedBucket(400, 14)).toBe(365)
+    expect(unusedBucket(50, 45)).toBe(45)
+    expect(unusedBucket(20, 30)).toBe(30)
   })
 })

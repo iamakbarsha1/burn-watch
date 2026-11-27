@@ -26,7 +26,7 @@ const ADMIN_SEES = [
   'Whether your agent has sent anything in the last 7 days, per laptop on Devices and overall on Admin. Not when.',
   'The teams you are in, and whether you manage one.',
   'Your paid seats: agent, monthly price and start date.',
-  'On Unused seats: how many days a paid seat of yours has gone unused.',
+  'On Unused seats: that a paid seat of yours has gone unused, in steps like 30+ or 60+ days. Not the exact count.',
   'On Setup checks: an agent or model you used outside the org\'s rules. Not how much or when.',
 ]
 

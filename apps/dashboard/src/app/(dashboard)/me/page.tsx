@@ -145,6 +145,11 @@ function WhoViewed({ audit }: { audit: AuditMeResponse | null }) {
         <p className="text-sm text-ink-2">Could not read who viewed your data. Try again in a moment.</p>
       ) : (
         <TableFrame>
+          {audit.truncated && (
+            <p className="px-3 py-2 text-sm text-ink-2">
+              Showing the newest 1000 rows. Older views in the last 365 days are kept but not listed here.
+            </p>
+          )}
           <table className="w-full">
             <thead>
               <tr>

@@ -8,6 +8,19 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v2.3.0 (2026-11-27)
+
+Breaking API change. Unused seats no longer shows exact days next to a name.
+
+- Unused seats (Adoption, admins only): the Days unused column is now Unused
+  for, in steps: the idle threshold you set, then 30+, 60+, 90+, 180+ or 365+
+  days. Rows sort by step, then by name.
+- API: `GET /v1/dashboard/adoption/unused-seats` rows drop `daysUnused` and add
+  `unusedAtLeastDays`. My usage still shows your own seats in exact days.
+- Who viewed my data: the list still stops at the newest 1000 rows, but now
+  says so when it does. `GET /v1/dashboard/audit/me` adds `truncated`.
+- /privacy: the Unused seats line now says admins see a step, not the count.
+
 ## web-v2.2.0 (2026-11-27)
 
 Breaking API change. The last usage and activity times next to names are gone.
