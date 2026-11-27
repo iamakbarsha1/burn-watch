@@ -15,6 +15,7 @@ const renameTeam = vi.fn()
 const deleteTeam = vi.fn()
 const setTeamMember = vi.fn()
 const removeTeamMember = vi.fn()
+const deleteUser = vi.fn()
 const createBudgetAlert = vi.fn()
 const updateBudgetAlert = vi.fn()
 const setSeat = vi.fn()
@@ -36,6 +37,7 @@ vi.mock('@/lib/api', () => ({
   deleteTeam,
   setTeamMember,
   removeTeamMember,
+  deleteUser,
   setSeat,
   removeSeat,
   assignSeatToAll,
@@ -50,6 +52,7 @@ const {
   deleteTeamAction,
   setTeamMemberAction,
   removeTeamMemberAction,
+  deleteUserAction,
   createBudgetAlertAction,
   updateBudgetAlertAction,
   setSeatAction,
@@ -257,6 +260,7 @@ describe('team actions', () => {
     ['deleteTeamAction', deleteTeamAction, deleteTeam, { teamId: TEAM }],
     ['setTeamMemberAction', setTeamMemberAction, setTeamMember, { teamId: TEAM, userId: USER, role: 'manager' }],
     ['removeTeamMemberAction', removeTeamMemberAction, removeTeamMember, { teamId: TEAM, userId: USER }],
+    ['deleteUserAction', deleteUserAction, deleteUser, { userId: USER }],
   ] as const
 
   for (const [name, action, apiFn, fields] of cases) {
@@ -275,6 +279,14 @@ describe('team actions', () => {
       expect(revalidatePath).toHaveBeenCalledWith('/', 'layout')
     })
   }
+
+  it('passes the user id through to deleteUser, and shows the API refusal for yourself', async () => {
+    await deleteUserAction(null, form({ userId: USER }))
+    expect(deleteUser).toHaveBeenCalledWith(USER)
+    deleteUser.mockRejectedValueOnce(new Error('You cannot delete yourself'))
+    const state = await deleteUserAction(null, form({ userId: USER }))
+    expect(state).toMatchObject({ ok: false, message: 'You cannot delete yourself' })
+  })
 
   it('passes ids and role through to setTeamMember', async () => {
     await setTeamMemberAction(null, form({ teamId: TEAM, userId: USER, role: 'member' }))

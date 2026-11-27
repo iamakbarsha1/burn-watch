@@ -14,6 +14,7 @@ import {
 } from '../../plugins/jwt.js'
 import { callerAddress } from '../../caller-address.js'
 import { audit, auditView } from '../../audit.js'
+import { deleteLogin } from '../../auth-logins.js'
 
 const BootstrapSchema = z.object({
   orgName: z.string().min(1),
@@ -27,6 +28,8 @@ const CreateUserSchema = z.object({
   name: z.string().min(1),
   orgId: z.string().uuid().optional(),
 })
+
+const UserParams = z.object({ id: z.string().min(1).max(100) })
 
 const RevokeDeviceSchema = z.object({
   deviceId: z.string().uuid(),
@@ -486,6 +489,50 @@ export async function authRoutes(fastify: FastifyInstance) {
       action: 'user.create',
       target: { type: 'user', id: userId, label: email },
       detail: { email, role: 'developer' },
+    })
+    return { userId }
+  })
+
+  // DELETE /v1/auth/admin/users/:id — admin only. Deletes the person and
+  // everything BurnWatch holds on them: usage, seats, team places, devices and
+  // their tokens, invites and their login. Past org and team totals drop by
+  // their share. The audit log keeps its rows; it is never edited.
+  // Not the caller: an admin cannot delete themselves, so an org always keeps one.
+  fastify.delete('/admin/users/:id', { preHandler: requireAdmin(fastify) }, async (request, reply) => {
+    const { id } = UserParams.parse(request.params)
+    const jwt = request.user as JwtPayload
+    const orgId = jwt.orgId as OrgId
+    const userId = id as UserId
+    if (userId === jwt.userId) return reply.status(400).send({ error: 'You cannot delete yourself' })
+
+    const store = getStore()
+    // Read first: the user must be in the caller's org, and the log names them once they are gone.
+    const user = await store.users.findOne({ _id: userId, orgId }, { projection: { email: 1, role: 1 } })
+    if (!user) return reply.status(404).send({ error: 'User not found' })
+    const deviceIds = (await store.devices.find({ userId }, { projection: { _id: 1 } })).map((d) => d._id)
+
+    // shortcut: one transaction for all of a person's usage rows; batch outside it if a heavy user hits the transaction limits.
+    const removed = await runInTxn(store, async (tx) => ({
+      usageEvents: await tx.usageEvents.deleteMany({ orgId, userId }),
+      dailySnapshots: await tx.dailySnapshots.deleteMany({ orgId, userId }),
+      claudeEnrichment: await tx.claudeEnrichment.deleteMany({ orgId, userId }),
+      seats: await tx.seats.deleteMany({ orgId, userId }),
+      teamMembers: await tx.teamMembers.deleteMany({ orgId, userId }),
+      budgetAlerts: await tx.budgetAlerts.deleteMany({ orgId, userId }),
+      deviceTokens: deviceIds.length ? await tx.deviceTokens.deleteMany({ deviceId: { $in: deviceIds } }) : 0,
+      devices: await tx.devices.deleteMany({ userId }),
+      pendingDevices: await tx.pendingDevices.deleteMany({ email: user.email }),
+      invites: await tx.invites.deleteMany({ orgId, email: user.email }),
+      users: await tx.users.deleteOne({ _id: userId, orgId }),
+    }))
+    // After the commit: with the users row gone, sign-in already fails for this
+    // email, so a login left behind by a failure here opens nothing.
+    const login = await deleteLogin(user.email)
+
+    await audit(request, {
+      action: 'user.delete',
+      target: { type: 'user', id: userId, label: user.email },
+      detail: { email: user.email, role: user.role, removed: { ...removed, login } },
     })
     return { userId }
   })

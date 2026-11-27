@@ -15,6 +15,7 @@ import { BulkInviteForm } from './BulkInviteForm'
 import { CreateBudgetAlertForm, BudgetAlertsTable } from './BudgetAlertsPanel'
 import { CopilotPanel } from './CopilotPanel'
 import { CreateTeamForm, TeamsList } from './TeamsPanel'
+import { DeleteUserButton } from './DeleteUserButton'
 import { AddSeatForm, AssignAllSeatsForm, SeatsTable } from './SeatsPanel'
 import {
   PageHeader,
@@ -95,7 +96,7 @@ export default async function AdminPage() {
           </div>
 
           <TableFrame>
-            <table className="w-full min-w-[920px] border-collapse">
+            <table className="w-full min-w-[1000px] border-collapse">
               <thead className="bg-surface-2">
                 <tr>
                   <Th>Developer</Th>
@@ -106,10 +107,13 @@ export default async function AdminPage() {
                   <Th numeric>Days</Th>
                   <Th numeric>Tokens</Th>
                   <Th numeric>Value</Th>
+                  <Th>
+                    <span className="sr-only">Actions</span>
+                  </Th>
                 </tr>
               </thead>
               <tbody>
-                {users.length === 0 && <EmptyRow colSpan={8}>No users yet</EmptyRow>}
+                {users.length === 0 && <EmptyRow colSpan={9}>No users yet</EmptyRow>}
                 {users.map((u) => (
                   <Tr key={u.id}>
                     <Td>
@@ -150,6 +154,9 @@ export default async function AdminPage() {
                     </Td>
                     <Td numeric className="font-semibold text-ink">
                       {formatCost(u.totalCostUsd)}
+                    </Td>
+                    <Td>
+                      <DeleteUserButton userId={u.id} name={u.name} email={u.email} />
                     </Td>
                   </Tr>
                 ))}

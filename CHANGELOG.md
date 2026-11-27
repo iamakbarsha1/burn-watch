@@ -8,6 +8,19 @@ Two release lines, tagged separately:
 
 A feature bumps the minor version, a fix bumps the patch.
 
+## web-v1.2.0 (2026-11-27)
+
+- Admin: a Delete button on each person in the Team table. After a
+  confirm, it deletes the person and everything BurnWatch holds on them:
+  usage events, daily snapshots, Claude Code enrichment, seats, team
+  places, devices and their tokens, pending devices, invites and their
+  login. Past org and team totals drop by their share.
+- New route `DELETE /v1/auth/admin/users/:id`, admin only, in the caller's
+  org. An admin cannot delete themselves, so an org always keeps an admin.
+  Writes a `user.delete` audit action with how much was removed. Audit
+  rows about the person stay; the audit log is never edited.
+- No migration. No schema sync.
+
 ## web-v1.1.0 (2026-11-27)
 
 v2.1: closes the gaps left after v2.

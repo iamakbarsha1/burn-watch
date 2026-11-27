@@ -840,6 +840,7 @@ export type AuditAction =
   | 'device.self_revoke'
   | 'org.bootstrap'
   | 'user.create'
+  | 'user.delete'
   | 'invite.create'
   | 'invite.bulk'
   | 'invite.accept'
